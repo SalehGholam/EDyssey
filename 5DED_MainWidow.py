@@ -19,17 +19,20 @@ version 2:
 """
 
 import os
-import PyQt5.QtWidgets as qtw
+file_path = os.path.abspath(__file__)
+os.chdir(os.path.dirname(file_path))
+
 import gc
-from tab_create_navSignal import Tab_Create_NavSignal
-from tab_tracking_cv2 import Tab_Tracking_CV2
-from tab_roi_4d import Tab_ROI_on_4D
-from tab_sam2 import Tab_SAM2
+import PyQt5.QtWidgets as qtw
+from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
+                     Tab_ROI_on_4D, Tab_SAM2)
+# from tab_create_navSignal import Tab_Create_NavSignal
+# from tab_tracking_cv2 import Tab_Tracking_CV2
+# from tab_roi_4d import Tab_ROI_on_4D
+# from tab_sam2 import Tab_SAM2
 # from tab_converter import Tab_Converter
 from PyQt5.QtGui import QIcon
 
-file_path = os.path.abspath(__file__)
-os.chdir(os.path.dirname(file_path))
 #%% window
 class MainWindow(qtw.QMainWindow):
     def __init__(self):
@@ -52,8 +55,10 @@ class MainWindow(qtw.QMainWindow):
         self.tab_sam2 = Tab_SAM2()
         self.tabs.addTab(self.tab_sam2, 'SAM2 Seg.')
         
-        
-        self.setWindowIcon(QIcon('Scream_logo.ico'))
+        file_path = os.path.split(os.path.abspath(__file__))[0]
+        fn_icon = os.path.join(file_path, 'ui_tabs', 
+                               'logo', 'Scream_logo.ico')
+        self.setWindowIcon(QIcon(fn_icon))
         self.setCentralWidget(self.tabs)
         
     def closeEvent(self,event):

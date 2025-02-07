@@ -23,7 +23,7 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import matplotlib.patches as patches
 import datetime
 from copy import deepcopy
-from worker_thread import WorkerThread_General
+from .worker_thread import WorkerThread_General
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 #%% wdiget

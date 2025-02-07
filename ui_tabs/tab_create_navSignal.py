@@ -13,7 +13,7 @@ from PyQt5.QtGui import QIntValidator, QDoubleValidator
 import numpy as np
 import gc
 import py4DTomo.io_utils as io
-from worker_thread import WorkerThread_General
+from .worker_thread import WorkerThread_General
 import hyperspy.api as hs
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
