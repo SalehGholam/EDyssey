@@ -83,6 +83,7 @@ class Tab_SAM2(qtw.QWidget):
         layout_dir.addLayout(layout_dir_entry)
         label_dir = qtw.QLabel('Nav. Signal')
         layout_dir_entry.addWidget(label_dir)
+        label_dir.setFixedWidth(55)
         
         self.lineEdit_dir_navSignal = qtw.QLineEdit()
         layout_dir_entry.addWidget(self.lineEdit_dir_navSignal)
@@ -91,16 +92,13 @@ class Tab_SAM2(qtw.QWidget):
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        layout_dir_entry.addWidget(self.button_loadNavigation)
-        self.button_loadNavigation.clicked.connect(self.load_navSignal)
-        
         # 4d dir
         layout_dir_4dSignals = qtw.QHBoxLayout(self)
         layout_dir.addLayout(layout_dir_4dSignals)
         
         label_dir_4d = qtw.QLabel('4D Signals')
         layout_dir_4dSignals.addWidget(label_dir_4d)
+        label_dir_4d.setFixedWidth(55)
         
         self.lineEdit_dir_4d = qtw.QLineEdit()
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
@@ -115,6 +113,7 @@ class Tab_SAM2(qtw.QWidget):
         
         label_dir_save = qtw.QLabel('Save Dir.')
         layout_dir_save.addWidget(label_dir_save)
+        label_dir_save.setFixedWidth(55)
         
         self.lineEdit_dir_save = qtw.QLineEdit()
         layout_dir_save.addWidget(self.lineEdit_dir_save)
@@ -122,6 +121,11 @@ class Tab_SAM2(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
+        
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
+        layout_dir.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        self.button_loadNavigation.setFixedSize(110, 50)
+        self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
         button_w, button_h = 110, 50
         self.masks_images = {}
@@ -209,6 +213,8 @@ class Tab_SAM2(qtw.QWidget):
         self.img_display['dp'] = self.ax_dp.imshow(self.img_zero, cmap='inferno', 
                                                     norm=SymLogNorm(linthresh=1))
         self.ax_dp.set_title('Extracted DP')
+        for ax in [self.ax_dp, self.ax_nav, self.ax_seg]:
+            ax.set_axis_off()
         self.figure.tight_layout()
         layout_canvas.addWidget(self.canvas)
         

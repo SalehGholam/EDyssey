@@ -51,31 +51,89 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
+        
+        # layout top
+        layout_top = qtw.QHBoxLayout()
+        self.layout.addLayout(layout_top)
         #%% directory
-        layout_dir = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_dir)
+# =============================================================================
+#         layout_dir = qtw.QHBoxLayout(self)
+#         self.layout.addLayout(layout_dir)
+#         
+#         # nav signal dir
+#         label_dir = qtw.QLabel('Nav. Signal')
+#         layout_dir.addWidget(label_dir)
+#         
+#         self.lineEdit_dir_navSignal = qtw.QLineEdit()
+#         layout_dir.addWidget(self.lineEdit_dir_navSignal)
+#         
+#         self.button_dir_navSignal = qtw.QPushButton('...')
+#         layout_dir.addWidget(self.button_dir_navSignal)
+#         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
+#         
+#         self.button_loadNavigation = qtw.QPushButton('Load Signal')
+#         layout_dir.addWidget(self.button_loadNavigation)
+#         self.button_loadNavigation.clicked.connect(self.load_navSignal)
+#         
+#         layout_dir_4dSignals = qtw.QHBoxLayout(self)
+#         self.layout.addLayout(layout_dir_4dSignals)
+#         
+#         # 4d dir
+#         label_dir_4d = qtw.QLabel('4D Signals')
+#         layout_dir_4dSignals.addWidget(label_dir_4d)
+#         
+#         self.lineEdit_dir_4d = qtw.QLineEdit()
+#         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
+#         
+#         self.button_dir_4dSignals = qtw.QPushButton('...')
+#         layout_dir_4dSignals.addWidget(self.button_dir_4dSignals)
+#         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
+#         
+#         # save dir
+#         layout_dir_save = qtw.QHBoxLayout()
+#         self.layout.addLayout(layout_dir_save)
+#         
+#         label_dir_save = qtw.QLabel('Save Dir.')
+#         layout_dir_save.addWidget(label_dir_save)
+#         
+#         self.lineEdit_dir_save = qtw.QLineEdit()
+#         layout_dir_save.addWidget(self.lineEdit_dir_save)
+#         
+#         self.button_dir_save = qtw.QPushButton('...')
+#         layout_dir_save.addWidget(self.button_dir_save)
+#         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
+# =============================================================================
+        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+        layout_top.addItem(spacer)
+        self.box_dir = qtw.QGroupBox('Directories', self)
+        self.box_dir.setFixedSize(500, 200)
+        # self.box_dir.setFixedWidth()
+        layout_dir = qtw.QVBoxLayout(self)
+        # self.layout.addLayout(layout_dir)
+        layout_top.addWidget(self.box_dir)
+        self.box_dir.setLayout(layout_dir)
         
         # nav signal dir
+        layout_dir_entry = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_dir_entry)
         label_dir = qtw.QLabel('Nav. Signal')
-        layout_dir.addWidget(label_dir)
+        layout_dir_entry.addWidget(label_dir)
+        label_dir.setFixedWidth(55)
         
         self.lineEdit_dir_navSignal = qtw.QLineEdit()
-        layout_dir.addWidget(self.lineEdit_dir_navSignal)
+        layout_dir_entry.addWidget(self.lineEdit_dir_navSignal)
         
         self.button_dir_navSignal = qtw.QPushButton('...')
-        layout_dir.addWidget(self.button_dir_navSignal)
+        layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        layout_dir.addWidget(self.button_loadNavigation)
-        self.button_loadNavigation.clicked.connect(self.load_navSignal)
-        
-        layout_dir_4dSignals = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_dir_4dSignals)
-        
         # 4d dir
+        layout_dir_4dSignals = qtw.QHBoxLayout(self)
+        layout_dir.addLayout(layout_dir_4dSignals)
+        
         label_dir_4d = qtw.QLabel('4D Signals')
         layout_dir_4dSignals.addWidget(label_dir_4d)
+        label_dir_4d.setFixedWidth(55)
         
         self.lineEdit_dir_4d = qtw.QLineEdit()
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
@@ -86,10 +144,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # save dir
         layout_dir_save = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_dir_save)
+        layout_dir.addLayout(layout_dir_save)
         
         label_dir_save = qtw.QLabel('Save Dir.')
         layout_dir_save.addWidget(label_dir_save)
+        label_dir_save.setFixedWidth(55)
         
         self.lineEdit_dir_save = qtw.QLineEdit()
         layout_dir_save.addWidget(self.lineEdit_dir_save)
@@ -97,45 +156,131 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
-        #%% buttons ribbon
-        layout_input_info = qtw.QHBoxLayout()
-        # layout_input_info.setAlignment(Qt.AlignLeft)
-        self.layout.addLayout(layout_input_info)
+        #%% box for scales
+        layout_loadSignal = qtw.QHBoxLayout()
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setFixedWidth(150)
+        self.box_scale.setLayout(layout_box_scale)
+        # layout_canvas_beside.addWidget(self.box_scale)
+        layout_loadSignal.addWidget(self.box_scale)
         
+        # real space
+        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+        layout_scale_real = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_real)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        layout_scale_real.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_real.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        # reciprocal space
+        layout_scale_recip = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_recip)
+        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
+        layout_scale_recip.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+        
+        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
+        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
+        
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
+        layout_dir.addLayout(layout_loadSignal)
+        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        self.button_loadNavigation.setFixedSize(110, 50)
+        self.button_loadNavigation.clicked.connect(self.load_navSignal)
+        #%% feature handling
+        button_w, button_h = 110, 50
+        
+        layout_topRight = qtw.QVBoxLayout()
+        layout_top.addLayout(layout_topRight)
+        self.box_buttons = qtw.QGroupBox('Features Handling')
+        self.box_buttons.setFixedSize(400, 85)
+        layout_topRight.addWidget(self.box_buttons)
+        
+        # layout_topRight.setAlignment(Qt.AlignLeft)
+        self.layout.addLayout(layout_topRight)
+        
+        layout_features = qtw.QHBoxLayout(self)
+        self.box_buttons.setLayout(layout_features)
         label_roiNo = qtw.QLabel('Roi No')
-        layout_input_info.addWidget(label_roiNo)
+        layout_features.addWidget(label_roiNo)
         self.combo_roiNo = qtw.QComboBox()
-        layout_input_info.addWidget(self.combo_roiNo)
+        layout_features.addWidget(self.combo_roiNo)
         self.combo_roiNo.currentIndexChanged.connect(lambda: self.plot_image_mask(
             self.slider_thresh.value()))
         self.combo_roiNo.currentIndexChanged.connect(self.plot_dp)
+
+        # spacer
+        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+        layout_features.addItem(spacer)
         
         self.button_cur_roi = qtw.QPushButton('Delete Current ROI')
-        layout_input_info.addWidget(self.button_cur_roi)
+        layout_features.addWidget(self.button_cur_roi)
+        self.button_cur_roi.setFixedSize(button_w, button_h)
         self.button_cur_roi.clicked.connect(self.del_current_roi)
         self.button_cur_roi.setDisabled(True)
         
         self.button_reset_rois = qtw.QPushButton('Reset ROIs')
-        layout_input_info.addWidget(self.button_reset_rois)
+        layout_features.addWidget(self.button_reset_rois)
+        self.button_reset_rois.setFixedSize(button_w, button_h)
         self.button_reset_rois.clicked.connect(self.reset_rois)
         self.button_reset_rois.setDisabled(True)
         
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_input_info.addItem(spacer)
+        #%% tracker buttons
+        self.box_tracker = qtw.QGroupBox('opencv Tracker')
+        self.box_tracker.setFixedSize(400, 120)
+        layout_topRight.addWidget(self.box_tracker)
+        layout_tracker = qtw.QHBoxLayout(self)
+        self.box_tracker.setLayout(layout_tracker)
         
         label_track = qtw.QLabel('Tracking Method')
-        layout_input_info.addWidget(label_track)
+        layout_tracker.addWidget(label_track)
         self.combo_trackMethod = qtw.QComboBox()
-        layout_input_info.addWidget(self.combo_trackMethod)
+        layout_tracker.addWidget(self.combo_trackMethod)
         self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn'])
         
+        layout_tracker.addItem(spacer)
+        
         self.button_track = qtw.QPushButton('Track!')
-        layout_input_info.addWidget(self.button_track)
+        layout_tracker.addWidget(self.button_track)
+        self.button_track.setFixedSize(button_w, button_h)
         self.button_track.clicked.connect(
             lambda: self.track_rois(self.nav_imgs, self.rois))
         self.button_track.setDisabled(True)
         
-        # layout_input_info.addStretch(1)
+        # layout_features.addStretch(1)
+        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+        layout_top.addItem(spacer)
+        #%%
+        self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
+        layout_box_roiInRoi = qtw.QVBoxLayout()
+        self.box_roiInRoi.setLayout(layout_box_roiInRoi)
+        layout_tracker.addWidget(self.box_roiInRoi)
+        # self.box_roiInRoi.setFixedWidth(150)
+        # self.box_roiInRoi.setFixedHeight(100)
+        
+        self.checkbox_roiInRoi = qtw.QCheckBox('Activate')
+        layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi)
+        self.checkbox_roiInRoi.setDisabled(True)
+        
+        # TODO fixed position for roi in roi
+# =============================================================================
+#         self.checkbox_roiInRoi_constPos = qtw.QCheckBox('Constant Position')
+#         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi_constPos)
+#         self.checkbox_roiInRoi_constPos.setDisabled(True)
+# =============================================================================
+        
+        self.button_trackAgain = qtw.QPushButton("Track Again")
+        layout_box_roiInRoi.addWidget(self.button_trackAgain)
+        # self.button_trackAgain.setFixedSize(75, 50)
+        self.button_trackAgain.setFixedHeight(35)
+        self.button_trackAgain.clicked.connect(self.track_roiInRoi)
+        self.button_trackAgain.setDisabled(True)
         #%% canvas
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
@@ -204,27 +349,29 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_canvas.addLayout(layout_canvas_beside)
         
         
-        self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
-        layout_box_roiInRoi = qtw.QVBoxLayout()
-        self.box_roiInRoi.setLayout(layout_box_roiInRoi)
-        layout_canvas_beside.addWidget(self.box_roiInRoi)
-        self.box_roiInRoi.setFixedWidth(150)
-        
-        self.checkbox_roiInRoi = qtw.QCheckBox('Activate')
-        layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi)
-        self.checkbox_roiInRoi.setDisabled(True)
-        
-        # TODO fixed position for roi in roi
 # =============================================================================
-#         self.checkbox_roiInRoi_constPos = qtw.QCheckBox('Constant Position')
-#         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi_constPos)
-#         self.checkbox_roiInRoi_constPos.setDisabled(True)
+#         self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
+#         layout_box_roiInRoi = qtw.QVBoxLayout()
+#         self.box_roiInRoi.setLayout(layout_box_roiInRoi)
+#         layout_canvas_beside.addWidget(self.box_roiInRoi)
+#         self.box_roiInRoi.setFixedWidth(150)
+#         
+#         self.checkbox_roiInRoi = qtw.QCheckBox('Activate')
+#         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi)
+#         self.checkbox_roiInRoi.setDisabled(True)
+#         
+#         # TODO fixed position for roi in roi
+# # =============================================================================
+# #         self.checkbox_roiInRoi_constPos = qtw.QCheckBox('Constant Position')
+# #         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi_constPos)
+# #         self.checkbox_roiInRoi_constPos.setDisabled(True)
+# # =============================================================================
+#         
+#         self.button_trackAgain = qtw.QPushButton("Track Again")
+#         layout_box_roiInRoi.addWidget(self.button_trackAgain)
+#         self.button_trackAgain.clicked.connect(self.track_roiInRoi)
+#         self.button_trackAgain.setDisabled(True)
 # =============================================================================
-        
-        self.button_trackAgain = qtw.QPushButton("Track Again")
-        layout_box_roiInRoi.addWidget(self.button_trackAgain)
-        self.button_trackAgain.clicked.connect(self.track_roiInRoi)
-        self.button_trackAgain.setDisabled(True)
         
         
         self.box_thresh = qtw.QGroupBox('Threshold')
@@ -309,36 +456,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.update_combo_3ded()
         self.combo_dp_plot.currentIndexChanged.connect(lambda: self.update_canvas(
             self.slider_imgNo.value()))
-        
-        #%% box for scales
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setFixedWidth(150)
-        self.box_scale.setLayout(layout_box_scale)
-        layout_canvas_beside.addWidget(self.box_scale)
-        
-        # real space
-        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        layout_scale_real = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_real)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        layout_scale_real.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_real.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        # reciprocal space
-        layout_scale_recip = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_recip)
-        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
-        layout_scale_recip.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-        
-        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider)
@@ -397,15 +514,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def update_canvas(self, imgNo=None):
         if not imgNo:
             imgNo = self.slider_imgNo.value()
-        img = self.nav_imgs[imgNo]
-        
-        # nav axis
-        self.img_display['nav'].set_data(img)
-        self.img_display['nav'].set_clim(vmin=img.min(), vmax=img.max())
-        shape_x, shape_y = img.shape
-        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.ax_nav.set_title(f'Nav Image No. {imgNo+1:d}')
-        self.draw_rois_nav(self.patches_toTrack, self.ax_nav, self.rois)
+        if hasattr(self, 'mav_imgs'):
+            img = self.nav_imgs[imgNo]
+            
+            # nav axis
+            self.img_display['nav'].set_data(img)
+            self.img_display['nav'].set_clim(vmin=img.min(), vmax=img.max())
+            shape_x, shape_y = img.shape
+            self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+            self.ax_nav.set_title(f'Nav Image No. {imgNo+1:d}')
+            self.draw_rois_nav(self.patches_toTrack, self.ax_nav, self.rois)
         # draw rois from roi in roi
         if hasattr(self, 'tracking_finished'):
             if (self.tracking_finished) and (hasattr(self, 'rois_tracked_roiInRoi_trans')):

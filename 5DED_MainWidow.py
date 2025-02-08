@@ -68,6 +68,7 @@ class MainWindow(qtw.QMainWindow):
         
 if __name__ == "__main__":
     app = qtw.QApplication([])
+    # app.setStyle("Widnows")
     # app.setWindowIcon(QIcon('Scream_logo.ico'))
     window = MainWindow()
     window.show()
