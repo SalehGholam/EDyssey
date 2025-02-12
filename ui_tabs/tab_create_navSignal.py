@@ -44,26 +44,45 @@ class Tab_Create_NavSignal(qtw.QWidget):
         # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
-        #%% directory
-        layout_dir = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_dir)
         
-        label_dir = qtw.QLabel('Signals Directory')
-        layout_dir.addWidget(label_dir)
+        height_layout_top = 250
+        
+        # layout top
+        layout_top = qtw.QHBoxLayout()
+        self.layout.addLayout(layout_top)
+        #%% directory
+        layout_dir_scanSize = qtw.QVBoxLayout()
+        layout_top.addLayout(layout_dir_scanSize)
+        
+        self.box_dir = qtw.QGroupBox('Directories', self)
+        self.box_dir.setFixedSize(350, height_layout_top//3*2)
+        # self.box_dir.setFixedWidth()
+        layout_dir = qtw.QVBoxLayout(self)
+        # self.layout.addLayout(layout_dir)
+        layout_dir_scanSize.addWidget(self.box_dir)
+        self.box_dir.setLayout(layout_dir)
+        
+        layout_dir_4d = qtw.QHBoxLayout(self)
+        layout_dir.addLayout(layout_dir_4d)
+        
+        label_dir_4d = qtw.QLabel('4D Signals')
+        label_dir_4d.setFixedWidth(55)
+        layout_dir_4d.addWidget(label_dir_4d)
         
         self.lineEdit_dir_signal = qtw.QLineEdit()
-        layout_dir.addWidget(self.lineEdit_dir_signal)
+        layout_dir_4d.addWidget(self.lineEdit_dir_signal)
         
         self.button_dir = qtw.QPushButton('...')
-        layout_dir.addWidget(self.button_dir)
+        layout_dir_4d.addWidget(self.button_dir)
         self.button_dir.clicked.connect(lambda: self.show_dialog('file'))
         
         self.lineEdit_dir_signal.textChanged.connect(self.populate_file_list)
         
         layout_dir_save = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_dir_save)
+        layout_dir.addLayout(layout_dir_save)
         
-        label_dir_save = qtw.QLabel('Save Directory')
+        label_dir_save = qtw.QLabel('Save Path')
+        label_dir_save.setFixedWidth(55)
         layout_dir_save.addWidget(label_dir_save)
         
         self.lineEdit_dir_save = qtw.QLineEdit()
@@ -72,107 +91,97 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
-        #%% input
-        layout_input_info = qtw.QHBoxLayout()
-        # layout_input_info.setAlignment(Qt.AlignLeft)
-        self.layout.addLayout(layout_input_info)
-        
-        self.checkbox_selectAll = qtw.QCheckBox('All files')
-        layout_input_info.addWidget(self.checkbox_selectAll)
-        self.checkbox_selectAll.setChecked(True)
-        
-        self.combo_dtype = qtw.QComboBox()
-        layout_input_info.addWidget(self.combo_dtype)
-        # self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.h5', '.pmf']) # TODO
-        self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy'])
-        self.combo_dtype.setDisabled(True)
-        self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
-        
-        vline = qtw.QFrame()
-        vline.setFrameShape(qtw.QFrame.VLine)
-        vline.setFrameShadow(qtw.QFrame.Sunken)
-        layout_input_info.addWidget(vline)
-        
-        label_scanSize = qtw.QLabel('Scan Size')
-        layout_input_info.addWidget(label_scanSize)
+        #%% scan size
+        self.box_scanSize = qtw.QGroupBox('Scan Size')
+        self.box_scanSize.setFixedSize(350, height_layout_top//3)
+        layout_dir_scanSize.addWidget(self.box_scanSize)
+        layout_scanSize = qtw.QHBoxLayout()
+        self.box_scanSize.setLayout(layout_scanSize)
         
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_input_info.addWidget(self.checkbox_scanSize)
+        layout_scanSize.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
 
         self.lineEdit_scanSize_x = qtw.QLineEdit()
         self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_input_info.addWidget(self.lineEdit_scanSize_x)
+        layout_scanSize.addWidget(self.lineEdit_scanSize_x)
         self.lineEdit_scanSize_x.setFixedWidth(50)
         self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
         
         label_cross = qtw.QLabel('X')
-        layout_input_info.addWidget(label_cross)
+        layout_scanSize.addWidget(label_cross)
         
         self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_input_info.addWidget(self.lineEdit_scanSize_y)
+        layout_scanSize.addWidget(self.lineEdit_scanSize_y)
         self.lineEdit_scanSize_y.setFixedWidth(50)
         self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
-        vline = qtw.QFrame()
-        vline.setFrameShape(qtw.QFrame.VLine)
-        vline.setFrameShadow(qtw.QFrame.Sunken)
-        layout_input_info.addWidget(vline)
-        
         label_dwellTime = qtw.QLabel('Dwell Time (usec)')
         self.spinbox_dwellTime = qtw.QSpinBox()
         self.spinbox_dwellTime.setFixedWidth(60)
         self.spinbox_dwellTime.setRange(1, 99999999)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_input_info.addWidget(wid)
+            layout_scanSize.addWidget(wid)
 
-        vline = qtw.QFrame()
-        vline.setFrameShape(qtw.QFrame.VLine)
-        vline.setFrameShadow(qtw.QFrame.Sunken)
-        layout_input_info.addWidget(vline)
-        
-        # scale
-        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        label_scale_real = qtw.QLabel('Scale (nm)')
-        layout_input_info.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_input_info.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setFixedWidth(50)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-
-        layout_input_info.addStretch(1)
+# =============================================================================
+#         # scale
+#         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+#         label_scale_real = qtw.QLabel('Scale (nm)')
+#         layout_input_info.addWidget(label_scale_real)
+#         self.lineEdit_scale_real = qtw.QLineEdit(self)
+#         layout_input_info.addWidget(self.lineEdit_scale_real)
+#         self.lineEdit_scale_real.setFixedWidth(50)
+#         self.lineEdit_scale_real.setValidator(self.double_validator)
+#         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
+#             self.slider_imgNo.value()))
+# =============================================================================
         #%% list of files
-        layout_fileList = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_fileList)
+        layout_fileList = qtw.QVBoxLayout()
+        layout_top.addLayout(layout_fileList)
+        
+        self.box_dtype = qtw.QGroupBox('Data Type')
+        self.box_dtype.setFixedHeight(height_layout_top//5)
+        layout_fileList.addWidget(self.box_dtype)
+        layout_dtype = qtw.QHBoxLayout()
+        self.box_dtype.setLayout(layout_dtype)
+        
+        self.checkbox_selectAll = qtw.QCheckBox('All files')
+        layout_dtype.addWidget(self.checkbox_selectAll)
+        self.checkbox_selectAll.setChecked(True)
+        
+        self.combo_dtype = qtw.QComboBox()
+        layout_dtype.addWidget(self.combo_dtype)
+        # self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.h5', '.pmf']) # TODO
+        self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy'])
+        self.combo_dtype.setDisabled(True)
+        self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
         
         self.file_list_widget = qtw.QListWidget()
-        self.file_list_widget.setFixedHeight(200)
+        layout_fileList.addWidget(self.file_list_widget)
+        self.file_list_widget.setFixedSize(400, height_layout_top//5*4)
         # self.file_list_widget.setSelectionMode(qtw.QListWidget.MultiSelection)  # Allow multiple selections
         self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
-        
-        # self.file_list_widget.setResizeMode(qtw.QListWidget.Adjust)
-        
-        # self.layout.addWidget(self.file_list_widget)
-        layout_fileList.addWidget(self.file_list_widget)
         #%% calculate button
         # layout_calculate_buttons = qtw.QHBoxLayout()
         # self.layout.addLayout(layout_calculate_buttons)
         layout_calculate_buttons = qtw.QVBoxLayout()
-        layout_fileList.addLayout(layout_calculate_buttons)
+        layout_top.addLayout(layout_calculate_buttons)
         
         self.button_calculate = qtw.QPushButton('Calculate')
+        self.button_calculate.setFixedSize(100, 50)
         layout_calculate_buttons.addWidget(self.button_calculate)
         self.button_calculate.clicked.connect(self.calculate_button)
 
         self.button_stop = qtw.QPushButton('Stop')
+        self.button_stop.setFixedSize(100, 50)
         layout_calculate_buttons.addWidget(self.button_stop)
         self.button_stop.setStyleSheet("background-color: red; color: white;")
         self.button_stop.setDisabled(True)
         self.button_stop.clicked.connect(self.stop_worker)
+        
+        layout_top.addStretch(1)
         #%% progress bar/status bar
 # =============================================================================
 #         #status bar        
@@ -189,7 +198,6 @@ class Tab_Create_NavSignal(qtw.QWidget):
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(NavigationToolbar(self.canvas, self))
         self.ax = self.figure.add_subplot()
         self.img_display = self.ax.imshow(np.zeros((512,512), dtype='int16'), cmap='viridis')
         # self.figure.tight_layout()
@@ -197,6 +205,13 @@ class Tab_Create_NavSignal(qtw.QWidget):
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider)
+        
+        layout_slider.addWidget(NavigationToolbar(self.canvas, self))
+        
+        vline = qtw.QFrame()
+        vline.setFrameShape(qtw.QFrame.VLine)
+        vline.setFrameShadow(qtw.QFrame.Sunken)
+        layout_slider.addWidget(vline)
         
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)

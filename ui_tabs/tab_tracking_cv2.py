@@ -47,7 +47,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
 
     def init_widget(self):
-        self.central_widget = qtw.QWidget(self)
+        button_w = 110
+        button_h_sml = 30
+        button_h_lrg = 50
+        height_layout_top = 200
+        # self.central_widget = qtw.QWidget(self)
         # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
@@ -55,58 +59,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # layout top
         layout_top = qtw.QHBoxLayout()
         self.layout.addLayout(layout_top)
-        #%% directory
-# =============================================================================
-#         layout_dir = qtw.QHBoxLayout(self)
-#         self.layout.addLayout(layout_dir)
-#         
-#         # nav signal dir
-#         label_dir = qtw.QLabel('Nav. Signal')
-#         layout_dir.addWidget(label_dir)
-#         
-#         self.lineEdit_dir_navSignal = qtw.QLineEdit()
-#         layout_dir.addWidget(self.lineEdit_dir_navSignal)
-#         
-#         self.button_dir_navSignal = qtw.QPushButton('...')
-#         layout_dir.addWidget(self.button_dir_navSignal)
-#         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
-#         
-#         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-#         layout_dir.addWidget(self.button_loadNavigation)
-#         self.button_loadNavigation.clicked.connect(self.load_navSignal)
-#         
-#         layout_dir_4dSignals = qtw.QHBoxLayout(self)
-#         self.layout.addLayout(layout_dir_4dSignals)
-#         
-#         # 4d dir
-#         label_dir_4d = qtw.QLabel('4D Signals')
-#         layout_dir_4dSignals.addWidget(label_dir_4d)
-#         
-#         self.lineEdit_dir_4d = qtw.QLineEdit()
-#         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
-#         
-#         self.button_dir_4dSignals = qtw.QPushButton('...')
-#         layout_dir_4dSignals.addWidget(self.button_dir_4dSignals)
-#         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
-#         
-#         # save dir
-#         layout_dir_save = qtw.QHBoxLayout()
-#         self.layout.addLayout(layout_dir_save)
-#         
-#         label_dir_save = qtw.QLabel('Save Dir.')
-#         layout_dir_save.addWidget(label_dir_save)
-#         
-#         self.lineEdit_dir_save = qtw.QLineEdit()
-#         layout_dir_save.addWidget(self.lineEdit_dir_save)
-#         
-#         self.button_dir_save = qtw.QPushButton('...')
-#         layout_dir_save.addWidget(self.button_dir_save)
-#         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
-# =============================================================================
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_top.addItem(spacer)
+        #%% directory
+        # layout_top.addItem(spacer)
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedSize(500, 200)
+        # self.box_dir.setFixedSize(500, 200)
+        self.box_dir.setFixedWidth(350)
+        self.box_dir.setFixedHeight(height_layout_top)
+        # self.box_dir.setMaximumHeight(250)
+        
         # self.box_dir.setFixedWidth()
         layout_dir = qtw.QVBoxLayout(self)
         # self.layout.addLayout(layout_dir)
@@ -162,7 +123,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_box_scale = qtw.QVBoxLayout()
         self.box_scale.setFixedWidth(150)
         self.box_scale.setLayout(layout_box_scale)
-        # layout_canvas_beside.addWidget(self.box_scale)
+        # layout_3ded.addWidget(self.box_scale)
         layout_loadSignal.addWidget(self.box_scale)
         
         # real space
@@ -170,6 +131,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_scale_real = qtw.QHBoxLayout()
         layout_box_scale.addLayout(layout_scale_real)
         label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
         layout_scale_real.addWidget(label_scale_real)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_real.addWidget(self.lineEdit_scale_real)
@@ -178,6 +140,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_scale_recip = qtw.QHBoxLayout()
         layout_box_scale.addLayout(layout_scale_recip)
         label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
         layout_scale_recip.addWidget(label_scale_recip)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_recip.addWidget(self.lineEdit_scale_recip)
@@ -188,22 +151,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
             self.slider_imgNo.value()))
         
+        layout_loadSignal.addItem(spacer)
+        
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
         layout_dir.addLayout(layout_loadSignal)
         layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
-        self.button_loadNavigation.setFixedSize(110, 50)
+        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
-        button_w, button_h = 110, 50
-        
-        layout_topRight = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_topRight)
+        layout_topMiddle = qtw.QVBoxLayout()
+        layout_top.addLayout(layout_topMiddle)
         self.box_buttons = qtw.QGroupBox('Features Handling')
-        self.box_buttons.setFixedSize(400, 85)
-        layout_topRight.addWidget(self.box_buttons)
+        self.box_buttons.setFixedSize(350, height_layout_top)
+        # self.box_buttons.setFixedWidth(350)
+        self.box_buttons.setFixedHeight(height_layout_top//3)
+        layout_topMiddle.addWidget(self.box_buttons)
         
-        # layout_topRight.setAlignment(Qt.AlignLeft)
-        self.layout.addLayout(layout_topRight)
+        # layout_topMiddle.setAlignment(Qt.AlignLeft)
         
         layout_features = qtw.QHBoxLayout(self)
         self.box_buttons.setLayout(layout_features)
@@ -215,48 +179,61 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.slider_thresh.value()))
         self.combo_roiNo.currentIndexChanged.connect(self.plot_dp)
 
-        # spacer
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_features.addItem(spacer)
+# =============================================================================
+#         # spacer
+#         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+#         layout_features.addItem(spacer)
+# =============================================================================
         
         self.button_cur_roi = qtw.QPushButton('Delete Current ROI')
         layout_features.addWidget(self.button_cur_roi)
-        self.button_cur_roi.setFixedSize(button_w, button_h)
+        self.button_cur_roi.setFixedSize(button_w, button_h_sml)
         self.button_cur_roi.clicked.connect(self.del_current_roi)
         self.button_cur_roi.setDisabled(True)
         
         self.button_reset_rois = qtw.QPushButton('Reset ROIs')
         layout_features.addWidget(self.button_reset_rois)
-        self.button_reset_rois.setFixedSize(button_w, button_h)
+        self.button_reset_rois.setFixedSize(button_w, button_h_sml)
         self.button_reset_rois.clicked.connect(self.reset_rois)
         self.button_reset_rois.setDisabled(True)
         
-        #%% tracker buttons
-        self.box_tracker = qtw.QGroupBox('opencv Tracker')
-        self.box_tracker.setFixedSize(400, 120)
-        layout_topRight.addWidget(self.box_tracker)
+        #%% tracker
+        self.box_tracker = qtw.QGroupBox('OpenCV Tracker')
+        # self.box_tracker.setFixedSize(300, 120)
+        self.box_tracker.setFixedWidth(350)
+        self.box_tracker.setFixedHeight(height_layout_top//3 *2)
+        layout_topMiddle.addWidget(self.box_tracker)
         layout_tracker = qtw.QHBoxLayout(self)
         self.box_tracker.setLayout(layout_tracker)
         
-        label_track = qtw.QLabel('Tracking Method')
-        layout_tracker.addWidget(label_track)
-        self.combo_trackMethod = qtw.QComboBox()
-        layout_tracker.addWidget(self.combo_trackMethod)
-        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn'])
+        layout_tracker_1 = qtw.QVBoxLayout()
+        layout_tracker.addLayout(layout_tracker_1)
+        layout_tracker_1_2 = qtw.QHBoxLayout()
+        layout_tracker_1.addLayout(layout_tracker_1_2)
         
-        layout_tracker.addItem(spacer)
+        layout_tracker_1_2.addItem(spacer)
+        label_track = qtw.QLabel('Method')
+        layout_tracker_1_2.addWidget(label_track)
+        self.combo_trackMethod = qtw.QComboBox()
+        layout_tracker_1_2.addWidget(self.combo_trackMethod)
+        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn'])
+        layout_tracker_1_2.addItem(spacer)
+        
+        # layout_tracker.addItem(spacer)
         
         self.button_track = qtw.QPushButton('Track!')
-        layout_tracker.addWidget(self.button_track)
-        self.button_track.setFixedSize(button_w, button_h)
+        layout_tracker_1.addWidget(self.button_track, alignment=Qt.AlignCenter)
+        self.button_track.setFixedSize(button_w, button_h_lrg)
         self.button_track.clicked.connect(
             lambda: self.track_rois(self.nav_imgs, self.rois))
         self.button_track.setDisabled(True)
         
-        # layout_features.addStretch(1)
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_top.addItem(spacer)
-        #%%
+# =============================================================================
+#         # layout_features.addStretch(1)
+#         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+#         layout_top.addItem(spacer)
+# =============================================================================
+        #%% roi in roi box
         self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
         layout_box_roiInRoi = qtw.QVBoxLayout()
         self.box_roiInRoi.setLayout(layout_box_roiInRoi)
@@ -276,11 +253,98 @@ class Tab_Tracking_CV2(qtw.QWidget):
 # =============================================================================
         
         self.button_trackAgain = qtw.QPushButton("Track Again")
-        layout_box_roiInRoi.addWidget(self.button_trackAgain)
+        layout_box_roiInRoi.addWidget(self.button_trackAgain, alignment=Qt.AlignCenter)
         # self.button_trackAgain.setFixedSize(75, 50)
-        self.button_trackAgain.setFixedHeight(35)
+        self.button_trackAgain.setFixedSize(button_w, button_h_sml)
         self.button_trackAgain.clicked.connect(self.track_roiInRoi)
         self.button_trackAgain.setDisabled(True)
+        
+        #%% box thresh and 3DED
+        layout_3ded = qtw.QVBoxLayout()
+        layout_top.addLayout(layout_3ded)
+        layout_top.addItem(spacer)
+        
+        self.box_3ded = qtw.QGroupBox('Extract 3DED')
+        layout_box_3ded = qtw.QVBoxLayout()
+        self.box_3ded.setLayout(layout_box_3ded)
+        layout_3ded.addWidget(self.box_3ded)
+        # self.box_3ded.setFixedWidth(350)
+        self.box_3ded.setFixedSize(350, height_layout_top)
+        # self.box_3ded.setMaximumSize(300, 400)
+        
+        layout_thresh_method = qtw.QHBoxLayout()
+        layout_thresh_method.addItem(spacer)
+        layout_box_3ded.addLayout(layout_thresh_method)
+        label_thresh_method = qtw.QLabel('Threshold Method')
+        layout_thresh_method.addWidget(label_thresh_method)
+        
+        self.combo_thresh_method = qtw.QComboBox()
+        layout_thresh_method.addWidget(self.combo_thresh_method)
+        # self.combo_thresh_method.setFixedWidth(100)
+        self.combo_thresh_method.addItems(['otsu', 'li', 'yen', 'mean'])
+        self.combo_thresh_method.currentIndexChanged.connect(lambda: self.plot_image_mask(
+            self.slider_thresh.value()))
+        layout_thresh_method.addItem(spacer)
+        
+        layout_deviation = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_deviation)
+        label_thresh_dev = qtw.QLabel('Deviation')
+        layout_deviation.addWidget(label_thresh_dev)
+        
+        self.slider_thresh = qtw.QSlider(1)
+        layout_deviation.addWidget(self.slider_thresh)
+        self.slider_thresh.setDisabled(True)
+        # self.slider_thresh.setFixedWidth(100)
+        self.slider_thresh.valueChanged.connect(self.plot_image_mask)
+        self.slider_thresh.setRange(0, 200)
+        
+        self.button_thresh = qtw.QPushButton('Reset')
+        layout_deviation.addWidget(self.button_thresh)
+        self.button_thresh.clicked.connect(self.reset_thresh)
+            #%% 3DED
+        layout_roi_frame = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_roi_frame)
+        label_roi_3ded = qtw.QLabel('Roi No')
+        layout_roi_frame.addWidget(label_roi_3ded)
+        self.combo_3ded = qtw.QComboBox()
+        self.combo_3ded.setFixedWidth(50)
+        layout_roi_frame.addWidget(self.combo_3ded)
+        layout_roi_frame.addItem(spacer)
+        
+        # layout_finalFrame = qtw.QHBoxLayout()
+        # layout_box_3ded.addLayout(layout_finalFrame)
+        label_finalFrame = qtw.QLabel('Final Frame')
+        self.spinbox_finalFrame = qtw.QSpinBox()
+        self.spinbox_finalFrame.setMinimum(1)
+        self.spinbox_finalFrame.setFixedWidth(50)
+        for wid in [label_finalFrame, self.spinbox_finalFrame]:
+            layout_roi_frame.addWidget(wid)
+        
+        layout_extract = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_extract)
+        
+        self.button_3ded = qtw.QPushButton('Extract!')
+        layout_extract.addWidget(self.button_3ded)
+        self.button_3ded.setFixedSize(button_w, button_h_lrg)
+        self.button_3ded.clicked.connect(self.extract_3ded)
+        
+        self.button_save_results = qtw.QPushButton('Save Results')
+        layout_extract.addWidget(self.button_save_results)
+        self.button_save_results.setFixedSize(button_w, button_h_lrg)
+        self.button_save_results.clicked.connect(self.save_results)
+        
+        self.disable_3ded_widgets(True)
+        
+        layout_plotCombo = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_plotCombo)
+        label_dpPlotCombo = qtw.QLabel('DP Plot Ref ROI')
+        self.combo_dp_plot = qtw.QComboBox()
+        for wid in [label_dpPlotCombo, self.combo_dp_plot]:
+            layout_plotCombo.addWidget(wid)
+
+        self.update_combo_3ded()
+        self.combo_dp_plot.currentIndexChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
         #%% canvas
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
@@ -288,7 +352,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.figure = Figure(figsize=(8,4))
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(NavigationToolbar(self.canvas, self))
         self.ax_nav = self.figure.add_subplot(141)
         self.ax_track = self.figure.add_subplot(142)
         self.ax_mask = self.figure.add_subplot(143)
@@ -343,122 +406,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
-        #%% beside canvas (threshold and 3DED)
-        layout_canvas_beside = qtw.QVBoxLayout()
-        layout_canvas_beside.setAlignment(Qt.AlignTop)
-        layout_canvas.addLayout(layout_canvas_beside)
         
-        
-# =============================================================================
-#         self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
-#         layout_box_roiInRoi = qtw.QVBoxLayout()
-#         self.box_roiInRoi.setLayout(layout_box_roiInRoi)
-#         layout_canvas_beside.addWidget(self.box_roiInRoi)
-#         self.box_roiInRoi.setFixedWidth(150)
-#         
-#         self.checkbox_roiInRoi = qtw.QCheckBox('Activate')
-#         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi)
-#         self.checkbox_roiInRoi.setDisabled(True)
-#         
-#         # TODO fixed position for roi in roi
-# # =============================================================================
-# #         self.checkbox_roiInRoi_constPos = qtw.QCheckBox('Constant Position')
-# #         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi_constPos)
-# #         self.checkbox_roiInRoi_constPos.setDisabled(True)
-# # =============================================================================
-#         
-#         self.button_trackAgain = qtw.QPushButton("Track Again")
-#         layout_box_roiInRoi.addWidget(self.button_trackAgain)
-#         self.button_trackAgain.clicked.connect(self.track_roiInRoi)
-#         self.button_trackAgain.setDisabled(True)
-# =============================================================================
-        
-        
-        self.box_thresh = qtw.QGroupBox('Threshold')
-        layout_box_thresh = qtw.QVBoxLayout()
-        self.box_thresh.setLayout(layout_box_thresh)
-        layout_canvas_beside.addWidget(self.box_thresh)
-        self.box_thresh.setFixedWidth(150)
-        
-        layout_thresh_method = qtw.QHBoxLayout()
-        layout_box_thresh.addLayout(layout_thresh_method)
-        label_thresh_method = qtw.QLabel('Method')
-        layout_thresh_method.addWidget(label_thresh_method)
-        
-        self.combo_thresh_method = qtw.QComboBox()
-        layout_thresh_method.addWidget(self.combo_thresh_method)
-        # self.combo_thresh_method.setFixedWidth(100)
-        self.combo_thresh_method.addItems(['otsu', 'li', 'yen', 'mean'])
-        self.combo_thresh_method.currentIndexChanged.connect(lambda: self.plot_image_mask(
-            self.slider_thresh.value()))
-        
-        layout_deviation = qtw.QHBoxLayout()
-        layout_box_thresh.addLayout(layout_deviation)
-        label_thresh_dev = qtw.QLabel('Deviation')
-        layout_deviation.addWidget(label_thresh_dev)
-        self.button_thresh = qtw.QPushButton('Reset')
-        layout_deviation.addWidget(self.button_thresh)
-        self.button_thresh.clicked.connect(self.reset_thresh)
-        
-        
-        self.slider_thresh = qtw.QSlider(1)
-        layout_box_thresh.addWidget(self.slider_thresh)
-        self.slider_thresh.setDisabled(True)
-        self.slider_thresh.setFixedWidth(100)
-        self.slider_thresh.valueChanged.connect(self.plot_image_mask)
-        self.slider_thresh.setRange(0, 200)
-        
-# =============================================================================
-#         line = qtw.QFrame()
-#         line.setFrameShape(qtw.QFrame.HLine)
-#         line.setFrameShadow(qtw.QFrame.Sunken)
-#         layout_canvas_beside.addWidget(line)
-# =============================================================================
-            #%% 3DED
-        self.box_3ded = qtw.QGroupBox('Extract 3DED')
-        layout_box_3ded = qtw.QVBoxLayout()
-        self.box_3ded.setLayout(layout_box_3ded)
-        layout_canvas_beside.addWidget(self.box_3ded)
-        self.box_3ded.setFixedWidth(150)
-        
-        layout_1 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_1)
-        label_roi_3ded = qtw.QLabel('Roi No')
-        layout_1.addWidget(label_roi_3ded)
-        self.combo_3ded = qtw.QComboBox()
-        layout_1.addWidget(self.combo_3ded)
-        
-        layout_finalFrame = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_finalFrame)
-        label_finalFrame = qtw.QLabel('Extract until frame no.')
-        self.spinbox_finalFrame = qtw.QSpinBox()
-        self.spinbox_finalFrame.setMinimum(1)
-        for wid in [label_finalFrame, self.spinbox_finalFrame]:
-            layout_finalFrame.addWidget(wid)
-        
-        self.button_3ded = qtw.QPushButton('Extract!')
-        layout_box_3ded.addWidget(self.button_3ded)
-        self.button_3ded.clicked.connect(self.extract_3ded)
-        
-        self.button_save_results = qtw.QPushButton('Save Results')
-        layout_box_3ded.addWidget(self.button_save_results)
-        self.button_save_results.clicked.connect(self.save_results)
-        
-        self.disable_3ded_widgets(True)
-        
-        layout_plotCombo = qtw.QHBoxLayout()
-        layout_canvas_beside.addLayout(layout_plotCombo)
-        label_dpPlotCombo = qtw.QLabel('DP Plot Ref ROI')
-        self.combo_dp_plot = qtw.QComboBox()
-        for wid in [label_dpPlotCombo, self.combo_dp_plot]:
-            layout_plotCombo.addWidget(wid)
-
-        self.update_combo_3ded()
-        self.combo_dp_plot.currentIndexChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider)
+
+        layout_slider.addWidget(NavigationToolbar(self.canvas, self))
+        
+        vline = qtw.QFrame()
+        vline.setFrameShape(qtw.QFrame.VLine)
+        vline.setFrameShadow(qtw.QFrame.Sunken)
+        layout_slider.addWidget(vline)
         
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)

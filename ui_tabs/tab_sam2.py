@@ -64,14 +64,17 @@ class Tab_SAM2(qtw.QWidget):
         self.central_widget = qtw.QWidget(self)
         self.layout = qtw.QVBoxLayout(self)
         
+        button_w = 110
+        button_h_sml = 30
+        button_h_lrg = 50
+        height_layout_top = 200
+        
         # layout top
         layout_top = qtw.QHBoxLayout()
         self.layout.addLayout(layout_top)
         #%% directory
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_top.addItem(spacer)
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedSize(500, 200)
+        self.box_dir.setFixedSize(350, height_layout_top)
         # self.box_dir.setFixedWidth()
         layout_dir = qtw.QVBoxLayout(self)
         # self.layout.addLayout(layout_dir)
@@ -122,18 +125,54 @@ class Tab_SAM2(qtw.QWidget):
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
         
+        #%% box for scales
+        layout_loadSignal = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_loadSignal)
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        layout_loadSignal.addWidget(self.box_scale)
+        
+        self.box_scale.setFixedWidth(150)
+        self.box_scale.setLayout(layout_box_scale)
+        layout_loadSignal.addWidget(self.box_scale)
+        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+        
+        # real space
+        layout_scale_real = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_real)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_real.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_real.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        # reciprocal space
+        layout_scale_recip = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_recip)
+        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_recip.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+        
+        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
+        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
+        
+        
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        layout_dir.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignRight)
         self.button_loadNavigation.setFixedSize(110, 50)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
-        button_w, button_h = 110, 50
         self.masks_images = {}
         
         layout_topRight = qtw.QVBoxLayout()
         layout_top.addLayout(layout_topRight)
         self.box_buttons = qtw.QGroupBox('Features Handling')
-        self.box_buttons.setFixedSize(400, 85)
+        self.box_buttons.setFixedSize(350, height_layout_top//2)
         layout_topRight.addWidget(self.box_buttons)
         
         layout_features = qtw.QHBoxLayout(self)
@@ -155,42 +194,82 @@ class Tab_SAM2(qtw.QWidget):
         layout_features.addItem(spacer)
 
         self.button_reset_image = qtw.QPushButton('Reset Image Points', self)
-        self.button_reset_image.setFixedSize(button_w, button_h)
+        self.button_reset_image.setFixedSize(button_w, button_h_sml)
         layout_features.addWidget(self.button_reset_image)
         self.button_reset_image.clicked.connect(self.reset_image_points)
         
         self.button_reset_allPoints = qtw.QPushButton('Reset All Points', self)
-        self.button_reset_allPoints.setFixedSize(button_w, button_h)
+        self.button_reset_allPoints.setFixedSize(button_w, button_h_sml)
         layout_features.addWidget(self.button_reset_allPoints)
         self.button_reset_allPoints.clicked.connect(self.reset_all_points)
         #%% run sam2
-        self.box_sam2 = qtw.QGroupBox('Run SAM2')
-        self.box_sam2.setFixedSize(400, 100)
+        self.box_sam2 = qtw.QGroupBox('SAM2 Segmentation & Tracker')
+        self.box_sam2.setFixedSize(350, height_layout_top//2)
         layout_topRight.addWidget(self.box_sam2)
         layout_sam = qtw.QHBoxLayout(self)
         self.box_sam2.setLayout(layout_sam)
         # image
-        self.button_runSeg_img = qtw.QPushButton('Run on Image', self)
-        self.button_runSeg_img.setFixedSize(button_w, button_h)
+        self.button_runSeg_img = qtw.QPushButton('Segment Image', self)
+        self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
         layout_sam.addWidget(self.button_runSeg_img)
         # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
         self.button_runSeg_img.clicked.connect(self.initiate_prediction)
         
         # clip
-        self.button_runSeg_clip = qtw.QPushButton('Propagate to Clip', self)
-        self.button_runSeg_clip.setFixedSize(button_w, button_h)
+        self.button_runSeg_clip = qtw.QPushButton('Track Segment(s)!', self)
+        self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
         layout_sam.addWidget(self.button_runSeg_clip)
         self.button_runSeg_clip.clicked.connect(self.propagate_in_video)
 
-        self.button_reset_state = qtw.QPushButton('Reset State', self)
-        self.button_reset_state.setFixedSize(button_w, button_h)
-        layout_sam.addWidget(self.button_reset_state)
-        self.button_reset_state.clicked.connect(self.reset_state)
+# =============================================================================
+#         self.button_reset_state = qtw.QPushButton('Reset State', self)
+#         self.button_reset_state.setFixedSize(button_w, button_h)
+#         layout_sam.addWidget(self.button_reset_state)
+#         self.button_reset_state.clicked.connect(self.reset_state)
+# =============================================================================
         
         for wid in layout_sam.findChildren(qtw.QWidget):
             wid.setDisabled(True)
+        #%% extract 3DED
+        self.box_3ded = qtw.QGroupBox('Extract 3DED')
+        layout_box_3ded = qtw.QVBoxLayout()
+        # self.box_3ded.setFixedWidth(350)
+        self.box_3ded.setFixedSize(350, height_layout_top)
+        self.box_3ded.setLayout(layout_box_3ded)
+        layout_top.addWidget(self.box_3ded)
         
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+        layout_roi_frame = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_roi_frame)
+        label_roi_3ded = qtw.QLabel('Roi No')
+        layout_roi_frame.addWidget(label_roi_3ded)
+        self.combo_3ded = qtw.QComboBox()
+        self.combo_3ded.setFixedWidth(50)
+        layout_roi_frame.addWidget(self.combo_3ded)
+        self.update_combo_3ded()
+        
+        layout_roi_frame.addItem(spacer)
+        
+        label_finalFrame = qtw.QLabel('Final Frame')
+        self.spinbox_finalFrame = qtw.QSpinBox()
+        self.spinbox_finalFrame.setFixedWidth(50)
+        self.spinbox_finalFrame.setMinimum(1)
+        for wid in [label_finalFrame, self.spinbox_finalFrame]:
+            layout_roi_frame.addWidget(wid)
+        
+        layout_extract_button = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_extract_button)
+        self.button_3ded = qtw.QPushButton('Extract!')
+        self.button_3ded.setFixedSize(button_w, button_h_lrg)
+        layout_extract_button.addWidget(self.button_3ded)
+        self.button_3ded.clicked.connect(self.extract_3ded)
+        
+        self.button_save_results = qtw.QPushButton('Save Results')
+        # self.button_save_results.setFixedHeight(35)
+        self.button_save_results.setFixedSize(button_w, button_h_lrg)
+        layout_extract_button.addWidget(self.button_save_results)
+        self.button_save_results.clicked.connect(self.save_results)
+        
+        self.disable_3ded_widgets(True)
         layout_top.addItem(spacer)
         #%% canvas
         layout_canvas = qtw.QHBoxLayout()
@@ -221,75 +300,6 @@ class Tab_SAM2(qtw.QWidget):
         self.canvas.mpl_connect("button_press_event", self.on_click)
         
         self.masks_plotted = []
-        #%% beside canvas (3DED)
-        width_beside_canvas = 150
-        layout_canvas_beside = qtw.QVBoxLayout()
-        layout_canvas_beside.setAlignment(Qt.AlignTop)
-        layout_canvas.addLayout(layout_canvas_beside)
-        
-        self.box_3ded = qtw.QGroupBox('Extract 3DED')
-        layout_box_3ded = qtw.QVBoxLayout()
-        self.box_3ded.setFixedWidth(width_beside_canvas)
-        self.box_3ded.setLayout(layout_box_3ded)
-        layout_canvas_beside.addWidget(self.box_3ded)
-        
-        layout_1 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_1)
-        label_roi_3ded = qtw.QLabel('Roi No')
-        layout_1.addWidget(label_roi_3ded)
-        self.combo_3ded = qtw.QComboBox()
-        layout_1.addWidget(self.combo_3ded)
-        self.update_combo_3ded()
-        
-        layout_finalFrame = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_finalFrame)
-        label_finalFrame = qtw.QLabel('Extract until frame no.')
-        self.spinbox_finalFrame = qtw.QSpinBox()
-        self.spinbox_finalFrame.setMinimum(1)
-        for wid in [label_finalFrame, self.spinbox_finalFrame]:
-            layout_finalFrame.addWidget(wid)
-        
-        self.button_3ded = qtw.QPushButton('Extract!')
-        self.button_3ded.setFixedHeight(35)
-        layout_box_3ded.addWidget(self.button_3ded)
-        self.button_3ded.clicked.connect(self.extract_3ded)
-        
-        self.button_save_results = qtw.QPushButton('Save Results')
-        self.button_save_results.setFixedHeight(35)
-        layout_box_3ded.addWidget(self.button_save_results)
-        self.button_save_results.clicked.connect(self.save_results)
-        
-        self.disable_3ded_widgets(True)
-        
-        # box for scales
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setFixedWidth(width_beside_canvas)
-        self.box_scale.setLayout(layout_box_scale)
-        layout_canvas_beside.addWidget(self.box_scale)
-        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        
-        # real space
-        layout_scale_real = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_real)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        layout_scale_real.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_real.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        # reciprocal space
-        layout_scale_recip = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_recip)
-        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
-        layout_scale_recip.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-        
-        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
         #%% slider
         layout_slider_imgCounter = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider_imgCounter)

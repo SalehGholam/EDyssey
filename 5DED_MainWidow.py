@@ -26,11 +26,13 @@ import gc
 import PyQt5.QtWidgets as qtw
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
+# =============================================================================
 # from tab_create_navSignal import Tab_Create_NavSignal
 # from tab_tracking_cv2 import Tab_Tracking_CV2
 # from tab_roi_4d import Tab_ROI_on_4D
 # from tab_sam2 import Tab_SAM2
 # from tab_converter import Tab_Converter
+# =============================================================================
 from PyQt5.QtGui import QIcon
 
 #%% window
@@ -41,7 +43,7 @@ class MainWindow(qtw.QMainWindow):
         self.init_ui()
     
     def init_ui(self):
-        self.resize(800, 600)  # Width, Height in pixels
+        self.resize(1000, 800)  # Width, Height in pixels
         self.setWindowTitle("5DED Analysis")
         self.tabs = qtw.QTabWidget()
         # self.tab_converter = Tab_Converter()
