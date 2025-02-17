@@ -91,6 +91,20 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
+        
+        #%% scale
+        layout_scale = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_scale)
+        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+        label_scale_real = qtw.QLabel('Scale (nm)')
+        layout_scale.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setFixedWidth(50)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
+            self.slider_imgNo.value()))
+        layout_scale.addStretch(1)
         #%% scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
         self.box_scanSize.setFixedSize(350, height_layout_top//3)
@@ -124,19 +138,6 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.spinbox_dwellTime.setRange(1, 99999999)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
             layout_scanSize.addWidget(wid)
-
-# =============================================================================
-#         # scale
-#         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-#         label_scale_real = qtw.QLabel('Scale (nm)')
-#         layout_input_info.addWidget(label_scale_real)
-#         self.lineEdit_scale_real = qtw.QLineEdit(self)
-#         layout_input_info.addWidget(self.lineEdit_scale_real)
-#         self.lineEdit_scale_real.setFixedWidth(50)
-#         self.lineEdit_scale_real.setValidator(self.double_validator)
-#         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-#             self.slider_imgNo.value()))
-# =============================================================================
         #%% list of files
         layout_fileList = qtw.QVBoxLayout()
         layout_top.addLayout(layout_fileList)
@@ -200,7 +201,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot()
         self.img_display = self.ax.imshow(np.zeros((512,512), dtype='int16'), cmap='viridis')
-        # self.figure.tight_layout()
+        self.ax.set_axis_off()
+        self.figure.tight_layout()
         self.layout.addWidget(self.canvas)
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)

@@ -418,7 +418,7 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
 
     def update_frame(fr_no):
         img.set_data(imgs[fr_no])
-        show_mask(masks[fr_no], obj_id, disp_ax=img_mask)
+        show_mask(masks[fr_no], obj_id)
         return (img, )
     
     plt.ioff()

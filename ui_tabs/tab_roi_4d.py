@@ -35,36 +35,43 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
+        
+        height_layout_top = 125
+        
+        layout_top = qtw.QHBoxLayout()
+        self.layout.addLayout(layout_top)
         #%% directory
-        layout_dir = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_dir)
+        self.box_dir = qtw.QGroupBox('Directory')
+        self.box_dir.setFixedSize(350, height_layout_top)
+        layout_top.addWidget(self.box_dir)
+        layout_dir = qtw.QVBoxLayout(self)
+        self.box_dir.setLayout(layout_dir)
         
         # nav signal dir
-        label_dir = qtw.QLabel('Nav. Signal')
-        layout_dir.addWidget(label_dir)
+        layout_dir_entry = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_dir_entry)
+        label_dir = qtw.QLabel('4D Signal')
+        layout_dir_entry.addWidget(label_dir)
         
         self.lineEdit_dir_signal = qtw.QLineEdit()
-        layout_dir.addWidget(self.lineEdit_dir_signal)
+        layout_dir_entry.addWidget(self.lineEdit_dir_signal)
         self.lineEdit_dir_signal.textChanged.connect(lambda:self.enable_dwellTime_spinbox(
             self.lineEdit_dir_signal.text()))
         
         self.button_dir_navSignal = qtw.QPushButton('...')
-        layout_dir.addWidget(self.button_dir_navSignal)
+        layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
         
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        layout_dir.addWidget(self.button_loadNavigation)
+        self.button_loadNavigation.setFixedSize(110, 50)
+        layout_dir.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
         self.button_loadNavigation.clicked.connect(self.get_nav_image)
         #%% input layout, box scan size
-        layout_input_info = qtw.QHBoxLayout()
-        # layout_input_info.setAlignment(Qt.AlignLeft)
-        self.layout.addLayout(layout_input_info)
-        
         self.box_scanSize = qtw.QGroupBox('Scan Size')
-        self.box_scanSize.setFixedSize(450, 60)
+        self.box_scanSize.setFixedSize(350, height_layout_top)
         layout_box_scanSize = qtw.QHBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
-        layout_input_info.addWidget(self.box_scanSize)
+        layout_top.addWidget(self.box_scanSize)
         
         # label_scanSize = qtw.QLabel('Scan Size')
         # layout_box_scanSize.addWidget(label_scanSize)
@@ -92,28 +99,20 @@ class Tab_ROI_on_4D(qtw.QWidget):
         
         label_dwellTime = qtw.QLabel('Dwell Time (\u03BCsec)')
         self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(100)
+        self.spinbox_dwellTime.setFixedWidth(75)
         self.spinbox_dwellTime.setRange(1, 99999999)
         self.spinbox_dwellTime.setDisabled(True)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
             layout_box_scanSize.addWidget(wid)
-        
-        
-        
-# =============================================================================
-#         # spacer
-#         width = self.width()
-#         # h_spacer = qtw.QSpacerItem(width-50, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-#         h_spacer = qtw.QSpacerItem(2000, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-#         layout_input_info.addItem(h_spacer)
-# =============================================================================
+
+        layout_box_scanSize.addStretch(1)
         #%% box for scales
         self.box_scale = qtw.QGroupBox('Scale bars')
-        self.box_scale.setFixedSize(250, 60)
+        self.box_scale.setFixedSize(250, height_layout_top)
         layout_box_scale = qtw.QHBoxLayout()
         # self.box_scale.setFixedWidth(150)
         self.box_scale.setLayout(layout_box_scale)
-        layout_input_info.addWidget(self.box_scale)
+        layout_top.addWidget(self.box_scale)
         
         # real space
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
@@ -136,7 +135,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
         self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
         
-        layout_input_info.addStretch(1)
+        layout_top.addStretch(1)
         #%% canvas layout
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
@@ -144,7 +143,6 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(NavigationToolbar(self.canvas, self))
         self.layout.addWidget(self.canvas)
         
         self.ax_nav = self.figure.add_subplot(131)
@@ -172,6 +170,8 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         #%% slider layout
+        self.layout.addWidget(NavigationToolbar(self.canvas, self))
+        
         layout_slider = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider)
         

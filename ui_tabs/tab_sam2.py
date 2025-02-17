@@ -179,16 +179,16 @@ class Tab_SAM2(qtw.QWidget):
         self.box_buttons.setLayout(layout_features)
         self.layout.addLayout(layout_features)
         
-        self.label_segNo = qtw.QLabel('Object ID')
-        layout_features.addWidget(self.label_segNo)
+        self.label_obj_id = qtw.QLabel('Object ID')
+        layout_features.addWidget(self.label_obj_id)
 
-        self.spinbox_segmentNo = qtw.QSpinBox()
-        layout_features.addWidget(self.spinbox_segmentNo)
-        self.spinbox_segmentNo.setFixedWidth(50)
-        self.spinbox_segmentNo.setMinimum(1)
-        self.spinbox_segmentNo.setMaximum(1)
-        # self.spinbox_segmentNo.valueChanged.connect(lambda: self.update_max_segNo(1))
-        self.spinbox_segmentNo.valueChanged.connect(lambda: self.update_canvas(self.slider_imgNo.value()))
+        self.spinbox_obj_id = qtw.QSpinBox()
+        layout_features.addWidget(self.spinbox_obj_id)
+        self.spinbox_obj_id.setFixedWidth(50)
+        self.spinbox_obj_id.setMinimum(1)
+        self.spinbox_obj_id.setMaximum(1)
+        # self.spinbox_obj_id.valueChanged.connect(lambda: self.update_max_obj_id(1))
+        self.spinbox_obj_id.valueChanged.connect(lambda: self.update_canvas(self.slider_imgNo.value()))
 
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         layout_features.addItem(spacer)
@@ -220,6 +220,7 @@ class Tab_SAM2(qtw.QWidget):
         self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
         layout_sam.addWidget(self.button_runSeg_clip)
         self.button_runSeg_clip.clicked.connect(self.propagate_in_video)
+        self.button_runSeg_clip.setEnabled(False)
 
 # =============================================================================
 #         self.button_reset_state = qtw.QPushButton('Reset State', self)
@@ -247,7 +248,15 @@ class Tab_SAM2(qtw.QWidget):
         layout_roi_frame.addWidget(self.combo_3ded)
         self.update_combo_3ded()
         
-        layout_roi_frame.addItem(spacer)
+        # layout_roi_frame.addItem(spacer)
+        
+        label_threadNo = qtw.QLabel('Thread No')
+        layout_roi_frame.addWidget(label_threadNo)
+        self.spinbox_threadNo = qtw.QSpinBox(self)
+        layout_roi_frame.addWidget(self.spinbox_threadNo)
+        self.spinbox_threadNo.setRange(1,os.cpu_count()-1)
+        self.spinbox_threadNo.setValue(3)
+        self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
         
         label_finalFrame = qtw.QLabel('Final Frame')
         self.spinbox_finalFrame = qtw.QSpinBox()
@@ -323,6 +332,7 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar.setRange(0, 100)
     #%% GUI functions
     def check_torch_device(self):
+        
         # check device (cuda or cpu)
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -345,15 +355,18 @@ class Tab_SAM2(qtw.QWidget):
                 "give numerically different outputs and sometimes degraded performance on MPS. "
                 "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
             )
+        
         return device
+
             
     def make_SAM2_predictor(self, opt: Literal['video', 'image']):
         if not hasattr(self, 'device'):
             self.device = self.check_torch_device()
         # SAM2 checkpoints
         path_file = os.path.abspath(__file__)
-        path_checkpoints = os.path.dirname(path_file)
-        path_checkpoints = os.path.join(path_checkpoints, 'py4DTomo', 'tracking_utils', 'SAM2 checkpoints')
+        path_file = os.path.dirname(path_file)
+        path_main = os.path.dirname(path_file)
+        path_checkpoints = os.path.join(path_main, 'py4DTomo', 'tracking_utils', 'SAM2_checkpoints')
         fn_checkpoint = 'sam2.1_hiera_large.pt'
         sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
         if not os.path.isfile(sam2_checkpoint):
@@ -381,7 +394,7 @@ class Tab_SAM2(qtw.QWidget):
 #         img_rgb = io.convert_to_rgb(np.array([self.imgs_8bit[imgNo]]))[:,:,:,0]
 #         self.predictor_img.set_image(img_rgb)
 #         #TODO should it run over all objects?!
-#         obj_id = self.spinbox_segmentNo.value()
+#         obj_id = self.spinbox_obj_id.value()
 # 
 #         input_points = []
 #         input_labels = []
@@ -404,13 +417,27 @@ class Tab_SAM2(qtw.QWidget):
 # =============================================================================
 
     def initiate_prediction(self):
+        #TODO don't make jpg every time
         worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs)
         self.threadpool.start(worker_make_jpg)
         worker_make_jpg.signals.results.connect(self.make_predictor)
-        
-        
-    def add_points_to_predictor(self, predictor_video, path_jpg, seg_points_dict): # TODO check this carefully
-        inference_state = predictor_video.init_state(path_jpg) # TODO memory efficient?!
+    
+    def make_predictor(self):
+        # print(self.seg_points)
+        if not hasattr(self, 'predictor_video'):
+            self.predictor_video = self.make_SAM2_predictor('video')
+        self.predictor_video = self.make_SAM2_predictor('video')
+        if not hasattr(self, 'inference_state'): # check if predictor had run
+            self.inference_state = None
+        worker_add_points = WorkerThread_General(self.add_points_to_predictor, 0, 
+                                                 self.predictor_video, self.inference_state,
+                                                 self.path_jpg, self.seg_points)
+        self.threadpool.start(worker_add_points)
+        worker_add_points.signals.results.connect(self.get_segment_image_results)
+
+    def add_points_to_predictor(self, predictor_video, inference_state, path_jpg, seg_points_dict): # TODO check this carefully
+        if inference_state is None:
+            inference_state = predictor_video.init_state(path_jpg) # TODO memory efficient?!
         for obj_id in seg_points_dict.keys():
             for i_img in seg_points_dict[obj_id].keys():
                 input_points = []
@@ -432,24 +459,13 @@ class Tab_SAM2(qtw.QWidget):
             out_mask_logits_np[i] = (out_mask_logits[i] > 0.0).cpu().numpy()
         return inference_state, out_obj_ids, out_mask_logits_np 
     
-    def make_predictor(self):
-        # print(self.seg_points)
-        if not hasattr(self, 'predictor_video'):
-            self.predictor_video = self.make_SAM2_predictor('video')
-        worker_add_points = WorkerThread_General(self.add_points_to_predictor, 0, 
-                                                 self.predictor_video, self.path_jpg, 
-                                                 self.seg_points)
-        self.threadpool.start(worker_add_points)
-        worker_add_points.signals.results.connect(self.get_segment_image_results)
-
-    
     def get_segment_image_results(self, result, index):
         self.inference_state, out_obj_ids, out_mask_logits = result
         # print(out_obj_ids)
         # print(self.out_mask_logits)
         imgNo = self.slider_imgNo.value()
         self.masks_images[imgNo] = (out_obj_ids, out_mask_logits)
-        
+        self.button_runSeg_clip.setEnabled(True)
         self.update_canvas(imgNo)
         
     
@@ -505,11 +521,10 @@ class Tab_SAM2(qtw.QWidget):
         
         # recreate jpg files if they are not the same number as navigation images
         fns = glob(os.path.join(self.path_jpg, '*.jpg'))
-        if len(fns) == len(imgs):
-            return
-        else:
-            for fn in fns:
-                os.remove(os.path.join(self.path_jpg, fn))
+        if len(fns) != len(imgs):
+            if len(fns) > 0:
+                for fn in fns:
+                    os.remove(os.path.join(self.path_jpg, fn))
 
             for i, img in enumerate(imgs):
             # for i, img in enumerate(self.imgs_8bit):
@@ -658,20 +673,25 @@ class Tab_SAM2(qtw.QWidget):
         shape_x, shape_y = self.imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['nav'].set_clim(vmin=self.imgs.min(), vmax=self.imgs.max())
-        
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.imgs)-1)
-        
+    
+    def set_threadNo(self, value):
+        self.threadpool.setMaxThreadCount(value)
+    
     def reset_data(self):
         # resetting previous run
         if hasattr(self, 'masks_video'):
             del self.masks_video
-    
+        if hasattr(self, 'inference_state'):
+            del self.inference_state
+        self.button_runSeg_clip.setEnabled(False)
+        
     def update_canvas(self, imgNo=None, obj_id=None):
         if imgNo is None:
             imgNo = self.slider_imgNo.value()
         if obj_id is None:
-            obj_id = self.spinbox_segmentNo.value()
+            obj_id = self.spinbox_obj_id.value()
         
             
         self.img_display['nav'].set_data(self.imgs[imgNo])
@@ -680,34 +700,24 @@ class Tab_SAM2(qtw.QWidget):
     
         # plot segmentation masks if they exist
         if hasattr(self, 'predictor_video'): #  or hasattr(self, 'masks_images')
-            segNo = self.spinbox_segmentNo.value()
-            # if segNo in self.masks_video:
             self.img_display['seg'].set_data(self.imgs[imgNo])
             self.img_display['seg'].set_clim(vmin=self.imgs[imgNo].min(), vmax=self.imgs[imgNo].max())
-            if hasattr(self, 'masks_video'):
+            try:
+                self.show_mask(self.masks_video[obj_id][imgNo], obj_id=obj_id)
+            except:
                 try:
-                    self.show_mask(self.masks_video[segNo][imgNo], obj_id=segNo) # TODO segNo?!
-                except KeyError:
-                    pass
-            elif hasattr(self, 'masks_images'):
-                if imgNo in self.masks_images.keys():
-                    obj_ids, obj_logits = self.masks_images[imgNo]
-                    obj_id = obj_ids[segNo - 1]
-                    obj_logit = obj_logits[segNo - 1]
-                    try:
+                    if imgNo in self.masks_images.keys():
+                        obj_ids, obj_logits = self.masks_images[imgNo]
+                        obj_id = obj_ids[obj_id - 1]
+                        obj_logit = obj_logits[obj_id - 1]
                         self.show_mask(obj_logit, obj_id=obj_id)
-                    # except KeyError:
-                        # pass
-                    except Exception as e:
-                        print(f'Exception: {e}')
-                else:
+                except:
                     self.img_display['seg_mask'].set_data(self.img_zero)
                     self.img_display['seg'].set_data(self.img_zero)
         if hasattr(self, 'tomo_ds'):
             self.plot_dp()
             
         # scale bars 
-        #TODO it is not plotted correctly at the beginning
         #TODO adding and removing the artist is not efficient
         scale_real = self.lineEdit_scale_real.text()
         try:
@@ -741,7 +751,7 @@ class Tab_SAM2(qtw.QWidget):
     def update_combo_3ded(self):
         if self.combo_3ded.count() > 0:
             self.combo_3ded.clear()
-        object_ids = [self.combo_3ded.itemText(i) for i in range(self.spinbox_segmentNo.maximum())]
+        object_ids = [self.combo_3ded.itemText(i) for i in range(self.spinbox_obj_id.maximum())]
         object_ids = ['all'] + object_ids
         self.combo_3ded.addItems(object_ids)
     
@@ -749,7 +759,7 @@ class Tab_SAM2(qtw.QWidget):
         if not imgNo:
             imgNo = self.slider_imgNo.value()
         if not obj_id:
-            obj_id = self.spinbox_segmentNo.value()
+            obj_id = self.spinbox_obj_id.value()
         for p in self.scatter_plots:
             try:
                 p.remove()
@@ -778,7 +788,7 @@ class Tab_SAM2(qtw.QWidget):
             
     def on_click(self, event):
         imgNo = self.slider_imgNo.value()
-        obj_id = self.spinbox_segmentNo.value()
+        obj_id = self.spinbox_obj_id.value()
         if event.inaxes == self.ax_nav:
             p = [event.xdata, event.ydata]
             # left click is positive and right click negative
@@ -791,12 +801,12 @@ class Tab_SAM2(qtw.QWidget):
                 self.seg_points[obj_id][imgNo][click].append(p)
             except:
                 self.seg_points[obj_id][imgNo][click] = [p]
-        self.update_max_segNo(len(self.seg_points)+1)
+        self.update_max_obj_id(len(self.seg_points)+1)
         # self.plot_points()
         self.update_canvas(imgNo, obj_id)
             
-    def update_max_segNo(self, value):
-        self.spinbox_segmentNo.setMaximum(value)
+    def update_max_obj_id(self, value):
+        self.spinbox_obj_id.setMaximum(value)
     
     def reset_all_points(self):
         self.seg_points = {}
@@ -808,7 +818,7 @@ class Tab_SAM2(qtw.QWidget):
     
     def reset_image_points(self):
         imgNo = self.slider_imgNo.value()
-        obj_id = self.spinbox_segmentNo.value()
+        obj_id = self.spinbox_obj_id.value()
         try:
             self.seg_points[obj_id][imgNo] = {}
             self.update_canvas(imgNo)
@@ -825,7 +835,7 @@ class Tab_SAM2(qtw.QWidget):
             if not imgNo:
                 imgNo = self.slider_imgNo.value()
             if not roiNo:
-                obj_id = self.spinbox_segmentNo.value()
+                obj_id = self.spinbox_obj_id.value()
             if obj_id in self.tomo_ds.keys():
                 img = self.tomo_ds[obj_id][imgNo]
                 self.img_display['dp'].set_data(img)
@@ -840,10 +850,10 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar.setValue(value)
 
     def save_masks(self):
-        segNos = self.spinbox_segmentNo.value()
+        obj_ids = self.spinbox_obj_id.value()
         fn_suffix = f'{datetime.date.today()}_{datetime.datetime.now().strftime("%H-%M-%S")}'
         self.path_main = os.path.dirname(self.fn_navSignal)
-        for i_seg in range(segNos):
+        for i_seg in range(obj_ids):
             i_seg += 1
             try:
                 np.save(os.path.join(self.path_main, f'{fn_suffix}_sam2 masks_no {i_seg}'), self.masks_video[i_seg])

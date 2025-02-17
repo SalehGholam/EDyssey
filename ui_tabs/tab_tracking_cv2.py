@@ -309,7 +309,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.combo_3ded = qtw.QComboBox()
         self.combo_3ded.setFixedWidth(50)
         layout_roi_frame.addWidget(self.combo_3ded)
-        layout_roi_frame.addItem(spacer)
+        # layout_roi_frame.addItem(spacer)
+        
+        label_threadNo = qtw.QLabel('Thread No')
+        layout_roi_frame.addWidget(label_threadNo)
+        self.spinbox_threadNo = qtw.QSpinBox(self)
+        layout_roi_frame.addWidget(self.spinbox_threadNo)
+        self.spinbox_threadNo.setRange(1,os.cpu_count()-1)
+        self.spinbox_threadNo.setValue(3)
+        self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
+        
         
         # layout_finalFrame = qtw.QHBoxLayout()
         # layout_box_3ded.addLayout(layout_finalFrame)
@@ -467,12 +476,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
         for wid in self.box_roiInRoi.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
                 wid.setDisabled(state)
-            
+    
+    def set_threadNo(self, value):
+        self.threadpool.setMaxThreadCount(value)
     
     def update_canvas(self, imgNo=None):
         if not imgNo:
             imgNo = self.slider_imgNo.value()
-        if hasattr(self, 'mav_imgs'):
+        if hasattr(self, 'nav_imgs'):
             img = self.nav_imgs[imgNo]
             
             # nav axis
@@ -559,7 +570,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.nav_imgs = self.s_8bit.data
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
-        print('Range of data:', len(self.nav_imgs))
+        print('No. of Images:', len(self.nav_imgs))
         
         self.button_reset_rois.setEnabled(True)
         self.button_cur_roi.setEnabled(True)
@@ -969,12 +980,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         
         self.tomo_counter = 0
-        self.update_progress_bar(0, self.tomo_counter_total)
         self.tomo_ds = {}
         
         # extract to a certain frame no
         fns_4d = fns_4d[:self.spinbox_finalFrame.value()]
         self.tomo_counter_total = len(rois_to_extract) * len(fns_4d)
+        self.update_progress_bar(0, self.tomo_counter_total)
         
         # threading images of each roi
         for r_id in rois_to_extract.keys():
@@ -1141,7 +1152,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
 # =============================================================================
 
     def save_results(self):
-        # TODO fix for 2 stage tracking
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
             os.mkdir(path_save)
