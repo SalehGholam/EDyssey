@@ -208,9 +208,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
     def get_scan_size(self):
         if not self.checkbox_scanSize.isChecked(): # get scan size
-            x = int(self.lineEdit_scanSize_x.text())
-            y = int(self.lineEdit_scanSize_y.text())
-            scanSize = (x,y)
+            try:
+                x = int(self.lineEdit_scanSize_x.text())
+                y = int(self.lineEdit_scanSize_y.text())
+                scanSize = (x,y)
+            except:
+                scanSize = None
         else:
             scanSize = None
         return scanSize
@@ -452,7 +455,7 @@ class Worker_NavImg(QRunnable):
         
     def run(self):
         # Simulate a task (e.g., calculating the sum of numbers)
-        navImg = io.calculate_nav_signal(self.fn, scanSize=self.scanSize, 
+        navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize, 
                                          dwellTime=self.dwellTime)
         
         # Emit the result when the task is done
@@ -472,14 +475,19 @@ class Worker_CalculateDP(QRunnable):
         self.signals = WorkerSignals()
     
     def run(self):
-        s_cut = io.load_signal(self.fn, lazy=False, roi=self.roi, 
+        s_cut = io.load_signal(self.fn, roi=self.roi, 
                                scanSize=self.scanSize, dwellTime=self.dwellTime)
+        if type(s_cut) == tuple: # for hdf5
+            s_cut, self.f = s_cut
+            
         navImg_cut = s_cut.sum(axis=(2,3)).data
         dp = s_cut.sum(axis=(0,1)).data
         if hasattr(dp, 'compute'): # lazy signals
             dp.compute()
         if hasattr(navImg_cut, 'compute'): # lazy signals
             navImg_cut = navImg_cut.compute()
+        if hasattr(self, 'f'):
+            self.f.close()
         self.signals.result.emit((dp, navImg_cut))
         # self.signals.finished.emit()
 # =============================================================================

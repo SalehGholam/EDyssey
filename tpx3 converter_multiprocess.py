@@ -1,19 +1,20 @@
 import sys
-sys.path.append(r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\5DED\py4DTomo\io_utils') # path to the pyLiveProcessing.pyd
+sys.path.append(r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\py4DTomo\io_utils') # path to the pyLiveProcessing.pyd
 # import pyLiveProcessing as pyLP
 import eventem as pyLP
 from multiprocessing import Pool
 from glob import glob
 import os
-from time import perf_counter
+from time import perf_counter, sleep
 
 def process_file(in_file,out_file):
+    sleep(0.1)
     tic = perf_counter()
     det_size = 512
     det_bin = 1
     scan_bin = 1
     scan_size = 512
-    dwellTime = 50 # usec
+    dwellTime = 25 # usec
     dwellTime *= 1000
     chunksize = 8
     compression_factor =  4 #1 is least compression, 9 is most compression
@@ -43,9 +44,9 @@ def process_file(in_file,out_file):
     print(f'Duration: {(toc-tic)/60:0.2f} min')
 
 if __name__ == '__main__':
-    path_in = r'C:\My Files\Microscope Data\test\tpx3\4d'
+    path_in = r'E:\Tecnai Data\250214_TiO2\S1_lowDwell\2025-02-14_11-45-42'
     # path_out = path_in
-    path_out = r'C:\My Files\Microscope Data\test\tpx3\converted'
+    path_out = r'C:\My Files\Microscope Data\Tecnai\25-02-14_TiO2_Nico\S1_lowDwell\4D Signals'
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files
@@ -54,6 +55,6 @@ if __name__ == '__main__':
     
     out_files = [os.path.split(fn)[1] for fn in in_files]
     out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
-    N_processes = 4
+    N_processes = 5
     with Pool(N_processes) as p:
         p.starmap(process_file, zip(in_files,out_files))

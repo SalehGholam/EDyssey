@@ -972,7 +972,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                                 thresh_method, self.thresh_offset)
         
         # set detector size for tpx3
-        if dtype in ['.tpx3', '.hdf5']: # TODO not good
+        if dtype == '.tpx3': # TODO not good
             shape_d_x, shape_d_y = 512, 512
         else:
             shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])

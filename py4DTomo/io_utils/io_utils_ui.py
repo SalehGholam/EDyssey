@@ -18,11 +18,13 @@ import cv2
 from copy import deepcopy
 import dask
 # import pyLiveProcessing as pyLP
-import eventem as pyLP
+import eventem
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib_scalebar.scalebar import ScaleBar
+from warnings import warn
+import cupy as cp
 # from moviepy.editor import VideoClip
 # from moviepy.video.io.bindings import mplfig_to_npimage
 # from moviepy import VideoClip
@@ -39,93 +41,158 @@ def get_4d_files(path_4d_datasets, dtype):
     assert len(fns_4d) != 0, "4D Datasets with correct format are not found!"
     return fns_4d
 
-def load_signal(fn, lazy=True, dtype=None, scanSize=None, 
-                roi=None, signal=True, det_shape=512, dwellTime=1): #TODO dwell time is not set always
+def load_signal(fn, **kwargs):
+    try:
+        dtype = kwargs.get('dtype')
+    except:
+        dtype = None
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
-    do_cut = False
-    if roi is not None:
-        do_cut = True
-        
-    if dtype in ['.zspy', '.hspy']:
-        s = hs.load(fn, lazy=True)
-        if do_cut:
-            x,y,w,h = roi
-            s = s.inav[x:x+w, y:y+h]
-            s.compute()
-        if lazy==False:
-            if hasattr(s, 'compute'):
-                s.compute()
-        return s
     
-    elif dtype == '.hdf5': # no lazy, as the file will be closed at the end
-        with h5py.File(fn, 'r') as f:
-            if scanSize is not None: # checking scan size entered and the one written in the file
-                assert scanSize == tuple(f['shape'])[:2], f"Scan size entered does not match to the shape of the hdf5 file: {f['shape'][:2]}"
-            else:
-                scanSize = tuple(f['shape'])[:2]
-            # if lazy: # this doesnt work as the file is closed at the end
-            lines = 4096 / scanSize[0]
-            chunks=(lines, scanSize[0], det_shape, det_shape)
-            chunks1D = np.prod(chunks)
-            s = da.from_array(f['4D'], chunks=chunks1D) # only 1D hdf5 files
-            if len(s.shape) == 1: # for 1D array
-                with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-                    s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
-                # s = s.rechunk(32,32,32,32) #TODO it might be slow; should be tested
-            s = hs.signals.Signal2D(s)
-            s = s.as_lazy()
-            if do_cut:
-                x,y,w,h = roi
-                # y, x, h, w = roi
-                s = s.inav[x:x+w, y:y+h]
-            if not lazy:
-                s.compute()
-        return s
-            
+    if dtype == '.tpx3':
+        result = load_tpx3(fn, **kwargs)        
+    elif dtype == '.hdf5':
+        result = load_hdf5(fn, **kwargs)        
+    elif dtype in ['.zspy', '.hspy']:
+        result = load_hs(fn, **kwargs)
     elif dtype == '.mib':
-        # fld = os.path.split(fn)[0]
-        # fn_hdr = os.path.join(fld, 'default.hdr')
-        # scanSize = get_scan_size_mib_hdr(fn_hdr)
-        s = hs.load(fn, lazy=lazy)
-        s.rechunk(nav_chunks=(32,32))
-        if do_cut:
-            x,y,w,h = roi
-            s = s.inav[x:x+w, y:y+h]
-            s.compute()
-        return s
-            
-    elif dtype == '.tpx3':
-        if do_cut:
-            x, y, w, h = roi
-        else:
-            x=0
-            y=0 
-            w=scanSize[0]
-            y=scanSize[1]
-        Do_4D = True
-        roi = pyLP.Roi(repetitions=1, extract_4D=Do_4D)  
-        roi.nx = scanSize[0]
-        roi.ny = scanSize[1]
-        roi.set_file(fn)
-        roi.set_roi(x=x, y=y, width=w, height=h)
-        roi.set_dwell_time(dwellTime*1000)
-        roi.run()
-        # ROI_scan_image = np.asarray(roi.Roi_scan_image)
-        # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
-        s = np.asarray(roi.Roi_4D)
-        s = hs.signals.Signal2D(s)
-        return s
+        result = load_mib(fn, **kwargs)
+    return result
 
-# =============================================================================
-# def load_mib_reshape(fn, scanSize, chunkSize=32):
-#     # s = px.load_mib(fn, reshape=False)
-#     s = hs.load(fn, lazy=True)
-#     # s = px.signals.ElectronDiffraction2D(s.data.reshape(scanSize[1], scanSize[0], 256, 256))
-#     # s = s.as_lazy() #TODO check for new pyxem version
-#     s.rechunk(nav_chunks=(chunkSize,chunkSize))
-#     return s
-# =============================================================================
+def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
+              det_shape=512, repetitions=1, sum_dp=False, **kwargs):
+    if roi is None:
+        x=0
+        y=0 
+        w=scanSize[0]
+        y=scanSize[1]
+    else:
+        x, y, w, h = roi
+        
+    roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
+    roi.set_bitdepth(bitDepth)
+    roi.nx = scanSize[0]
+    roi.ny = scanSize[1]
+    roi.set_file(fn)
+    roi.set_roi(x=x, y=y, width=w, height=h)
+    roi.set_dwell_time(dwellTime*1000)
+    roi.run()
+    # ROI_scan_image = np.asarray(roi.Roi_scan_image)
+    # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
+    s = np.asarray(roi.get_4D())
+    if sum_dp:
+        s = s.sum(axis=(-1,-2))
+        return s
+    s = hs.signals.Signal2D(s)
+    return s
+
+def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False, 
+              sum_dp=False, **kwargs):
+    # with h5py.File(fn, 'r') as f:
+    f = h5py.File(fn, 'r')
+    arr_dim = len(f['4D'].shape) # data might be flattened
+    scanSize_written = tuple(f['shape'].shape[:2])
+    if scanSize is None:
+        scanSize = scanSize_written
+    else:
+        if arr_dim == 1: # TODO do it only once before running tomo
+            assert scanSize == scanSize_written, f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {f['shape'][:2]}"
+        # elif arr_dim == 4:
+        #     warn(f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {f['shape'][:2]}")
+    
+    det_shape = f['4D'].shape[-1] # works on only scquare detectors
+    
+    if chunks is None: # TODO not optimum necessarily
+        if det_shape == 512:
+            chunks = (16,16,det_shape,det_shape)
+        else:
+            chunks = (32,32,det_shape,det_shape)
+    if arr_dim == 1:
+        chunks = np.prod(chunks)
+        s = da.from_array(f['4D'], chunks=chunks)
+        with dask.config.set(**{'array.slicing.split_large_chunks': False}):
+            s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
+        s = s.map_blocks(cp.asarray)
+    else:
+        s = da.from_array(f['4D'], chunks=chunks)
+        s = s.map_blocks(cp.asarray)
+    
+    if roi: #TODO test
+        # x,y,w,h = roi
+        y,x,h,w = roi
+        s = s[x:x+w, y:y+h]
+    
+    if sum_dp:
+        dp = s.sum(axis=(2,3))
+        dp_res = dp.compute()
+        dp_res = cp.asnump(dp_res)
+        f.close()
+        cp.get_default_memory_pool().free_all_blocks()
+        del s, dp
+        cp.get_default_memory_pool().free_all_blocks()
+        return dp_res
+    
+    if not lazy:
+        s_get = s.compute()
+        s_get = cp.asnumpy(s_get) # turning it to numpy from cupy
+        cp.get_default_memory_pool().free_all_blocks()
+        del s
+        f.close()
+        s_get = hs.signals.Signal2D(s_get)
+        return s_get
+    
+    else:
+        s = hs.signals.Signal2D(s)
+        cp.get_default_memory_pool().free_all_blocks()
+        return s, f
+    
+def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, **kwargs):
+    s = hs.load(fn, lazy=True)
+    if chunks is not None:
+        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+    
+    if roi:
+        x,y,w,h = roi
+        s = s.inav[x:x+w, y:y+h]
+    
+    if sum_dp:
+        dp = s.sum(axis=(2,3)).data
+        return dp.compute()
+    
+    if not lazy:
+        s.compute()
+    return s    
+
+def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False, **kwargs):
+    s = hs.load(fn, lazy=True)
+    det_shape = s.data.shape[-1]
+    if len(s.data.shape) == 3:
+        if scanSize is None:
+            fld = os.path.split(fn)[0]
+            fn_hdr = os.path.join(fld, 'default.hdr')
+            scanSize = get_scan_size_mib_hdr(fn_hdr)
+        s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
+    
+    if chunks is None:
+        if det_shape == 512:
+            s.rechunk(nav_chunks=(16,16), sig_chunks=(det_shape,det_shape))
+        else:
+            s.rechunk(nav_chunks=(32,32), sig_chunks=(det_shape,det_shape))
+    else:
+        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+        
+    if roi is not None:
+        x,y,w,h = roi
+        s = s.inav[x:x+w, y:y+h]
+    
+    if sum_dp:
+        dp = s.sum(axis=(2,3))
+        dp.compute()
+        return dp
+    
+    if not lazy:
+        s.compute()
+    return s
 
 def get_scan_size(fn):
     dtype = os.path.splitext(fn)[-1]
@@ -141,15 +208,6 @@ def get_det_size(fn):
     s = load_signal(fn)
     return (s.data.shape[3], s.data.shape[2])
 
-def calculate_nav_image(s):
-    img = s.sum(axis=(-1, -2))
-    try:
-        img.compute()
-    except:
-        pass
-    img = img.data
-    return img
-
 def get_scan_size_mib_hdr(fn_hdr):
     with open(fn_hdr, 'r') as file:
         hdr = file.readlines()
@@ -162,18 +220,6 @@ def get_scan_size_mib_hdr(fn_hdr):
     framesAcq = int(framesAcq)
     scanSize = (fpt, int(framesAcq/fpt))
     return scanSize
-
-def calculate_nav_signal_mib(fn, scanSize=None):
-    if scanSize is None:
-        fld = os.path.split(fn)[0]
-        fn_hdr = os.path.join(fld, 'default.hdr')
-        scanSizes = get_scan_size_mib_hdr(fn_hdr)
-    assert len(np.unique(scanSizes)) == 1, 'Scan sizes are not the same!'
-    scanSize = int(np.unique(scanSizes))
-  
-    s = hs.load(fn, lazy=True)
-    nav_image = calculate_nav_image(s)
-    return nav_image
 
 def create_nav_signal_from_haadf (fns, dtype): #TODO fix
     temp = hs.load(fns[0])
@@ -198,8 +244,8 @@ def create_nav_signal_from_haadf (fns, dtype): #TODO fix
 # =============================================================================
     return s
 
-def calculate_nav_signal_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=512):
-    vstem = pyLP.vSTEM(1) #arg is number of reperitions in the scan
+def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=512, repetitions=1, ):
+    vstem = eventem.vSTEM(repetitions) #arg is number of reperitions in the scan
     vstem.b_cumulative = True
     vstem.set_file(fn)
     vstem.nx = scanSize[0]
@@ -213,62 +259,29 @@ def calculate_nav_signal_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=512):
         scanSize[1],scanSize[0])
     return nav_image
 
-def calculate_nav_signal_hdf5(fn, scanSize=None): # h5py.File(fn, 'r')['4D']
-    # check for scan size and nav image in hdf5
+def calculate_nav_img_hdf5(fn, scanSize=None):
     with h5py.File(fn, 'r') as f:
-        if scanSize is None:
-            scanSize = f['shape'][:2]
-        else:
-            assert scanSize == tuple(f['shape'])[:2], f"Scan size entered does not match to the shape of the hdf5 file: {f['shape'][:2]}"
-
         if 'dose_image' in f.keys():
             nav_img = f['dose_image'][:]
-            # print('Navigation images is pre-calculated')
-        else:
-            nav_img = get_nav_image_hdf5(fn, scanSize)
+            return nav_img
+        # print('Navigation images is pre-calculated')
+    nav_img = load_hdf5(fn, scanSize=scanSize, sum_dp=True)
     return nav_img
 
-def get_nav_image_hdf5(fn, scanSize, det_shape=512):
-    with h5py.File(fn, 'r') as f:
-        if scanSize is not None: # checking scan size entered and the one written in the file
-            assert scanSize == tuple(f['shape'])[:2], f"Scan size entered does not match to the shape of the hdf5 file: {f['shape'][:2]}"
-        else:
-            scanSize = tuple(f['shape'])[:2]
-        # if lazy: # this doesnt work as the file is closed at the end
-        lines = 4096 / scanSize[0]
-        chunks=(lines, scanSize[0], det_shape, det_shape)
-        chunks1D = np.prod(chunks)
-        s = da.from_array(f['4D'], chunks=chunks1D) # only 1D hdf5 files
-        if len(s.shape) == 1: # for 1D array
-            with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-                s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
-            # s = s.rechunk(32,32,32,32) #TODO it might be slow; should be tested
-        s = hs.signals.Signal2D(s)
-        s = s.as_lazy()
-        navImg = s.sum(axis=(2,3)).compute()
-    return navImg
-
-def calculate_nav_signal_hs(fn, scanSize=None):
-    dtype = os.path.splitext(fn)[1]
-    s_temp = load_signal(fn, dtype)
-    nav_img = calculate_nav_image(s_temp)
-    # nav_img = nav_img.T #TODO check
-    return nav_img
-
-def calculate_nav_signal(path, dtype=None, scanSize=None, dwellTime=1):
+def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1):
     if dtype is None:
-        dtype = os.path.splitext(path)[-1]
+        dtype = os.path.splitext(fn)[-1]
         
     if dtype == '.mib':
-        nav_img = calculate_nav_signal_mib(path, scanSize)
+        nav_img = load_signal(fn, scanSize=scanSize, sum_dp=True)
     elif dtype == '.tpx3':
-        nav_img = calculate_nav_signal_tpx3(path, scanSize, dwellTime)
+        nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime)
     elif dtype == '.hdf5':
-        nav_img = calculate_nav_signal_hdf5(path, scanSize)
+        nav_img = calculate_nav_img_hdf5(fn, scanSize)
     elif dtype in ['.zspy', '.hspy']:
-        nav_img = calculate_nav_signal_hs(path, scanSize)
+        nav_img = load_signal(fn, scanSize=scanSize, sum_dp=True)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
-        nav_img = hs.load(path).data
+        nav_img = hs.load(fn).data
     return nav_img
     
 def convert_to_8bit(s):
@@ -310,9 +323,6 @@ def create_tracking_result(s, rois):
         s_roi[i_img] = img
     s_roi = hs.signals.Signals2D(s_roi)
     return s_roi
-
-# def enhance_navigation_contrast(s, method='log'): #TODO
-    
 
 def create_array_from_dissimilar_imgs(imgs, mode='constant', signal=True):
     shapes = [[img.shape[0], img.shape[1]] for img in imgs]

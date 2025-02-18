@@ -338,7 +338,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.counter_nav_total = len(fns)   
         self.workers = []
         for i, fn in enumerate(fns):
-            worker = WorkerThread_General(io.calculate_nav_signal, i, fn, dtype
+            worker = WorkerThread_General(io.calculate_nav_img, i, fn, dtype
                                           , scanSize)
             worker.signals.results.connect(self.get_nav_imgs)
             worker.signals.stopped.connect(lambda: self.update_progress_bar(0, 1))

@@ -4,18 +4,11 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 2:
-    1. Fix ROIs plotting for bottom to up drawings in tab roi4D and CV2
-    2. Fix loading hdf5 in io_utils
-    3. Debug reset ROIs button in tab cv2
-    4. Add delete 1 ROI from selection on tab cv2
-    5. Support of pyLiveprocession for a range of python versions
-    6. improve GPU management for SAM2
-    7. tab for data conversion
-    8. roi in roi in tab cv2
-    9. completion of sam2 widget
-        todo. VDF
-        todo. is hyperspy signals necessary for reading files? specially hdf5.
+version 3:
+    1. Redesign load signal
+        todo. add dtype to ROI on 4D for tpx3
+    2. support hdf5 with 4D or 1D
+    
 """
 
 import os
@@ -34,7 +27,6 @@ from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
 # from tab_converter import Tab_Converter
 # =============================================================================
 from PyQt5.QtGui import QIcon
-
 #%% window
 class MainWindow(qtw.QMainWindow):
     def __init__(self):

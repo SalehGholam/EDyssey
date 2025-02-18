@@ -373,22 +373,16 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
 # =============================================================================
 
 def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None): 
-    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=False)
-    # s.sum(axis=(2,3)).plot()
-    # print(s)
-    shape_x, shape_y, shape_dx, shape_dy = s.data.shape #TODO x,y are not reversed?
-    # for i, mask in enumerate(tqdm(masks)):
-    with config.set(**{'array.slicing.split_large_chunks': False}):
-        arr_flat = s.data.reshape(-1, *s.data.shape[2:])
-    
     if roi is not None:
         x,y,w,h = roi
         # mask = mask[x:x+w, y:y+h]
         mask = mask[y:y+h, x:x+w] #TODO check
     mask_flat = mask.flatten()
-    
+    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=False)
+    with config.set(**{'array.slicing.split_large_chunks': False}):
+        arr_flat = s.data.reshape(-1, *s.data.shape[2:])
     # Apply the 1D mask
-    sliced_flat = arr_flat[mask_flat, :, :] #TODO
+    sliced_flat = arr_flat[mask_flat, :, :]
     
     dp = sliced_flat.sum(axis=(0))
     if hasattr(dp, 'compute'):
