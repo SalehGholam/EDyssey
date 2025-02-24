@@ -378,7 +378,11 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None
         # mask = mask[x:x+w, y:y+h]
         mask = mask[y:y+h, x:x+w] #TODO check
     mask_flat = mask.flatten()
-    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=False)
+    dtype = os.path.splitext(fn)[1]
+    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=True)
+    if type(s) == tuple: # hdf5 sends the file handler
+        s, f = s
+    
     with config.set(**{'array.slicing.split_large_chunks': False}):
         arr_flat = s.data.reshape(-1, *s.data.shape[2:])
     # Apply the 1D mask

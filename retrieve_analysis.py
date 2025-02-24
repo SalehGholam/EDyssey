@@ -14,12 +14,15 @@ import py4DTomo.tracking_utils as tr
 from matplotlib.colors import SymLogNorm
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import tifffile
 #%% input
 path_analysis = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\5DED Analysis\2025-02-12__13-27-28\roi No 1'
 fn_mask = 'segmentation masks_ obj ID 1.npy'
 fn_rois = 'roi coords_id 1.npy'
 fn_dp = '3DED_id 1.hspy'
 path_4d = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\4D Signals'
+path_navSignal = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2'
+fn_navSingal = 'navigation_signal.hspy'
 dtype = '.hdf5'
 scanSize = (512,512)
 #%%
@@ -30,6 +33,22 @@ s_mask.plot()
 s_dp = hs.load(os.path.join(path_analysis, fn_dp))
 s_dp.plot(norm='symlog', cmap='inferno')
 fns_4d = glob(os.path.join(path_4d, '*.*'))
+s_navSignal = hs.load(os.path.join(path_navSignal, fn_navSingal))
+#%% load corrected frames
+path_frames = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\5DED Analysis\2025-02-12__13-27-28\roi No 1\pets\new_frames'
+fns_frames = glob(os.path.join(path_frames, '*.tif'))
+s_dp = np.zeros((len(fns_frames), 512,512), dtype='uint32')
+for i, fn_fr in enumerate(fns_frames):
+    s_dp[i] = tifffile.imread(fn_fr)
+s_dp = hs.signals.Signal2D(s_dp)
+#%% make tracking clip
+fn_clip = 'tracking clip'
+fn_clip = os.path.join(path_analysis, fn_clip)
+io.create_clip_tracking_with_mask(fn_clip, s_navSignal.data, s_mask.data,
+                                  scale=0.738, fps=25)
+fn_tomo_clip = 'tomo clip'
+fn_tomo_clip = os.path.join(path_analysis, fn_tomo_clip)
+io.create_clip_dp(fn_tomo_clip, s_dp, scale=0.011, fps=25)
 #%% reload a dataset
 num = 87
 mask = masks[num]
@@ -99,3 +118,4 @@ fig.tight_layout()
 
 fig, ax = plt.subplots()
 ax.imshow(eroded_masks.sum(axis=(0)))
+#%%

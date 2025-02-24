@@ -86,7 +86,7 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     s = hs.signals.Signal2D(s)
     return s
 
-def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False, 
+def load_hdf5(fn, roi=None, scanSize=None, chunks=(8,512,512,512), lazy=False, 
               sum_dp=False, **kwargs):
     # with h5py.File(fn, 'r') as f:
     f = h5py.File(fn, 'r')
@@ -103,21 +103,25 @@ def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False,
     det_shape = f['4D'].shape[-1] # works on only scquare detectors
     
     if chunks is None: # TODO not optimum necessarily
+        if roi is not None:
+            y,x,h,w = roi
+            chunks = (h, w, det_shape, det_shape)
         if det_shape == 512:
-            chunks = (16,16,det_shape,det_shape)
+            chunks = (16, 16, det_shape, det_shape)
         else:
-            chunks = (32,32,det_shape,det_shape)
+            chunks = (32, 32, det_shape, det_shape)
+    
     if arr_dim == 1:
         chunks = np.prod(chunks)
         s = da.from_array(f['4D'], chunks=chunks)
         with dask.config.set(**{'array.slicing.split_large_chunks': False}):
             s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
-        s = s.map_blocks(cp.asarray)
+        # s = s.map_blocks(cp.asarray)
     else:
         s = da.from_array(f['4D'], chunks=chunks)
-        s = s.map_blocks(cp.asarray)
+        # s = s.map_blocks(cp.asarray)
     
-    if roi: #TODO test
+    if np.any(roi): #TODO test
         # x,y,w,h = roi
         y,x,h,w = roi
         s = s[x:x+w, y:y+h]
@@ -125,33 +129,34 @@ def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False,
     if sum_dp:
         dp = s.sum(axis=(2,3))
         dp_res = dp.compute()
-        dp_res = cp.asnump(dp_res)
+        # dp_res = cp.asnump(dp_res)
         f.close()
-        cp.get_default_memory_pool().free_all_blocks()
-        del s, dp
-        cp.get_default_memory_pool().free_all_blocks()
+        # cp.get_default_memory_pool().free_all_blocks()
+        # del s, dp
+        # cp.get_default_memory_pool().free_all_blocks()
         return dp_res
     
     if not lazy:
         s_get = s.compute()
-        s_get = cp.asnumpy(s_get) # turning it to numpy from cupy
-        cp.get_default_memory_pool().free_all_blocks()
-        del s
+        # s_get = cp.asnumpy(s_get) # turning it to numpy from cupy
+        # cp.get_default_memory_pool().free_all_blocks()
+        # del s
         f.close()
         s_get = hs.signals.Signal2D(s_get)
         return s_get
     
     else:
         s = hs.signals.Signal2D(s)
-        cp.get_default_memory_pool().free_all_blocks()
+        # cp.get_default_memory_pool().free_all_blocks()
         return s, f
     
 def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, **kwargs):
+    #TODO add cupy if possible
     s = hs.load(fn, lazy=True)
     if chunks is not None:
         s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
     
-    if roi:
+    if np.any(roi):
         x,y,w,h = roi
         s = s.inav[x:x+w, y:y+h]
     
@@ -205,7 +210,7 @@ def get_scan_size(fn):
         return (s.data.shape[1], s.data.shape[0]) # TODO return y and x?
 
 def get_det_size(fn):
-    s = load_signal(fn)
+    s = load_signal(fn, lazy=True)
     return (s.data.shape[3], s.data.shape[2])
 
 def get_scan_size_mib_hdr(fn_hdr):
@@ -349,7 +354,8 @@ def create_frames(pathSave, s):
     for i, fr in enumerate(tqdm(s.data)):
         tifffile.imwrite(os.path.join(pathSave, f'{i+1:04d}.tif'), fr)
 
-def create_clip_dp(fn, s, scale=None, dpi=300, fps=5, vmin=None, vmax=None, cmap='inferno'):
+def create_clip_dp(fn, s, scale=None, dpi=300, fps=None, vmin=None, vmax=None, cmap='inferno'):
+    print('Making DP clip...')
     plt.ioff()
     fig, ax = plt.subplots()
     img = ax.imshow(s.data[0], cmap=cmap, norm=mcolors.SymLogNorm(
@@ -362,15 +368,21 @@ def create_clip_dp(fn, s, scale=None, dpi=300, fps=5, vmin=None, vmax=None, cmap
     def update_frame(fr_no):
         img.set_data(s.data[fr_no])
         return (img, )
+    
+    if fps is None:
+        fps = len(s.data) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(s.data.shape[0]), blit=True)
     ani.save(fn + '.gif', fps=fps)
     try:
-        ani.save(fn + '.mp4', writer='ffmpeg', fps=5)
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
     except:
         print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
+    print('DP clip is created!')
         
-def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300, fps=5, cmap='viridis'):
+def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300, 
+                         fps=None, cmap='viridis'):
+    print('Making tracking clip...')
     plt.ioff()
     fig, ax = plt.subplots()
     img = ax.imshow(imgs[0], cmap=cmap)
@@ -397,7 +409,10 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300, fps=5, cmap='
             ax.add_patch(rect)
             patch.append(rect)
         return (img, )
+    fig.tight_layout()
     
+    if fps is None:
+        fps = len(imgs) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     path, fn_raw = os.path.split(fn)
     fn = fn_raw + '.gif'
@@ -406,13 +421,14 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300, fps=5, cmap='
     try:
         fn = fn_raw + '.mp4'
         fn = os.path.join(path, fn)
-        ani.save(fn, writer='ffmpeg', fps=5)
+        ani.save(fn, writer='ffmpeg', fps=fps)
     except:
         print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
+    print('Tracking clip is Created!')
 
 def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None, 
-                                   dpi=300, fps=5, cmap='viridis'):
+                                   dpi=300, fps=None, cmap='viridis'):
     def show_mask(mask, obj_id=None, random_color=False):
         if random_color:
             color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
@@ -430,7 +446,7 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
         img.set_data(imgs[fr_no])
         show_mask(masks[fr_no], obj_id)
         return (img, )
-    
+    print('Making tracking clip...')
     plt.ioff()
     fig, ax = plt.subplots()
     img = ax.imshow(imgs[0], cmap=cmap)
@@ -440,10 +456,15 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
     if scale is not None:
         scalebar = ScaleBar(scale, 'nm', dimension='si-length', location='lower left')
         ax.add_artist(scalebar)
+    fig.tight_layout()
+    
+    if fps is None:
+        fps = len(imgs) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     ani.save(fn + '.gif', fps=fps)
     ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
     plt.ion()
+    print('Tracking clip is created')
 # =============================================================================
 # if __name__ == '__main__':
 #     pass

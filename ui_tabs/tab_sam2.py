@@ -557,15 +557,16 @@ class Tab_SAM2(qtw.QWidget):
                 rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
                 for i_img, mask in enumerate(masks[i_obj]):
                     temp = np.where(mask==True)
-                    ymin = temp[0].min()
-                    ymax = temp[0].max() +1
-                    xmin = temp[1].min()
-                    xmax = temp[1].max() +1
-                    w = xmax - xmin
-                    h = ymax - ymin
-                    r = [xmin, ymin, w, h]
-                    r = [int(item) for item in r]
-                    rois[i_obj][i_img] = r
+                    if temp[0].shape != 0: # no pixel found
+                        ymin = temp[0].min()
+                        ymax = temp[0].max() +1
+                        xmin = temp[1].min()
+                        xmax = temp[1].max() +1
+                        w = xmax - xmin
+                        h = ymax - ymin
+                        r = [xmin, ymin, w, h]
+                        r = [int(item) for item in r]
+                        rois[i_obj][i_img] = r
             return rois
 
         def get_tomo_ds(result, index):
