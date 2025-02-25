@@ -21,6 +21,8 @@ from skimage.filters import threshold_otsu, threshold_li, threshold_yen, thresho
 from py4DTomo.io_utils import create_array_from_dissimilar_imgs
 from dask import config
 import matplotlib.patches as patches
+from dask.diagnostics import ProgressBar
+import dask.array as da
 #%%
 def select_roi(img):
     # cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -372,14 +374,16 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
 #     return s_3ded
 # =============================================================================
 
-def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None): 
+def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, 
+                                   roi=None): 
     if roi is not None:
         x,y,w,h = roi
         # mask = mask[x:x+w, y:y+h]
         mask = mask[y:y+h, x:x+w] #TODO check
     mask_flat = mask.flatten()
     dtype = os.path.splitext(fn)[1]
-    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=True)
+    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, 
+                       roi=roi, lazy=True)
     if type(s) == tuple: # hdf5 sends the file handler
         s, f = s
     
@@ -390,7 +394,11 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None
     
     dp = sliced_flat.sum(axis=(0))
     if hasattr(dp, 'compute'):
-        dp.compute()
+        if isinstance(dp, da.Array):
+            with ProgressBar():
+                dp = dp.compute()
+        else:
+            dp.compute()
     return dp
 
 def check_threshold(img, dev=0.1, step=0.05):
