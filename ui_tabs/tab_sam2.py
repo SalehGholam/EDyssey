@@ -64,7 +64,7 @@ class Tab_SAM2(qtw.QWidget):
         self.central_widget = qtw.QWidget(self)
         self.layout = qtw.QVBoxLayout(self)
         
-        button_w = 110
+        button_w = 95
         button_h_sml = 30
         button_h_lrg = 50
         height_layout_top = 200
@@ -208,6 +208,19 @@ class Tab_SAM2(qtw.QWidget):
         layout_topRight.addWidget(self.box_sam2)
         layout_sam = qtw.QHBoxLayout(self)
         self.box_sam2.setLayout(layout_sam)
+        
+        # combine_images
+        self.spinbox_comImgs = qtw.QSpinBox()
+        layout_sam.addWidget(self.spinbox_comImgs)
+        self.spinbox_comImgs.setMinimum(1)
+        
+        
+        self.button_comImgs = qtw.QPushButton('Combine Images')
+        self.button_comImgs.setFixedSize(button_w, button_h_lrg)
+        layout_sam.addWidget(self.button_comImgs)
+        self.button_comImgs.clicked.connect(lambda: self.combine_images(self.imgs, 
+                                                                    self.spinbox_comImgs.value()))
+        
         # image
         self.button_runSeg_img = qtw.QPushButton('Segment Image', self)
         self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
@@ -417,8 +430,10 @@ class Tab_SAM2(qtw.QWidget):
 # =============================================================================
 
     def initiate_prediction(self):
-        #TODO don't make jpg every time
-        worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs)
+        if hasattr(self, 'imgs_com'):
+            worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs_com)
+        else:
+            worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs)
         self.threadpool.start(worker_make_jpg)
         worker_make_jpg.signals.results.connect(self.make_predictor)
     
@@ -465,6 +480,7 @@ class Tab_SAM2(qtw.QWidget):
         # print(self.out_mask_logits)
         imgNo = self.slider_imgNo.value()
         self.masks_images[imgNo] = (out_obj_ids, out_mask_logits)
+        
         self.button_runSeg_clip.setEnabled(True)
         self.update_canvas(imgNo)
         
@@ -485,7 +501,6 @@ class Tab_SAM2(qtw.QWidget):
         worker_propagate = WorkerThread_General(propagate_func, 0, self.predictor_video, self.inference_state)
         worker_propagate.signals.results.connect(self.get_segment_video_results)
         self.threadpool.start(worker_propagate)
-        worker_propagate.signals.results.connect(self.get_segment_video_results)
         
     def get_segment_video_results(self, result, index):
 # =============================================================================
@@ -497,14 +512,24 @@ class Tab_SAM2(qtw.QWidget):
 #                     for i, out_obj_id in enumerate(self.out_obj_ids)
 #             }
 # =============================================================================
-        self.video_segments = result
         w, h = self.imgs[0].shape
         # print('object IDs: ', self.seg_points.keys())
         self.masks_video = {}
+        
+        # in case of combining images
+        combined = False
+        if hasattr(self, 'imgs_com'):
+            combined = True
+            num_com = self.spinbox_comImgs.value()
+        
         for i_obj in self.seg_points.keys():
             self.masks_video[i_obj] = np.zeros((len(self.imgs), w, h), dtype=bool)
-            for i_img in self.video_segments.keys():
-                self.masks_video[i_obj][i_img] = self.video_segments[i_img][i_obj]
+            for i_img in self.imgs.keys():
+                if combined:
+                    for i_com in range(num_com):
+                        self.masks_video[i_obj][i_img+i_com] = result[i_img][i_obj]
+                else:
+                    self.masks_video[i_obj][i_img] = result[i_img][i_obj]
         self.activate_3ded_widgets(True)
         self.update_canvas(self.slider_imgNo.value())
         self.spinbox_finalFrame.setMaximum(len(self.imgs))
@@ -550,24 +575,25 @@ class Tab_SAM2(qtw.QWidget):
     def clear_instances(self):
         pass
     
+    def make_rois(self, masks):
+        rois = {}
+        for i_obj in masks.keys():
+            rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
+            for i_img, mask in enumerate(masks[i_obj]):
+                temp = np.where(mask==True)
+                if temp[0].shape != 0: # no pixel found
+                    ymin = temp[0].min()
+                    ymax = temp[0].max() +1
+                    xmin = temp[1].min()
+                    xmax = temp[1].max() +1
+                    w = xmax - xmin
+                    h = ymax - ymin
+                    r = [xmin, ymin, w, h]
+                    r = [int(item) for item in r]
+                    rois[i_obj][i_img] = r
+        return rois
+    
     def extract_3ded(self):
-        def make_rois(masks):
-            rois = {}
-            for i_obj in masks.keys():
-                rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
-                for i_img, mask in enumerate(masks[i_obj]):
-                    temp = np.where(mask==True)
-                    if temp[0].shape != 0: # no pixel found
-                        ymin = temp[0].min()
-                        ymax = temp[0].max() +1
-                        xmin = temp[1].min()
-                        xmax = temp[1].max() +1
-                        w = xmax - xmin
-                        h = ymax - ymin
-                        r = [xmin, ymin, w, h]
-                        r = [int(item) for item in r]
-                        rois[i_obj][i_img] = r
-            return rois
 
         def get_tomo_ds(result, index):
             obj_id, fr_id = index
@@ -580,7 +606,7 @@ class Tab_SAM2(qtw.QWidget):
             if self.tomo_counter == self.tomo_counter_total:
                 self.update_canvas()
 
-        self.rois = make_rois(self.masks_video)
+        self.rois = self.make_rois(self.masks_video)
         
         path_4d = self.lineEdit_dir_4d.text()
         if path_4d == '': # no entry in 4D signals path
@@ -594,7 +620,7 @@ class Tab_SAM2(qtw.QWidget):
         dtype = os.path.splitext(fns_4d[0])[1] # select data type on the gui
         
         # check if no of files with no of images
-        if len(self.imgs_8bit) != len(fns_4d):
+        if len(self.imgs) != len(fns_4d):
             reply = qtw.QMessageBox.question(self, 'Mismatch',
                    'No of 4D signals mismatches the number of images. Do you want to continue?',)
             if reply == qtw.QMessageBox.No:
@@ -849,7 +875,16 @@ class Tab_SAM2(qtw.QWidget):
         value = value / total * 100
         value = int(value)
         self.progress_bar.setValue(value)
-
+    
+    def combine_images(self, imgs, num):
+        l = (len(imgs) // num) if (len(imgs) % num)==0 else (len(imgs) // num) +1
+        scanSize_x, scanSize_y = imgs[0].shape
+        print(l)
+        self.imgs_com = np.zeros((l, scanSize_x, scanSize_y), dtype='uint32')
+        for i, _ in enumerate(self.imgs_com):
+            self.imgs_com[i] = imgs[(i*4):(i+1)*4].sum(axis=0)
+        # return imgs_new
+    
     def save_masks(self):
         obj_ids = self.spinbox_obj_id.value()
         fn_suffix = f'{datetime.date.today()}_{datetime.datetime.now().strftime("%H-%M-%S")}'
@@ -876,9 +911,10 @@ class Tab_SAM2(qtw.QWidget):
         path_save = os.path.join(path_save, f'{date}__{tim}')
         os.mkdir(path_save)
         
+        self.rois = self.make_rois(self.masks_video)
         
         # tracking results, rois, dp
-        for obj_id, ds in self.tomo_ds.items():
+        for obj_id, masks in self.masks_video.items():
             path_save_roi = os.path.join(path_save, f'roi No {obj_id}')
             os.mkdir(path_save_roi)
             # input points
@@ -889,22 +925,25 @@ class Tab_SAM2(qtw.QWidget):
                 np.save(f, self.rois[obj_id])
             
             # dp frames
-            s = hsSignals.Signal2D(self.tomo_ds[obj_id])
-            s.save(os.path.join(path_save_roi, f'3DED_id {obj_id}.hspy'))
-            fld_dp = os.path.join(path_save_roi, 'frames')
-            worker_frames = WorkerThread_General(io.create_frames, 0, fld_dp, s)
-            self.threadpool.start(worker_frames)
-            
-            # clip dp
-            scale_recip = self.lineEdit_scale_recip.text()
             try:
-                scale_recip = float(scale_recip)
-            except:
-                scale_recip = None
-            fn_clip_dp = os.path.join(path_save_roi, 'tomo clip')
-            worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
-                                                  s, scale_recip)
-            self.threadpool.start(worker_clip_dp)
+                s = hsSignals.Signal2D(self.tomo_ds[obj_id])
+                s.save(os.path.join(path_save_roi, f'3DED_id {obj_id}.hspy'))
+                fld_dp = os.path.join(path_save_roi, 'frames')
+                worker_frames = WorkerThread_General(io.create_frames, 0, fld_dp, s)
+                self.threadpool.start(worker_frames)
+                
+                # clip dp
+                scale_recip = self.lineEdit_scale_recip.text()
+                try:
+                    scale_recip = float(scale_recip)
+                except:
+                    scale_recip = None
+                fn_clip_dp = os.path.join(path_save_roi, 'tomo clip')
+                worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
+                                                      s, scale_recip)
+                self.threadpool.start(worker_clip_dp)
+            except: # no 3DED extracted yet
+                pass
             
             # clip tracking
             np.save(os.path.join(path_save_roi, f'segmentation masks_ obj ID {obj_id}.npy'), 
@@ -919,7 +958,7 @@ class Tab_SAM2(qtw.QWidget):
                                                  fn_clip_tracking, self.imgs, 
                                                  self.masks_video[obj_id], obj_id, scale_real)
             self.threadpool.start(worker_tracking)
-            
+    
     def clear_model(self):
         try:
             if hasattr(self, 'inference_state'):
