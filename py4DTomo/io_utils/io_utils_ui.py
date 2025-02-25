@@ -204,14 +204,21 @@ def get_scan_size(fn):
     if dtype == '.hdf5':
         with h5py.File(fn, 'r') as f:
             scanSize = tuple(f['shape'])[:2]
+        print('scan size:', scanSize)
         return scanSize
     else:
         s = load_signal(fn)
+        print('scan size:', scanSize)
         return (s.data.shape[1], s.data.shape[0]) # TODO return y and x?
 
 def get_det_size(fn):
     s = load_signal(fn, lazy=True)
-    return (s.data.shape[3], s.data.shape[2])
+    if type(s) == tuple: # for hdf5
+        s, f = s
+        f.close()
+    det_shape = (s.data.shape[3], s.data.shape[2])
+    print('detector shape:', det_shape)
+    return det_shape
 
 def get_scan_size_mib_hdr(fn_hdr):
     with open(fn_hdr, 'r') as file:
