@@ -26,6 +26,7 @@ from copy import deepcopy
 from .worker_thread import WorkerThread_General
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
+from time import perf_counter
 #%% wdiget
 class Tab_Tracking_CV2(qtw.QWidget):
 # class Tab_Create_NavSignal(qtw.QMainWindow):
@@ -978,16 +979,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
             shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])
         scanSize = self.nav_imgs.shape[1:]
         
-        
         self.tomo_counter = 0
         self.tomo_ds = {}
         
         # extract to a certain frame no
-        fns_4d = fns_4d[:self.spinbox_finalFrame.value()]
+        final_frame = self.spinbox_finalFrame.value()
+        fns_4d = fns_4d[:final_frame]
         self.tomo_counter_total = len(rois_to_extract) * len(fns_4d)
         self.update_progress_bar(0, self.tomo_counter_total)
         
         # threading images of each roi
+        self.tic = perf_counter()
         for r_id in rois_to_extract.keys():
             self.tomo_ds[r_id] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
             for i_fr, fn in enumerate(fns_4d):
@@ -1029,6 +1031,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
             imgNo = self.slider_imgNo.value()
             self.plot_dp(roiNo, imgNo)
             self.update_canvas(imgNo)
+            toc = perf_counter()
+            print(f'Extraction Duration: {(toc-self.tic)//60:.0f} min')
             # self.combo_roiNo.currentIndexChanged.connect(lambda: self.plot_dp(roiNo, imgNo))
     
     def plot_dp(self, roiNo=None, imgNo=None):
