@@ -8,6 +8,7 @@ version 3:
     1. Redesign load signal
         todo. add dtype to ROI on 4D for tpx3
     2. support hdf5 with 4D or 1D
+    3. combine images for sam2
     
 """
 

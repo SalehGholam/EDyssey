@@ -524,11 +524,14 @@ class Tab_SAM2(qtw.QWidget):
         
         for i_obj in self.seg_points.keys():
             self.masks_video[i_obj] = np.zeros((len(self.imgs), w, h), dtype=bool)
-            for i_img in self.imgs.keys():
-                if combined:
-                    for i_com in range(num_com):
-                        self.masks_video[i_obj][i_img+i_com] = result[i_img][i_obj]
-                else:
+            if combined:
+                for i_com in range(len(result)):
+                        for i_rep in range(num_com):
+                            idx = i_com*num_com + i_rep
+                            if idx < len(self.imgs):
+                                self.masks_video[i_obj][idx] = result[i_com][i_obj]
+            else:
+                for i_img, _ in enumerate(self.imgs):
                     self.masks_video[i_obj][i_img] = result[i_img][i_obj]
         self.activate_3ded_widgets(True)
         self.update_canvas(self.slider_imgNo.value())
@@ -610,7 +613,7 @@ class Tab_SAM2(qtw.QWidget):
         
         path_4d = self.lineEdit_dir_4d.text()
         if path_4d == '': # no entry in 4D signals path
-            qtw.QMessageBox.critical(self, 'No 4D Signals found!')
+            qtw.QMessageBox.critical(self, 'No 4D path', 'Please enter a valid path for 4D signals.')
             return
         
         fns_4d = glob(os.path.join(path_4d, '*')) 
@@ -879,10 +882,9 @@ class Tab_SAM2(qtw.QWidget):
     def combine_images(self, imgs, num):
         l = (len(imgs) // num) if (len(imgs) % num)==0 else (len(imgs) // num) +1
         scanSize_x, scanSize_y = imgs[0].shape
-        print(l)
         self.imgs_com = np.zeros((l, scanSize_x, scanSize_y), dtype='uint32')
         for i, _ in enumerate(self.imgs_com):
-            self.imgs_com[i] = imgs[(i*4):(i+1)*4].sum(axis=0)
+            self.imgs_com[i] = imgs[(i*num):(i+1)*num].sum(axis=0)
         # return imgs_new
     
     def save_masks(self):
@@ -956,7 +958,8 @@ class Tab_SAM2(qtw.QWidget):
             fn_clip_tracking = os.path.join(os.path.join(path_save_roi, 'tracking clip'))
             worker_tracking = WorkerThread_General(io.create_clip_tracking_with_mask, 0, 
                                                  fn_clip_tracking, self.imgs, 
-                                                 self.masks_video[obj_id], obj_id, scale_real)
+                                                 self.masks_video[obj_id], obj_id, scale_real, 
+                                                 300, None,  'Grays_r')
             self.threadpool.start(worker_tracking)
     
     def clear_model(self):
