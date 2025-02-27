@@ -91,16 +91,13 @@ def load_hdf5(fn, roi=None, scanSize=None, chunks=(8,512,512,512), lazy=False,
     # with h5py.File(fn, 'r') as f:
     f = h5py.File(fn, 'r')
     arr_dim = len(f['4D'].shape) # data might be flattened
-    scanSize_written = tuple(f['shape'].shape[:2])
-    if scanSize is None:
-        scanSize = scanSize_written
-    else:
-        if arr_dim == 1: # TODO do it only once before running tomo
-            assert scanSize == scanSize_written, f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {f['shape'][:2]}"
-        # elif arr_dim == 4:
-        #     warn(f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {f['shape'][:2]}")
-    
-    det_shape = f['4D'].shape[-1] # works on only scquare detectors
+    if arr_dim == 1: # TODO do it only once before running tomo
+        det_shape = f['shape'][:][-1] # works on only scquare detectors
+        scanSize_written = tuple(f['shape'][:][:2])
+        if scanSize is None:
+            scanSize = scanSize_written
+        else:           
+            assert scanSize == scanSize_written, f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {scanSize_written}"
     
     if chunks is None: # TODO not optimum necessarily
         if roi is not None:
@@ -379,10 +376,10 @@ def create_clip_dp(fn, s, scale=None, dpi=300, fps=None, vmin=None, vmax=None, c
     if fps is None:
         fps = len(s.data) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(s.data.shape[0]), blit=True)
-    ani.save(fn + '.gif', fps=fps)
     try:
         ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
     except:
+        ani.save(fn + '.gif', fps=fps)
         print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
     print('DP clip is created!')
@@ -422,14 +419,12 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300,
         fps = len(imgs) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     path, fn_raw = os.path.split(fn)
-    fn = fn_raw + '.gif'
     fn = os.path.join(path, fn)
-    ani.save(fn, fps=fps)
+    
     try:
-        fn = fn_raw + '.mp4'
-        fn = os.path.join(path, fn)
-        ani.save(fn, writer='ffmpeg', fps=fps)
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
     except:
+        ani.save(fn + '.gif', fps=fps)
         print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
     print('Tracking clip is Created!')
@@ -468,8 +463,11 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
     if fps is None:
         fps = len(imgs) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
-    ani.save(fn + '.gif', fps=fps)
-    ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
+    try:
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
+    except:
+        ani.save(fn + '.gif', fps=fps)
+        print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
     print('Tracking clip is created')
 # =============================================================================
