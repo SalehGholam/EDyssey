@@ -132,6 +132,11 @@ def select_rois_manual(s):
 
 
 def track_roi_cv2(imgs, rois, tracking_method='csrt'):
+    path_origin = os.getcwd()
+    path_file = os.path.abspath(__file__)
+    path_file = os.path.split(path_file)[0]
+    path_trackerModels = os.path.join(path_file, 'opencv_models')
+    os.chdir(path_trackerModels)
     if tracking_method == 'csrt':
         tracker = cv2.TrackerCSRT_create()
     elif tracking_method == 'mil':
@@ -141,7 +146,9 @@ def track_roi_cv2(imgs, rois, tracking_method='csrt'):
     elif tracking_method == 'dasiamrpn':
         tracker = cv2.TrackerDaSiamRPN_create()
     else:
+        os.chdir(path_origin)
         raise NotImplementedError('The tracker used is not available')
+    os.chdir(path_origin)
     
     flag_3ch_cvt = False # flag for converting to 3 channel images
     if tracking_method in ['nano', 'dasiamrpn']:
