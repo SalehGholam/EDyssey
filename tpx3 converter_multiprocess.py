@@ -14,7 +14,7 @@ def process_file(in_file,out_file):
     det_bin = 1
     scan_bin = 1
     scan_size = 512
-    dwellTime = 25 # usec
+    dwellTime = 50 # usec
     dwellTime *= 1000
     chunksize = 8
     compression_factor =  4 #1 is least compression, 9 is most compression
@@ -43,15 +43,29 @@ def process_file(in_file,out_file):
     toc = perf_counter()
     print(f'Duration: {(toc-tic)/60:0.2f} min')
 
+def delete_existing(fns_tpx3, path_hdf5):
+    fns_tpx3_new = []
+    # fns_hdf5_new = []
+    fns_tpx3_2 = [os.path.splitext(os.path.split(fn)[1])[0] for fn in fns_tpx3]
+    fns_hdf5 = [fn[:-5] for fn in os.listdir(path_hdf5)]
+    for i, fn in enumerate(fns_tpx3):
+        if fns_tpx3_2[i] not in fns_hdf5:
+            fns_tpx3_new.append(fn)
+            # fns_hdf5_new.append(os.path.join(path_hdf5, fns_tpx3_2[i]))
+    # return fns_tpx3_new, fns_hdf5_new
+    return fns_tpx3_new
+#%%
 if __name__ == '__main__':
-    path_in = r'E:\Tecnai Data\250214_TiO2\S1_lowDwell\2025-02-14_11-45-42'
+    path_in = r'E:\Tecnai Data\250327\rTiO2\S1_rest35to55\2025-03-27_13-03-48'
     # path_out = path_in
-    path_out = r'C:\My Files\Microscope Data\Tecnai\25-02-14_TiO2_Nico\S1_lowDwell\4D Signals'
+    path_out = r'C:\My Files\Microscope Data\Tecnai\25-03-27\rTiO2\S1\4D Signals_rest'
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files
-    # in_files = in_files[:5]
+    # in_files = in_files[2:3]
     
+    #### delete existing files
+    # in_files = delete_existing(in_files, path_out)
     
     out_files = [os.path.split(fn)[1] for fn in in_files]
     out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]

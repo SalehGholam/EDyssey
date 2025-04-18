@@ -197,12 +197,12 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.progress_bar.setRange(0, 100)
         #%% canvas
         # self.figure = Figure(figsize=(5,5))
-        self.figure = Figure()
+        self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot()
         self.img_display = self.ax.imshow(np.zeros((512,512), dtype='int16'), cmap='viridis')
         self.ax.set_axis_off()
-        self.figure.tight_layout()
+        # self.figure.tight_layout()
         self.layout.addWidget(self.canvas)
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)

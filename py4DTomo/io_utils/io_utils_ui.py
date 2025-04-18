@@ -24,7 +24,7 @@ import matplotlib.colors as mcolors
 import matplotlib.patches as patches
 from matplotlib_scalebar.scalebar import ScaleBar
 from warnings import warn
-import cupy as cp
+# import cupy as cp
 # from moviepy.editor import VideoClip
 # from moviepy.video.io.bindings import mplfig_to_npimage
 # from moviepy import VideoClip
@@ -309,6 +309,9 @@ def convert_img_to_8bit(img):
     img_8bit = img_8bit.astype(np.uint8)
     return img_8bit
 
+def gaussian_blur(img, kernel_size=3):
+    return cv2.GaussianBlur(img, (kernel_size,kernel_size), 0)
+
 def convert_to_rgb(imgs):
     l,w,h = imgs.shape
     # imgs_8bit = convert_to_8bit(imgs)
@@ -358,12 +361,13 @@ def create_frames(pathSave, s):
     for i, fr in enumerate(tqdm(s.data)):
         tifffile.imwrite(os.path.join(pathSave, f'{i+1:04d}.tif'), fr)
 
-def create_clip_dp(fn, s, scale=None, dpi=300, fps=None, vmin=None, vmax=None, cmap='inferno'):
+def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, cmap='inferno'):
     print('Making DP clip...')
     plt.ioff()
     fig, ax = plt.subplots()
     img = ax.imshow(s.data[0], cmap=cmap, norm=mcolors.SymLogNorm(
         vmin=vmin, vmax=vmax, linthresh=1))
+    fig.tight_layout()
     if scale is not None:
         scalebar = ScaleBar(scale*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
                             scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
@@ -377,15 +381,15 @@ def create_clip_dp(fn, s, scale=None, dpi=300, fps=None, vmin=None, vmax=None, c
         fps = len(s.data) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(s.data.shape[0]), blit=True)
     try:
-        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps, dpi=dpi)
     except:
         ani.save(fn + '.gif', fps=fps)
         print('No ffmpeg was found to make mp4 clip!')
     plt.ion()
     print('DP clip is created!')
         
-def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300, 
-                         fps=None, cmap='viridis'):
+def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400, 
+                         fps=None, duration=None, cmap='viridis'):
     print('Making tracking clip...')
     plt.ioff()
     fig, ax = plt.subplots()
@@ -416,13 +420,17 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300,
     fig.tight_layout()
     
     if fps is None:
-        fps = len(imgs) // 20 # sec
+        if duration is None:
+            fps = len(imgs) // 20 # sec
+        else:
+            fps = len(imgs) // duration # sec
+            
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     path, fn_raw = os.path.split(fn)
     fn = os.path.join(path, fn)
     
     try:
-        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps, dpi=dpi)
     except:
         ani.save(fn + '.gif', fps=fps)
         print('No ffmpeg was found to make mp4 clip!')
@@ -430,7 +438,7 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=300,
     print('Tracking clip is Created!')
 
 def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None, 
-                                   dpi=300, fps=None, cmap='viridis'):
+                                   dpi=400, fps=None, cmap='viridis'):
     def show_mask(mask, obj_id=None, random_color=False):
         if random_color:
             color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
@@ -464,7 +472,7 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
         fps = len(imgs) // 20 # sec
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     try:
-        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps)
+        ani.save(fn + '.mp4', writer='ffmpeg', fps=fps, dpi=dpi)
     except:
         ani.save(fn + '.gif', fps=fps)
         print('No ffmpeg was found to make mp4 clip!')

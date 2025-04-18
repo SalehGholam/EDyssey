@@ -297,7 +297,7 @@ class Tab_SAM2(qtw.QWidget):
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
         
-        self.figure = Figure()
+        self.figure = Figure(constrained_layout=True)
         # self.figure = Figure(figsize=(16,8)) # with figsize
         self.canvas = FigureCanvas(self.figure)
         self.layout.addWidget(NavigationToolbar(self.canvas, self))
@@ -316,7 +316,7 @@ class Tab_SAM2(qtw.QWidget):
         self.ax_dp.set_title('Extracted DP')
         for ax in [self.ax_dp, self.ax_nav, self.ax_seg]:
             ax.set_axis_off()
-        self.figure.tight_layout()
+        # self.figure.tight_layout()
         layout_canvas.addWidget(self.canvas)
         
         self.canvas.mpl_connect("button_press_event", self.on_click)
@@ -584,16 +584,19 @@ class Tab_SAM2(qtw.QWidget):
             rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
             for i_img, mask in enumerate(masks[i_obj]):
                 temp = np.where(mask==True)
-                if temp[0].shape != 0: # no pixel found
-                    ymin = temp[0].min()
-                    ymax = temp[0].max() +1
-                    xmin = temp[1].min()
-                    xmax = temp[1].max() +1
-                    w = xmax - xmin
-                    h = ymax - ymin
-                    r = [xmin, ymin, w, h]
-                    r = [int(item) for item in r]
-                    rois[i_obj][i_img] = r
+                try:
+                    if temp[0].shape != 0: # no pixel found
+                        ymin = temp[0].min()
+                        ymax = temp[0].max() +1
+                        xmin = temp[1].min()
+                        xmax = temp[1].max() +1
+                        w = xmax - xmin
+                        h = ymax - ymin
+                        r = [xmin, ymin, w, h]
+                        r = [int(item) for item in r]
+                        rois[i_obj][i_img] = r
+                except:
+                    rois[i_obj][i_img] = [0,0,0,0]
         return rois
     
     def extract_3ded(self):

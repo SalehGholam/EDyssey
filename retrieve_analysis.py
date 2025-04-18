@@ -16,20 +16,31 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import tifffile
 #%% input
-path_analysis = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\5DED Analysis\2025-02-12__13-27-28\roi No 1'
-fn_mask = 'segmentation masks_ obj ID 1.npy'
-fn_rois = 'roi coords_id 1.npy'
-fn_dp = '3DED_id 1.hspy'
-path_4d = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\4D Signals'
-path_navSignal = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2'
+path_analysis = r'C:\My Files\Microscope Data\Tecnai\25-02-14_TiO2_Nico\S1_lowDwell\5DED Analysis\2025-02-27__11-47-20\roi No 1'
+try:
+    fn_mask = [fn for fn in os.listdir(path_analysis) if 'segmentation masks' in fn][0]
+except:
+    fn_mask = None
+try:
+    fn_rois = [fn for fn in os.listdir(path_analysis) if 'roi coords' in fn][0]
+except:
+    fn_rois = None
+fn_dp = [fn for fn in os.listdir(path_analysis) if ('3DED' in fn) and 'hspy' in fn][0]
+# path_4d = r'C:\My Files\Microscope Data\Tecnai\24-09-11_TiO2_200 kV\S2\4D Signals'
+path_4d = os.path.dirname(path_analysis)
+for i in range(2):
+    path_4d = os.path.dirname(path_4d)
+path_4d = os.path.join(path_4d, '4D Signals')
+path_navSignal = os.path.dirname(path_4d)
 fn_navSingal = 'navigation_signal.hspy'
 dtype = '.hdf5'
 scanSize = (512,512)
 #%%
 rois = np.load(os.path.join(path_analysis, fn_rois))
-masks = np.load(os.path.join(path_analysis, fn_mask))
-s_mask = hs.signals.Signal2D(masks)
-s_mask.plot()
+if fn_mask:
+    masks = np.load(os.path.join(path_analysis, fn_mask))
+    s_mask = hs.signals.Signal2D(masks)
+    s_mask.plot()
 s_dp = hs.load(os.path.join(path_analysis, fn_dp))
 s_dp.plot(norm='symlog', cmap='inferno')
 fns_4d = glob(os.path.join(path_4d, '*.*'))
@@ -44,11 +55,18 @@ s_dp = hs.signals.Signal2D(s_dp)
 #%% make tracking clip
 fn_clip = 'tracking clip'
 fn_clip = os.path.join(path_analysis, fn_clip)
-io.create_clip_tracking_with_mask(fn_clip, s_navSignal.data, s_mask.data,
-                                  scale=0.738, fps=25)
-fn_tomo_clip = 'tomo clip'
+io.create_clip_tracking(fn_clip, s_navSignal.data, rois,
+                                  scale=2.12, cmap='viridis', dpi=400)
+# io.create_clip_tracking_with_mask(fn_clip, s_navSignal.data, s_mask.data,
+#                                   scale=0.738, cmap='Greys_r')
+
+
+fn_tomo_clip = 'tomo clip_2'
 fn_tomo_clip = os.path.join(path_analysis, fn_tomo_clip)
-io.create_clip_dp(fn_tomo_clip, s_dp, scale=0.011, fps=25)
+# io.create_clip_dp(fn_tomo_clip, s_dp, scale=0.011)
+io.create_clip_dp(fn_tomo_clip, s_dp, scale=0.011, vmin=1, vmax=500, dpi=400)
+
+
 #%% reload a dataset
 num = 87
 mask = masks[num]
