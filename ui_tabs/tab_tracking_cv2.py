@@ -279,14 +279,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
         label_thresh_method = qtw.QLabel('Threshold Method')
         layout_thresh_method.addWidget(label_thresh_method)
         
+        
         self.combo_thresh_method = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_thresh_method)
         # self.combo_thresh_method.setFixedWidth(100)
         self.combo_thresh_method.addItems(['otsu', 'li', 'yen', 'mean'])
         self.combo_thresh_method.currentIndexChanged.connect(lambda: self.plot_image_mask(
             self.slider_thresh.value()))
-        layout_thresh_method.addItem(spacer)
         
+        label_blur = qtw.QLabel('Blurring Kernel')
+        layout_thresh_method.addWidget(label_blur)
+        self.combo_blur = qtw.QComboBox()
+        layout_thresh_method.addWidget(self.combo_blur)
+        self.combo_blur.addItems([str(i) for i in range(1,23,2)])
+        self.combo_blur.currentIndexChanged.connect(lambda:self.plot_image_mask(
+            self.slider_thresh.value()))
+
+        layout_thresh_method.addItem(spacer)
+
         layout_deviation = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_deviation)
         label_thresh_dev = qtw.QLabel('Deviation')
@@ -360,7 +370,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.layout.addLayout(layout_canvas)
         
         # self.figure = Figure(figsize=(8,4))
-        self.figure = Figure()
+        self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.ax_nav = self.figure.add_subplot(141)
         self.ax_track = self.figure.add_subplot(142)
@@ -394,7 +404,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.25)
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
-        self.figure.tight_layout()
+        # self.figure.tight_layout()
         # self.layout.addWidget(self.canvas)
         layout_canvas.addWidget(self.canvas)
         
@@ -957,20 +967,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
             if reply == qtw.QMessageBox.No:
                 return
             
-        
+        blur_kernel = int(self.combo_blur.currentText())
         # make masks
         thresh_method = self.combo_thresh_method.currentText()
         
         rois_to_extract = {}
         for item in rois_selected:
-            print(item)
+            # print(item)
             if type(item) == int:
                 rois_to_extract[item] = self.rois_tracked[item]
             else:
                 rois_to_extract[item] = self.rois_tracked_roiInRoi_trans[item]
-        
+                print(len(rois_to_extract[item]))
         self.masks = tr.create_masks(self.nav_imgs, rois_to_extract, 
-                                thresh_method, self.thresh_offset)
+                                thresh_method, self.thresh_offset, blur_kernel)
         
         # set detector size for tpx3
         if dtype == '.tpx3': # TODO not good
@@ -1094,7 +1104,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
                                        verticalalignment='center', color='tab:orange', fontsize=8)
                 self.patches_tracked.append(rect)
                 self.patches_tracked.append(t)
-        
+ 
+ 
     def plot_image_mask(self, thresh_offset):
         if hasattr(self, 'rois_tracked') and (self.combo_roiNo.currentText() != ''):
             self.thresh_offset = thresh_offset / 100
@@ -1103,6 +1114,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             roi = self.rois_tracked[roiNo][imgNo]
             y,x,h,w = roi
             img = deepcopy(self.nav_imgs[imgNo][x:x+w, y:y+h])
+            img = io.convert_img_to_8bit(img)
+            
+            blur_kernel = int(self.combo_blur.currentText())
+            img = io.gaussian_blur(img, blur_kernel)
             
             thresh_method = self.combo_thresh_method.currentText()
             threshold_methods = {

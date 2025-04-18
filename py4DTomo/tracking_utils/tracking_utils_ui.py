@@ -423,9 +423,9 @@ def check_threshold(img, dev=0.1, step=0.05):
             ax[i_t, i_r].set_title(f'{r:.02f}')
         ax[i_t,0].set_ylabel(lbls[i_t])
 
-def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0):
+def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kernel=1):
     masks = {}
-    
+
     threshold_methods = {
     'otsu': threshold_otsu,
     'li': threshold_li,
@@ -437,6 +437,9 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0):
         masks_temp = np.zeros(navImgs.shape, dtype=navImgs.dtype)
         for i, img in enumerate(navImgs):
             y,x,h,w = rois[r_id][i]
+            if blur_kernel != 1:
+                img = io.convert_img_to_8bit(img)
+                img = io.gaussian_blur(img, blur_kernel)
             masks_temp[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
             th = threshold_func(masks_temp[i])
             th *= thresh_offset
