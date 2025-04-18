@@ -382,11 +382,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
             
             self.img_display['dp'].set_data(self.dp)
             
-            self.img_display['dp'].set_clim(vmin, vmax)
+            # self.img_display['dp'].set_clim(vmin, vmax)
             # self.img_display['dp'].set_norm(SymLogNorm(linthresh=0.1, vmin=vmin, vmax=vmax))
             shape_x, shape_y = self.dp.shape
             self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-            self.img_display['dp'].set_clim(self.dp.min(), self.dp.max())
+            # self.img_display['dp'].set_clim(self.dp.min(), self.dp.max())
+            self.img_display['dp'].set_clim(vmin, vmax)
 
             if roiUpdate:
                 self.img_display['nav_roi'].set_data(self.navImg_cut)
