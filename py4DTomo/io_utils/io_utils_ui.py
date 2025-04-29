@@ -188,7 +188,7 @@ def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
         s = s.inav[x:x+w, y:y+h]
     
     if sum_dp:
-        dp = s.sum(axis=(2,3))
+        dp = s.sum(axis=(2,3)).data
         dp.compute()
         return dp
     

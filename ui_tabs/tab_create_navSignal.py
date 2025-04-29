@@ -301,6 +301,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
                 fns = self.get_all_item_names()
                 fns = [fn for fn in fns if os.path.splitext(fn) == dtype]
         fns = [os.path.join(self.path_main, fn) for fn in fns]
+        fns.sort()
         
         # check data types in the folder
         dtype = [os.path.splitext(fn)[1] for fn in fns]

@@ -71,7 +71,7 @@ class ScanSizeWidget(qtw.QMainWindow):
         layout_canvas = qtw.QVBoxLayout()
         self.layout.addLayout(layout_canvas)
         
-        self.figure = Figure()
+        # self.figure = Figure()
         self.figure = Figure(constrained_layout=True)
         # self.figure = Figure(figsize=(16,8)) # with figsize
         self.canvas = FigureCanvas(self.figure)
