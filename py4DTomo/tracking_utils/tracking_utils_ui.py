@@ -387,7 +387,6 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None,
         x,y,w,h = roi
         # mask = mask[x:x+w, y:y+h]
         mask = mask[y:y+h, x:x+w] #TODO check
-    mask_flat = mask.flatten()
     dtype = os.path.splitext(fn)[1]
     s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, 
                        roi=roi, lazy=True)
@@ -397,7 +396,12 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None,
     with config.set(**{'array.slicing.split_large_chunks': False}):
         arr_flat = s.data.reshape(-1, *s.data.shape[2:])
     # Apply the 1D mask
-    sliced_flat = arr_flat[mask_flat, :, :]
+# =============================================================================
+#     mask_flat = mask.flatten()
+#     sliced_flat = arr_flat[mask_flat, :, :]
+# =============================================================================
+    mask_flat = np.where(mask.flatten()==1)[0]
+    sliced_flat = arr_flat[mask_flat]
     
     dp = sliced_flat.sum(axis=(0))
     if hasattr(dp, 'compute'):
