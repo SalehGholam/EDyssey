@@ -27,6 +27,12 @@ from .worker_thread import WorkerThread_General
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
+from dask.distributed import Client, LocalCluster, as_completed
+import base64
+import pickle
+from PyQt5.QtCore import QProcess
+import shutil
+from .loading_label import LoadingSpinner
 #%% wdiget
 class Tab_Tracking_CV2(qtw.QWidget):
 # class Tab_Create_NavSignal(qtw.QMainWindow):
@@ -34,6 +40,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         super().__init__(parent)
         
         self.init_widget()
+        
+        
+        # cluster = LocalCluster(n_workers=4, threads_per_worker=1, memory_limit='2GB')
+        # client = Client(cluster)
         
         # threadpool to use in the entire tab
         self.threadpool = QThreadPool()
@@ -395,13 +405,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
 #         for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_mask, self.ax_dp]):
 #             self.img_display[axes[i]] = ax.imshow(img_temp, cmap='viridis') 
 # =============================================================================
-        axes = ['nav', 'track', 'dp']
+        axes = ['nav', 'track', 'dp', 'mask']
+        
         for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_dp]):
             self.img_display[axes[i]] = ax.imshow(self.img_zero, cmap='viridis') 
             ax.set_axis_off()
+        
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
-        self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.25)
+        self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.1)
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
         # self.figure.tight_layout()
@@ -426,6 +438,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        
+        self.axes = [self.ax_nav, self.ax_track, self.ax_dp, self.ax_mask]
+        self.backgrounds = {}
+        for i, ax in enumerate(self.axes):
+            self.backgrounds[axes[i]] = self.canvas.copy_from_bbox(ax.bbox)
         
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)
@@ -492,6 +509,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.threadpool.setMaxThreadCount(value)
     
     def update_canvas(self, imgNo=None):
+        # self.canvas.restore_region(self.canvas_background)
         if not imgNo:
             imgNo = self.slider_imgNo.value()
         if hasattr(self, 'nav_imgs'):
@@ -504,13 +522,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
             self.ax_nav.set_title(f'Nav Image No. {imgNo+1:d}')
             self.draw_rois_nav(self.patches_toTrack, self.ax_nav, self.rois)
+            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_nav.bbox))
+            self.canvas.blit(self.ax_nav.bbox)
+        
         # draw rois from roi in roi
         if hasattr(self, 'tracking_finished'):
+            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
             if (self.tracking_finished) and (hasattr(self, 'rois_tracked_roiInRoi_trans')):
                 self.draw_rois_nav(self.patches_toTrack_roiInRoi, self.ax_nav, self.rois_roiInRoi)
             else:
                 self.draw_rois_nav(self.patches_toTrack_roiInRoi, self.ax_track, self.rois_roiInRoi)
-        
+            self.canvas.blit(self.ax_track.bbox)
         # draw image mask
         if hasattr(self, 'rois_tracked'):
             self.plot_tracking_results(imgNo)
@@ -519,6 +541,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # draw dp
         if hasattr(self, 'tomo_ds'):
+            self.canvas.restore_region(self.backgrounds['dp'])
             # roiNo = self.combo_roiNo.currentText()
             roiNo = self.combo_dp_plot.currentText()
             roiNo = eval(roiNo)
@@ -530,11 +553,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
         try:
             scale_real = float(scale_real)
             for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
+                self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
                 scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
                 for artist in ax.artists:
                     if isinstance(artist, ScaleBar):
                         artist.remove()
                 ax.add_artist(scalebar_real)
+                self.canvas.blit(ax.bbox)
         except Exception as e:
             # print(e)
             pass
@@ -542,18 +567,26 @@ class Tab_Tracking_CV2(qtw.QWidget):
         try:
             scale_recip = float(scale_recip)
             if scale_recip != 0:
+                self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
                 scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
                                     scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
                 for artist in self.ax_dp.artists:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
                 self.ax_dp.add_artist(scalebar_recip)
+                self.canvas.blit(self.ax_dp.bbox)
         except Exception as e:
             # print(e)
             pass
-        self.canvas.draw()
+        # self.canvas.draw()
+        # self.canvas.draw_idle()
+        
             
     def load_navSignal(self):
+        def get_signal(fn):
+            return load(fn)
+        
+        self.load_spinner()
         gc.collect()
         #TODO delete the previous batch
         if hasattr(self, 'rois_tracked'):
@@ -573,9 +606,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
 # =============================================================================
             self.disable_3ded_widgets(True)
                     
-            
         fn = self.lineEdit_dir_navSignal.text()
-        self.s = load(fn)
+        # self.s = load(fn)
+        worker = WorkerThread_General(get_signal, 0, fn)
+        worker.signals.results.connect(self.initiate_processing)
+        self.threadpool.start(worker)
+
+    def initiate_processing(self, result, index):
+        self.s = result
+        self.spinner.stop()
         self.s_8bit = io.convert_to_8bit(self.s)
         self.nav_imgs_raw = self.s.data
         self.nav_imgs = self.s_8bit.data
@@ -598,8 +637,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.patches_toTrack.append(self.rect)
             self.ax_nav.add_patch(self.rect)
             self.canvas.draw()
+            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
             
         elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+            self.canvas.restore_region(self.backgrounds['track'])
             if self.rect_roiInRoi is not None:
                 self.rect_roiInRoi.remove()
             
@@ -608,6 +649,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.patches_toTrack_roiInRoi.append(self.rect_roiInRoi)
             self.ax_track.add_patch(self.rect_roiInRoi)
             self.canvas.draw()
+            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
+            
         else:
             self.press = None
         
@@ -628,38 +671,43 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.rect.set_xy((x0, y0))
             except AttributeError:
                 self.press = None
+            self.canvas.restore_region(self.backgrounds['nav'])
+            self.ax_nav.draw_artist(self.rect)
+            self.canvas.blit(self.ax_nav.bbox)
             
         elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+            if event.xdata is None or event.ydata is None:
+                return
+        
             x0, y0 = self.press
             width = event.xdata - x0
             height = event.ydata - y0
-            
-            # confine the roi in roi to the ref roi            
+        
+            # Confine ROI
             roiRef = int(self.combo_roiNo.currentText())
             imgNo = self.slider_imgNo.value()
-            xr,yr,wr,hr = self.rois_tracked[roiRef][imgNo]
-            if x0 > xr+wr:
-                x0 = xr+wr
-            if x0+width > xr+wr:
-                width = (xr+wr) - x0
-            elif width<0 and abs(x0+width) < xr:
-                width = xr - x0
-            
-            if y0 > yr+hr:
-                y0 = yr+hr
-            if y0+height > yr+hr:
-                height = (yr+hr) - y0
-            elif height<0 and abs(y0+height) < yr:
-                height = yr - y0
-            
-            
+            xr, yr, wr, hr = self.rois_tracked[roiRef][imgNo]
+        
+            # Clamp logic
+            x1 = x0 + width
+            y1 = y0 + height
+            x1 = max(xr, min(x1, xr + wr))
+            y1 = max(yr, min(y1, yr + hr))
+            width = x1 - x0
+            height = y1 - y0
+        
             try:
                 self.rect_roiInRoi.set_width(width)
                 self.rect_roiInRoi.set_height(height)
                 self.rect_roiInRoi.set_xy((x0, y0))
-            except AttributeError: # Although the checkbox was unchecked, the zoom function was causing this error after checkbox was activated again
+            except AttributeError:
                 self.press = None
-        self.canvas.draw()
+                return
+        
+            self.canvas.restore_region(self.backgrounds['track'])
+            self.ax_track.draw_artist(self.rect_roiInRoi)
+            self.canvas.blit(self.ax_track.bbox)
+
 
     def on_release(self, event):
         # Mouse release event: finalize the rectangle
@@ -705,9 +753,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.patches_toTrack.append(t)
             # Set the press attribute to None for future drawings
             self.rect = None
+            # self.canvas.blit(self.ax_nav.bbox)
             print('The added ROI coordintations: ', roi)
+            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
+            self.canvas.restore_region(self.backgrounds['nav'])
+            self.ax_nav.draw_artist(t)
+            self.canvas.blit(self.ax_nav.bbox)
         
         elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+            self.canvas.restore_region(self.backgrounds['track'])
             # Store the rectangle's properties
             roiNo_ref = int(self.combo_roiNo.currentText())
             
@@ -719,17 +773,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.rois_roiInRoi[(self.roi_counter_roiInRoi, roiNo_ref)][imgNo] = roi
             text_id = f'{self.roi_counter_roiInRoi}_{roiNo_ref}'
             
-# =============================================================================
-#             # reference ROI => roiinroi counter => (imgNo, roi)
-#             if imgNo == 0:
-#                 self.rois_roiInRoi[roiNo_ref] = {self.roi_counter_roiInRoi: [(0, roi)]}
-#                 self.roi_counter_roiInRoi += 1
-#             else:
-#                 self.rois_roiInRoi[roiNo_ref][self.roi_counter_roiInRoi].append(
-#                     (imgNo, roi))
-#             text_id = f'{roiNo_ref}_{self.roi_counter_roiInRoi}'
-# =============================================================================
-    
             # Draw a label (counter) at the center of the rectangle
             t = self.ax_track.text(x0, y0-15, text_id,
                          horizontalalignment='center', verticalalignment='center', 
@@ -737,10 +780,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.patches_toTrack_roiInRoi.append(t)
             self.rect_roiInRoi = None
             print('The addedd ROI coordintations: ', roi)
-        self.canvas.draw()
+            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
+            self.canvas.restore_region(self.backgrounds['track'])
+            self.ax_track.draw_artist(t)
+            self.canvas.blit(self.ax_track.bbox)
+        # self.canvas.draw()
         self.press = None
+
     
     def draw_rois_nav(self, patch, ax, rois):
+        # self.canvas.restore_region(self.backgrounds['nav'])
         for p in patch:
             try:
                 p.remove()
@@ -783,10 +832,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.disable_roiInRoi_widgets(True)
         
         if hasattr(self, 'nav_imgs'): # if images are already loaded
+            self.canvas.restore_region(self.backgrounds['nav'])
             self.img_display['nav'].set_data(self.nav_imgs[imgNo])
             shape_x, shape_y = self.nav_imgs[imgNo].shape
             self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-
+            self.canvas.blit(self.ax_nav.bbox)
+            
         # delete patches/rois drawn
         for p in self.patches_toTrack:
             p.remove()
@@ -797,25 +848,36 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if hasattr(self, 'rois_tracked'):
             del self.rois_tracked
             # re-draw axes with empty images (except for navigation)
-            for ax in self.img_display.keys():
-                if ax != 'nav':
+            # for ax in self.img_display.keys():
+            #     if ax != 'nav':
+            #         self.img_display[ax].set_data(self.img_zero)
+            axes = [self.ax_track, self.ax_mask, self.ax_dp]
+            titles = ['track', 'mask', 'dp']
+            for ax, t_bg in zip(axes, titles):
+                    self.canvas.restore_region(self.backgrounds[t_bg])
                     self.img_display[ax].set_data(self.img_zero)
+                    self.canvas.blit(ax.bbox)
 
         # delete patches tracked
         if hasattr(self, 'patches_tracked'):
+            self.canvas.restore_region(self.backgrounds['track'])
             for p in self.patches_tracked:
                 p.remove()
+            self.canvas.blit(self.ax_track.bbox)
+
         # delete extracted dps
         if hasattr(self, 'tomo_ds'):
+            self.canvas.restore_region(self.backgrounds['dp'])
             del self.tomo_ds
+            self.canvas.blit(self.ax_dp.bbox)
         
         if hasattr(self, 'rois_tracked_roiInRoi_trans'):
             del self.rois_tracked_roiInRoi_trans
         
         if hasattr(self, 'rois_roiInRoi'):
             self.rois_roiInRoi = {}
-            
-        self.canvas.draw()
+        
+        # self.canvas.draw()
         self.update_progress_bar(0, 100)
         
     def del_current_roi(self):
@@ -837,8 +899,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
         except ValueError: # there might not be any roi
             pass
         gc.collect()
-            
+    
+    def load_spinner(self,):
+        # Create spinner as a floating overlay on the main widget
+        self.spinner = LoadingSpinner(parent=self)
+        self.spinner.setAttribute(Qt.WA_TransparentForMouseEvents)  # Optional: let clicks pass through
+        self.spinner.setWindowFlags(Qt.SubWindow)  # Optional: prevent it from behaving like a popup
+    
+        # Center it
+        x = (self.width() - self.spinner.width()) // 2
+        y = (self.height() - self.spinner.height()) // 2
+        self.spinner.move(x, y)
+    
+        self.spinner.raise_()
+        self.spinner.start()
+        
     def track_rois(self, imgs, rois, roiInRoi_index=False):
+        self.load_spinner()
         if len(rois) == 0:
             return
         self.tracking_counter = 0
@@ -908,12 +985,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.update_progress_bar(self.tracking_counter, len(self.rois))
             if self.tracking_counter == len(self.rois):
                 self.tracking_finished = True
+                self.spinner.stop()
         
         else:
             self.rois_tracked_roiInRoi[index] = result
             self.update_progress_bar(self.tracking_counter_2, len(self.rois_roiInRoi))
             if self.tracking_counter_2 == len(self.rois_roiInRoi):
                 self.tracking_finished = True
+                self.spinner.stop()
             
         if self.tracking_finished:
             # in roiInRoi translate tracked ROIs to the full images
@@ -941,6 +1020,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.spinbox_finalFrame.setValue(len(self.nav_imgs))
      
     def extract_3ded(self):
+        self.spinner = self.load_spinner()
         self.combo_dp_plot.clear()
         rois_selected = self.combo_3ded.currentText()
         rois_all = [eval(self.combo_3ded.itemText(i)) for i in range(self.combo_3ded.count()) if self.combo_3ded.itemText(i) != 'all']
@@ -995,58 +1075,116 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # extract to a certain frame no
         final_frame = self.spinbox_finalFrame.value()
         fns_4d = fns_4d[:final_frame]
+        
         self.tomo_counter_total = len(rois_to_extract) * len(fns_4d)
         self.update_progress_bar(0, self.tomo_counter_total)
-        
-        # threading images of each roi
         self.tic = perf_counter()
+        
+        self.tasks = []
+        self.temp_dir = self.get_temp_dir()
         for r_id in rois_to_extract.keys():
             self.tomo_ds[r_id] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
             for i_fr, fn in enumerate(fns_4d):
-                worker = WorkerThread_General(tr.extract_3ded_mask_single_frame, 
-                                              (r_id, i_fr), fn, self.masks[r_id][i_fr], 
-                                              dtype, scanSize, rois_to_extract[r_id][i_fr])
-            
-                worker.signals.results.connect(self.get_tomo_results)  # Connect to result signal
-                # worker.signals.finished.connect(self.plot_tracking_result)
-                self.threadpool.start(worker)
-            
-# =============================================================================
-#         # threading rois
-#         for r_id in self.rois_tracked.keys():
-#             worker = WorkerThread_General(tr.extract_3ded_mask, r_id, fns_4d, masks[r_id])
-#             
-#             worker.signals.results.connect(self.get_tomo_results)  # Connect to result signal
-#             # worker.signals.finished.connect(self.plot_tracking_result)
-#             self.threadpool.start(worker)
-# =============================================================================
+                self.tasks.append([fn, rois_to_extract[r_id][i_fr], 
+                                   os.path.join(self.temp_dir, f"mask_r{r_id}_f{i_fr}.npy"),
+                                   dtype, scanSize, (r_id, i_fr)])
+            # for i_fr, fn in enumerate(fns_4d):
+            #     self.tasks.append([fn, self.masks[r_id][i_fr], dtype, scanSize, rois_to_extract[r_id][i_fr]])
+               
+               
+        self.max_processes = self.spinbox_threadNo.value()
+        self.running_processes = []
+        self.process_task_map = {}
+        self.launch_initial_tasks()
 
-    def get_tomo_results(self, result, index):
-        r_id, i_fr = index
-        # print(f'ROI No: {r_id}, frame No: {i_fr}') # check results
-        self.tomo_ds[r_id][i_fr] = result
+    def get_temp_dir(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        print('temp dir', temp_dir)
+        return temp_dir
+    
+    def save_mask_to_temp(self, temp_dir, mask_array, r_id, i_fr):
+        filename = f"mask_r{r_id}_f{i_fr}.npy"
+        filepath = os.path.join(temp_dir, filename)
+        np.save(filepath, mask_array)
+        return filepath
+
+    def launch_initial_tasks(self):
+        for _ in range(min(self.max_processes, len(self.tasks))):
+            self.launch_next_task()
+
+    def launch_next_task(self):
+        if not self.tasks or len(self.running_processes) >= self.max_processes:
+            return
+    
+        args = self.tasks.pop(0)
+        *_, (r_id,i_fr) = args
+        mask_path = self.save_mask_to_temp(self.temp_dir, self.masks[r_id][i_fr], r_id, i_fr)
+        
+        process = QProcess()
+        process.setProgram(sys.executable)
+        process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
+        process.readyReadStandardOutput.connect(lambda: self.handle_output(process))
+        process.readyReadStandardError.connect(lambda: self.handle_error(process))
+        process.finished.connect(lambda: self.handle_finished(process))
+        process.errorOccurred.connect(self.process_failed)
+
+
+        self.running_processes.append(process)
+        self.process_task_map[process] = args
+        process.start()
+        
+    def process_failed(self, error):
+        print("QProcess error occurred:", error)    
+        
+    def handle_error(self, process):
+        error_output = process.readAllStandardError().data().decode()
+        print("Worker ERROR:", error_output)
+        self.spinner.stop()
+    
+    def handle_output(self, process):
+        raw_output = process.readAllStandardOutput().data().decode().strip()
+        try:
+            result_array = pickle.loads(base64.b64decode(raw_output))
+        except Exception as e:
+            # print(f"Failed to decode output: {e}")
+            # print("Raw output was:", raw_output)
+            return
+    
+        task_info = self.process_task_map.get(process, None)
+        if task_info is None:
+            print("Unknown process")
+            return
+    
+        # *_ , (r_id, i_fr) = task_info
+        img , idx = result_array
+        r_id, i_fr = eval(idx)
+        self.tomo_ds[r_id][i_fr] = img
+        
+    def handle_finished(self, process):
+        if process in self.running_processes:
+            self.running_processes.remove(process)
+        _ = self.process_task_map.pop(process, None)
+        process.deleteLater()
         
         # progress bar update
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
-        # plot results at the end
-        if self.tomo_counter == self.tomo_counter_total:
-            roiNo = self.combo_dp_plot.currentText()
-            roiNo = eval(roiNo)
-            try: # roi in roi is tuple
-                roiRef = roiNo[1]
-            except:
-                roiRef = roiNo
-            self.combo_roiNo.setCurrentText(str(roiRef))
-            imgNo = self.slider_imgNo.value()
-            self.plot_dp(roiNo, imgNo)
-            self.update_canvas(imgNo)
-            toc = perf_counter()
-            print(f'Extraction Duration: {(toc-self.tic)//60:.0f} min')
-            # self.combo_roiNo.currentIndexChanged.connect(lambda: self.plot_dp(roiNo, imgNo))
-    
+        
+        if self.tomo_counter >= self.tomo_counter_total:
+            self.toc = perf_counter()
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+            time = self.toc - self.tic
+            print(f'Data Extraction Time: {time/60:.1f} min')
+            self.spinner.stop()
+        else:
+            self.launch_next_task()  # trigger next task if any left
+        
     def plot_dp(self, roiNo=None, imgNo=None):
         if hasattr(self, 'tomo_ds'):
+            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
             if not imgNo:
                 imgNo = self.slider_imgNo.value()
             if not roiNo:
@@ -1059,6 +1197,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
             shape_x, shape_y = img.shape
             self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+            self.canvas.blit(self.ax_dp.bbox)
     
     def update_progress_bar(self, value, total):
         value = value / total * 100
@@ -1066,6 +1205,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.progress_bar.setValue(value)
     
     def plot_tracking_results(self, imgNo):
+        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
         if hasattr(self, 'patches_tracked'):
             try:
                 for p in self.patches_tracked:
@@ -1104,10 +1244,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
                                        verticalalignment='center', color='tab:orange', fontsize=8)
                 self.patches_tracked.append(rect)
                 self.patches_tracked.append(t)
+        self.canvas.blit(self.ax_track.bbox)
  
  
     def plot_image_mask(self, thresh_offset):
         if hasattr(self, 'rois_tracked') and (self.combo_roiNo.currentText() != ''):
+            self.backgrounds['mask'] = self.canvas.copy_from_bbox(self.ax_mask.bbox)
+            self.canvas.restore_region(self.backgrounds['mask'])
+            
             self.thresh_offset = thresh_offset / 100
             imgNo = self.slider_imgNo.value()
             roiNo = int(self.combo_roiNo.currentText())
@@ -1117,7 +1261,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             img = io.convert_img_to_8bit(img)
             
             blur_kernel = int(self.combo_blur.currentText())
-            img = io.gaussian_blur(img, blur_kernel)
+            img_blur = io.gaussian_blur(img, blur_kernel)
             
             thresh_method = self.combo_thresh_method.currentText()
             threshold_methods = {
@@ -1126,20 +1270,22 @@ class Tab_Tracking_CV2(qtw.QWidget):
             'yen': threshold_yen,
             'mean': threshold_mean}
             threshold_func = threshold_methods[thresh_method]
-            th = threshold_func(img)
+            th = threshold_func(img_blur)
             
             self.thresh = self.thresh_offset * th
-            img_mask = img > self.thresh
-            
-            self.img_display['img_mask'].set_data(img)
-            self.img_display['img_mask'].set_clim(vmin=img.min(), vmax=img.max())
-            self.img_display['mask'].set_data(img_mask)
+            img_mask = img_blur > self.thresh
             
             shape_x, shape_y = img_mask.shape
-            self.img_display['mask'].set_clim(vmin=0, vmax=1)
+            self.img_display['img_mask'].set_data(img)
+            self.img_display['img_mask'].set_clim(vmin=img.min(), vmax=img.max())
             self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
+            
+            self.img_display['mask'].set_data(img_mask)
+            self.img_display['mask'].set_clim(vmin=0, vmax=1)
             self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
+            self.canvas.blit(self.ax_mask.bbox)
             self.canvas.draw()
+            # self.backgrounds['mask'] = self.canvas.copy_from_bbox(self.ax_mask.bbox)
     
     def reset_thresh(self):
         self.slider_thresh.setValue(100)
@@ -1233,7 +1379,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
             worker_clip_tr_ref = WorkerThread_General(io.create_clip_tracking, 0,
                                                       fn, self.nav_imgs, rois_ref, scale_real)
             self.threadpool.start(worker_clip_tr_ref)
-        
+    def kill_running_process(self):
+        for process in self.running_processes:
+            process.kill()  # Forcefully terminates the subprocess
+            process.deleteLater()
+        self.running_processes.clear()
 # =============================================================================
 # if __name__ == "__main__":
 #     app = qtw.QApplication(sys.argv)

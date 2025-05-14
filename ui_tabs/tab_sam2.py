@@ -14,7 +14,9 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import Qt, QThreadPool
+from PyQt5.QtCore import Qt, QThreadPool, QProcess
+import pickle
+import base64
 from PyQt5.QtGui import QDoubleValidator
 from matplotlib_scalebar.scalebar import ScaleBar
 import numpy as np
@@ -28,6 +30,7 @@ from PIL import Image
 import gc
 from copy import deepcopy
 import datetime
+from time import perf_counter
 import py4DTomo.io_utils as io
 import torch
 from typing import Literal
@@ -35,6 +38,7 @@ from .worker_thread import WorkerThread_General
 from glob import glob
 from matplotlib.colors import SymLogNorm
 import py4DTomo.tracking_utils as tr
+import shutil
 from hyperspy.api import signals as hsSignals
 path_ffmpeg = r'C:\Users\sgholam\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1-essentials_build\bin\ffmpeg.exe'
 plt.rcParams['animation.ffmpeg_path'] = path_ffmpeg  # Windows example
@@ -581,7 +585,8 @@ class Tab_SAM2(qtw.QWidget):
     def make_rois(self, masks):
         rois = {}
         for i_obj in masks.keys():
-            rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
+            # rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
+            rois[i_obj] = []
             for i_img, mask in enumerate(masks[i_obj]):
                 temp = np.where(mask==True)
                 try:
@@ -593,24 +598,27 @@ class Tab_SAM2(qtw.QWidget):
                         w = xmax - xmin
                         h = ymax - ymin
                         r = [xmin, ymin, w, h]
-                        r = [int(item) for item in r]
-                        rois[i_obj][i_img] = r
+                        r = tuple([int(item) for item in r])
+                        # rois[i_obj][i_img] = r
+                        rois[i_obj].append(r)
                 except:
-                    rois[i_obj][i_img] = [0,0,0,0]
+                    # rois[i_obj][i_img] = (0,0,0,0)
+                    rois[i_obj].append((0,0,0,0))
         return rois
     
     def extract_3ded(self):
-
-        def get_tomo_ds(result, index):
-            obj_id, fr_id = index
-            self.tomo_ds[obj_id][fr_id] = result
-            
-            # progressbar update
-            self.tomo_counter += 1
-            self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
-            # plot results at the end
-            if self.tomo_counter == self.tomo_counter_total:
-                self.update_canvas()
+# =============================================================================
+#         def get_tomo_ds(result, index):
+#             obj_id, fr_id = index
+#             self.tomo_ds[obj_id][fr_id] = result
+#             
+#             # progressbar update
+#             self.tomo_counter += 1
+#             self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+#             # plot results at the end
+#             if self.tomo_counter == self.tomo_counter_total:
+#                 self.update_canvas()
+# =============================================================================
 
         self.rois = self.make_rois(self.masks_video)
         
@@ -639,19 +647,123 @@ class Tab_SAM2(qtw.QWidget):
             shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])
         scanSize = self.imgs.shape[1:]
         
-        self.tomo_counter_total = len(self.masks_video) * len(fns_4d)
         self.tomo_counter = 0
-        
         self.tomo_ds = {}
-        for i_obj in self.masks_video.keys():
-            self.tomo_ds[i_obj] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
+        # extract to a certain frame no
+        final_frame = self.spinbox_finalFrame.value()
+        fns_4d = fns_4d[:final_frame]
+        self.tomo_counter_total = len(self.masks_video) * len(fns_4d)
+        self.update_progress_bar(0, self.tomo_counter_total)
+        self.tic = perf_counter()
+        
+        self.tasks = []
+        self.temp_dir = self.get_temp_dir()
+        for r_id in self.masks_video.keys():
+            self.tomo_ds[r_id] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
             for i_fr, fn in enumerate(fns_4d):
-                worker = WorkerThread_General(tr.extract_3ded_mask_single_frame, (i_obj, i_fr),
-                                              fn, self.masks_video[i_obj][i_fr], dtype, scanSize,
-                                              self.rois[i_obj][i_fr])
-                worker.signals.results.connect(get_tomo_ds)
-                self.threadpool.start(worker)
+                self.tasks.append([fn, self.rois[r_id][i_fr], 
+                                   os.path.join(self.temp_dir, f"mask_r{r_id}_f{i_fr}.npy"),
+                                   dtype, scanSize, (r_id, i_fr)])
+        
+        self.max_processes = self.spinbox_threadNo.value()
+        self.running_processes = []
+        self.process_task_map = {}
+        self.launch_initial_tasks()
+        
+# =============================================================================
+#         for i_obj in self.masks_video.keys():
+#             self.tomo_ds[i_obj] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
+#             for i_fr, fn in enumerate(fns_4d):
+#                 worker = WorkerThread_General(tr.extract_3ded_mask_single_frame, (i_obj, i_fr),
+#                                               fn, self.masks_video[i_obj][i_fr], dtype, scanSize,
+#                                               self.rois[i_obj][i_fr])
+#                 worker.signals.results.connect(get_tomo_ds)
+#                 self.threadpool.start(worker)
+# =============================================================================
     
+    def get_temp_dir(self):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        print('temp dir', temp_dir)
+        return temp_dir
+
+    def save_mask_to_temp(self, temp_dir, mask_array, r_id, i_fr):
+        filename = f"mask_r{r_id}_f{i_fr}.npy"
+        filepath = os.path.join(temp_dir, filename)
+        np.save(filepath, mask_array)
+        return filepath
+
+    def launch_initial_tasks(self):
+        for _ in range(min(self.max_processes, len(self.tasks))):
+            self.launch_next_task()
+    
+    def launch_next_task(self):
+        if not self.tasks or len(self.running_processes) >= self.max_processes:
+            return
+    
+        args = self.tasks.pop(0)
+        *_, (r_id,i_fr) = args
+        mask_path = self.save_mask_to_temp(self.temp_dir, self.masks_video[r_id][i_fr], r_id, i_fr)
+        
+        process = QProcess()
+        process.setProgram(sys.executable)
+        process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
+        process.readyReadStandardOutput.connect(lambda: self.handle_output(process))
+        process.readyReadStandardError.connect(lambda: self.handle_error(process))
+        process.finished.connect(lambda: self.handle_finished(process))
+        process.errorOccurred.connect(self.process_failed)
+
+
+        self.running_processes.append(process)
+        self.process_task_map[process] = args
+        process.start()
+        
+    def process_failed(self, error):
+        print("QProcess error occurred:", error)    
+        
+    def handle_error(self, process):
+        error_output = process.readAllStandardError().data().decode()
+        print("Worker ERROR:", error_output)    
+    
+    def handle_output(self, process):
+        raw_output = process.readAllStandardOutput().data().decode().strip()
+        try:
+            result_array = pickle.loads(base64.b64decode(raw_output))
+        except Exception as e:
+            # print(f"Failed to decode output: {e}")
+            # print("Raw output was:", raw_output)
+            return
+    
+        task_info = self.process_task_map.get(process, None)
+        if task_info is None:
+            print("Unknown process")
+            return
+    
+        # *_ , (r_id, i_fr) = task_info
+        img , idx = result_array
+        r_id, i_fr = eval(idx)
+        self.tomo_ds[r_id][i_fr] = img
+        
+    def handle_finished(self, process):
+        if process in self.running_processes:
+            self.running_processes.remove(process)
+        _ = self.process_task_map.pop(process, None)
+        process.deleteLater()
+        
+        # progress bar update
+        self.tomo_counter += 1
+        self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+        
+        if self.tomo_counter >= self.tomo_counter_total:
+            self.toc = perf_counter()
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+            time = self.toc - self.tic
+            print(f'Data Extraction Time: {time/60:.1f} min')
+        else:
+            self.launch_next_task()  # trigger next task if any left
+
 
     # def show_mask(self, mask, obj_id=None, random_color=False, borders=True):
     def show_mask(self, mask, obj_id=None, random_color=False, disp_ax=None):

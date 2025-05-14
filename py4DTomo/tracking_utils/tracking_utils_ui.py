@@ -20,9 +20,13 @@ import io_utils_ui as io
 from skimage.filters import threshold_otsu, threshold_li, threshold_yen, threshold_mean
 from py4DTomo.io_utils import create_array_from_dissimilar_imgs
 from dask import config
-import matplotlib.patches as patches
+# import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 import dask.array as da
+import time
+config.set(scheduler='single-threaded')
+# from dask import config as da_config
+# da_config.set(scheduler='processes')
 #%%
 def select_roi(img):
     # cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -382,7 +386,8 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
 # =============================================================================
 
 def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, 
-                                   roi=None): 
+                                   roi=None):
+    time.sleep(0.1)
     if roi is not None:
         x,y,w,h = roi
         # mask = mask[x:x+w, y:y+h]

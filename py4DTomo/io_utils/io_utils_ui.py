@@ -379,6 +379,8 @@ def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, c
     
     if fps is None:
         fps = len(s.data) // 20 # sec
+        if fps == 0:
+            fps = 1
     ani = FuncAnimation(fig, update_frame, frames=range(s.data.shape[0]), blit=True)
     try:
         ani.save(fn + '.mp4', writer='ffmpeg', fps=fps, dpi=dpi)

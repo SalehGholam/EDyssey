@@ -4,11 +4,9 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 3:
-    1. Redesign load signal
-        todo. add dtype to ROI on 4D for tpx3
-    2. support hdf5 with 4D or 1D
-    3. combine images for sam2
+version 4:
+    1. using canvas.blit instead of canvas.draw to accelerate re-draw speed
+    2. using processes instead of threads for frame extraction
     
 """
 
@@ -51,6 +49,7 @@ class MainWindow(qtw.QMainWindow):
         
     def closeEvent(self,event):
         self.tab_sam2.clear_model()
+        # self.tab_tracking_cv2.kill_running_process()
         gc.collect()
         event.accept()
         
@@ -61,3 +60,4 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     app.exec_()
+    
