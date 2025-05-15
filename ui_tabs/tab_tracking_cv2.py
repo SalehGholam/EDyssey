@@ -353,6 +353,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_extract = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract)
         
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_box_3ded.addWidget(self.checkbox_autosave)
+        
         self.button_3ded = qtw.QPushButton('Extract!')
         layout_extract.addWidget(self.button_3ded)
         self.button_3ded.setFixedSize(button_w, button_h_lrg)
@@ -1179,6 +1182,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
             time = self.toc - self.tic
             print(f'Data Extraction Time: {time/60:.1f} min')
             self.spinner.stop()
+            if self.checkbox_autosave.isChecked():
+                self.save_results()
         else:
             self.launch_next_task()  # trigger next task if any left
         

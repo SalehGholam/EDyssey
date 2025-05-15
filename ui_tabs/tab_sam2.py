@@ -284,6 +284,9 @@ class Tab_SAM2(qtw.QWidget):
         
         layout_extract_button = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract_button)
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_box_3ded.addWidget(self.checkbox_autosave)
+        
         self.button_3ded = qtw.QPushButton('Extract!')
         self.button_3ded.setFixedSize(button_w, button_h_lrg)
         layout_extract_button.addWidget(self.button_3ded)
@@ -761,6 +764,8 @@ class Tab_SAM2(qtw.QWidget):
                 shutil.rmtree(self.temp_dir)
             time = self.toc - self.tic
             print(f'Data Extraction Time: {time/60:.1f} min')
+            if self.checkbox_autosave.isChecked():
+                self.save_results()
         else:
             self.launch_next_task()  # trigger next task if any left
 
