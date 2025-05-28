@@ -4,9 +4,10 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 4:
-    1. using canvas.blit instead of canvas.draw to accelerate re-draw speed
+version 5:
+    1. using canvas.blit and canvas.draw_idle instead of canvas.draw to accelerate re-draw speed
     2. using processes instead of threads for frame extraction
+    3. change feature handling in opencv tab to dataframe and tree widget
     
 """
 
@@ -16,6 +17,8 @@ os.chdir(os.path.dirname(file_path))
 
 import gc
 import PyQt5.QtWidgets as qtw
+# from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
+#                      Tab_ROI_on_4D)
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
 from PyQt5.QtGui import QIcon
@@ -48,9 +51,13 @@ class MainWindow(qtw.QMainWindow):
         self.setCentralWidget(self.tabs)
         
     def closeEvent(self,event):
-        self.tab_sam2.clear_model()
-        # self.tab_tracking_cv2.kill_running_process()
+        try:
+            self.tab_sam2.clear_model()
+            # self.tab_tracking_cv2.kill_running_process()
+        except:
+            pass
         gc.collect()
+        
         event.accept()
         
 if __name__ == "__main__":

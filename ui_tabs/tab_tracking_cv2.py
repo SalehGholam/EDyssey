@@ -14,7 +14,7 @@ from PyQt5.QtGui import QDoubleValidator
 from matplotlib.colors import SymLogNorm
 import numpy as np
 import py4DTomo.io_utils as io
-from hyperspy.api import load, signals
+from hyperspy.api import load
 import py4DTomo.tracking_utils as tr
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -27,12 +27,14 @@ from .worker_thread import WorkerThread_General
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
-from dask.distributed import Client, LocalCluster, as_completed
+# from dask.distributed import Client, LocalCluster, as_completed
 import base64
 import pickle
 from PyQt5.QtCore import QProcess
 import shutil
 from .loading_label import LoadingSpinner
+from .object_detection_widget import Object_Detector_Widget
+import pandas as pd
 #%% wdiget
 class Tab_Tracking_CV2(qtw.QWidget):
 # class Tab_Create_NavSignal(qtw.QMainWindow):
@@ -55,7 +57,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
 #             self.threadpool.setMaxThreadCount(logical_processors - 2)
 # =============================================================================
         self.threadpool.setMaxThreadCount(3)
-
 
     def init_widget(self):
         button_w = 110
@@ -157,10 +158,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_scale_recip.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         
-        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
+        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_scalebar('reciprocal'))
+        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
         
         layout_loadSignal.addItem(spacer)
         
@@ -170,106 +169,62 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
-        layout_topMiddle = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_topMiddle)
-        self.box_buttons = qtw.QGroupBox('Features Handling')
-        self.box_buttons.setFixedSize(350, height_layout_top)
-        # self.box_buttons.setFixedWidth(350)
-        self.box_buttons.setFixedHeight(height_layout_top//3)
-        layout_topMiddle.addWidget(self.box_buttons)
+        layout_top_2 = qtw.QVBoxLayout()
+        self.box_buttons = qtw.QGroupBox('Feature Handling')
+        layout_top.addWidget(self.box_buttons)
+        self.box_buttons.setLayout(layout_top_2)
         
-        # layout_topMiddle.setAlignment(Qt.AlignLeft)
-        
-        layout_features = qtw.QHBoxLayout(self)
-        self.box_buttons.setLayout(layout_features)
-        label_roiNo = qtw.QLabel('Roi No')
-        layout_features.addWidget(label_roiNo)
-        self.combo_roiNo = qtw.QComboBox()
-        layout_features.addWidget(self.combo_roiNo)
-        self.combo_roiNo.currentIndexChanged.connect(lambda: self.plot_image_mask(
-            self.slider_thresh.value()))
-        self.combo_roiNo.currentIndexChanged.connect(self.plot_dp)
-
-# =============================================================================
-#         # spacer
-#         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-#         layout_features.addItem(spacer)
-# =============================================================================
-        
-        self.button_cur_roi = qtw.QPushButton('Delete Current ROI')
-        layout_features.addWidget(self.button_cur_roi)
-        self.button_cur_roi.setFixedSize(button_w, button_h_sml)
-        self.button_cur_roi.clicked.connect(self.del_current_roi)
-        self.button_cur_roi.setDisabled(True)
+        # top
+        layout_featureTop = qtw.QHBoxLayout()
+        layout_top_2.addLayout(layout_featureTop)
+        self.button_autoDetection = qtw.QPushButton('Auto Detector')
+        layout_featureTop.addWidget(self.button_autoDetection)
+        self.button_autoDetection.clicked.connect(self.launch_auto_detector)
         
         self.button_reset_rois = qtw.QPushButton('Reset ROIs')
-        layout_features.addWidget(self.button_reset_rois)
-        self.button_reset_rois.setFixedSize(button_w, button_h_sml)
+        layout_featureTop.addWidget(self.button_reset_rois)
         self.button_reset_rois.clicked.connect(self.reset_rois)
-        self.button_reset_rois.setDisabled(True)
         
-        #%% tracker
-        self.box_tracker = qtw.QGroupBox('OpenCV Tracker')
-        # self.box_tracker.setFixedSize(300, 120)
-        self.box_tracker.setFixedWidth(350)
-        self.box_tracker.setFixedHeight(height_layout_top//3 *2)
-        layout_topMiddle.addWidget(self.box_tracker)
-        layout_tracker = qtw.QHBoxLayout(self)
-        self.box_tracker.setLayout(layout_tracker)
+        # tree
+        self.tree_objects = qtw.QTreeWidget()
+        layout_top_2.addWidget(self.tree_objects)
+        self.tree_objects.setMaximumWidth(400)
+        self.tree_objects.setColumnCount(6)
+        self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "del"]
+        self.tree_objects.setHeaderLabels(self.cols_tree)
+        for i, _ in enumerate(self.cols_tree):
+            self.tree_objects.setColumnWidth(i, 20)
+        self.tree_objects.setColumnWidth(2, 50)
+        self.tree_objects.setColumnWidth(3, 50)
+        self.box_buttons.setFixedSize(self.tree_objects.width()-10, height_layout_top)
+        # self.box_buttons.setFixedSize(280, height_layout_top)
+        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
+        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
-        layout_tracker_1 = qtw.QVBoxLayout()
-        layout_tracker.addLayout(layout_tracker_1)
-        layout_tracker_1_2 = qtw.QHBoxLayout()
-        layout_tracker_1.addLayout(layout_tracker_1_2)
+        self.empty_main_dataframe()
+        self.patches_tracked = []
         
-        layout_tracker_1_2.addItem(spacer)
-        label_track = qtw.QLabel('Method')
-        layout_tracker_1_2.addWidget(label_track)
+        # bottom 
+        layout_featureBottom = qtw.QHBoxLayout()
+        layout_top_2.addLayout(layout_featureBottom)
+        
+        self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
+        layout_featureBottom.addWidget(self.checkbox_roiInRoi)
+        self.checkbox_roiInRoi.setDisabled(True)
+
+        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
+        layout_featureBottom.addItem(spacer)
+
+        label_track = qtw.QLabel('Tracker')
+        layout_featureBottom.addWidget(label_track)
         self.combo_trackMethod = qtw.QComboBox()
-        layout_tracker_1_2.addWidget(self.combo_trackMethod)
+        layout_featureBottom.addWidget(self.combo_trackMethod)
         self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn'])
-        layout_tracker_1_2.addItem(spacer)
-        
-        # layout_tracker.addItem(spacer)
         
         self.button_track = qtw.QPushButton('Track!')
-        layout_tracker_1.addWidget(self.button_track, alignment=Qt.AlignCenter)
-        self.button_track.setFixedSize(button_w, button_h_lrg)
-        self.button_track.clicked.connect(
-            lambda: self.track_rois(self.nav_imgs, self.rois))
+        layout_featureBottom.addWidget(self.button_track, alignment=Qt.AlignCenter)
+        self.button_track.clicked.connect(self.track_rois)
         self.button_track.setDisabled(True)
-        
-# =============================================================================
-#         # layout_features.addStretch(1)
-#         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-#         layout_top.addItem(spacer)
-# =============================================================================
-        #%% roi in roi box
-        self.box_roiInRoi = qtw.QGroupBox('ROI in ROI')
-        layout_box_roiInRoi = qtw.QVBoxLayout()
-        self.box_roiInRoi.setLayout(layout_box_roiInRoi)
-        layout_tracker.addWidget(self.box_roiInRoi)
-        # self.box_roiInRoi.setFixedWidth(150)
-        # self.box_roiInRoi.setFixedHeight(100)
-        
-        self.checkbox_roiInRoi = qtw.QCheckBox('Activate')
-        layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi)
-        self.checkbox_roiInRoi.setDisabled(True)
-        
-        # TODO fixed position for roi in roi
-# =============================================================================
-#         self.checkbox_roiInRoi_constPos = qtw.QCheckBox('Constant Position')
-#         layout_box_roiInRoi.addWidget(self.checkbox_roiInRoi_constPos)
-#         self.checkbox_roiInRoi_constPos.setDisabled(True)
-# =============================================================================
-        
-        self.button_trackAgain = qtw.QPushButton("Track Again")
-        layout_box_roiInRoi.addWidget(self.button_trackAgain, alignment=Qt.AlignCenter)
-        # self.button_trackAgain.setFixedSize(75, 50)
-        self.button_trackAgain.setFixedSize(button_w, button_h_sml)
-        self.button_trackAgain.clicked.connect(self.track_roiInRoi)
-        self.button_trackAgain.setDisabled(True)
-        
         #%% box thresh and 3DED
         layout_3ded = qtw.QVBoxLayout()
         layout_top.addLayout(layout_3ded)
@@ -293,17 +248,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.combo_thresh_method = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_thresh_method)
         # self.combo_thresh_method.setFixedWidth(100)
-        self.combo_thresh_method.addItems(['otsu', 'li', 'yen', 'mean'])
-        self.combo_thresh_method.currentIndexChanged.connect(lambda: self.plot_image_mask(
-            self.slider_thresh.value()))
+        self.combo_thresh_method.addItems(['li', 'otsu', 'yen', 'mean'])
+        self.combo_thresh_method.currentIndexChanged.connect(lambda: self.update_canvas()) #TODO change to update mask
         
         label_blur = qtw.QLabel('Blurring Kernel')
         layout_thresh_method.addWidget(label_blur)
         self.combo_blur = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_blur)
         self.combo_blur.addItems([str(i) for i in range(1,23,2)])
-        self.combo_blur.currentIndexChanged.connect(lambda:self.plot_image_mask(
-            self.slider_thresh.value()))
+        self.combo_blur.currentIndexChanged.connect(lambda: self.update_canvas())
 
         layout_thresh_method.addItem(spacer)
 
@@ -316,45 +269,33 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_deviation.addWidget(self.slider_thresh)
         self.slider_thresh.setDisabled(True)
         # self.slider_thresh.setFixedWidth(100)
-        self.slider_thresh.valueChanged.connect(self.plot_image_mask)
+        self.slider_thresh.valueChanged.connect(lambda: self.update_canvas()) # TODO plot only mask ax
         self.slider_thresh.setRange(0, 200)
         
         self.button_thresh = qtw.QPushButton('Reset')
         layout_deviation.addWidget(self.button_thresh)
         self.button_thresh.clicked.connect(self.reset_thresh)
             #%% 3DED
-        layout_roi_frame = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_roi_frame)
-        label_roi_3ded = qtw.QLabel('Roi No')
-        layout_roi_frame.addWidget(label_roi_3ded)
-        self.combo_3ded = qtw.QComboBox()
-        self.combo_3ded.setFixedWidth(50)
-        layout_roi_frame.addWidget(self.combo_3ded)
-        # layout_roi_frame.addItem(spacer)
+        layout_threadNo = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_threadNo)
+        layout_threadNo.addItem(spacer)
         
         label_threadNo = qtw.QLabel('Thread No')
-        layout_roi_frame.addWidget(label_threadNo)
+        layout_threadNo.addWidget(label_threadNo)
         self.spinbox_threadNo = qtw.QSpinBox(self)
-        layout_roi_frame.addWidget(self.spinbox_threadNo)
+        layout_threadNo.addWidget(self.spinbox_threadNo)
         self.spinbox_threadNo.setRange(1,os.cpu_count()-1)
         self.spinbox_threadNo.setValue(3)
         self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
         
         
-        # layout_finalFrame = qtw.QHBoxLayout()
-        # layout_box_3ded.addLayout(layout_finalFrame)
-        label_finalFrame = qtw.QLabel('Final Frame')
-        self.spinbox_finalFrame = qtw.QSpinBox()
-        self.spinbox_finalFrame.setMinimum(1)
-        self.spinbox_finalFrame.setFixedWidth(50)
-        for wid in [label_finalFrame, self.spinbox_finalFrame]:
-            layout_roi_frame.addWidget(wid)
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_threadNo.addWidget(self.checkbox_autosave)
+        
+        layout_threadNo.addItem(spacer)
         
         layout_extract = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract)
-        
-        self.checkbox_autosave = qtw.QCheckBox('Autosave')
-        layout_box_3ded.addWidget(self.checkbox_autosave)
         
         self.button_3ded = qtw.QPushButton('Extract!')
         layout_extract.addWidget(self.button_3ded)
@@ -367,17 +308,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_save_results.clicked.connect(self.save_results)
         
         self.disable_3ded_widgets(True)
-        
-        layout_plotCombo = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_plotCombo)
-        label_dpPlotCombo = qtw.QLabel('DP Plot Ref ROI')
-        self.combo_dp_plot = qtw.QComboBox()
-        for wid in [label_dpPlotCombo, self.combo_dp_plot]:
-            layout_plotCombo.addWidget(wid)
-
-        self.update_combo_3ded()
-        self.combo_dp_plot.currentIndexChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
         #%% canvas
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
@@ -427,12 +357,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.rect = None            # Currently drawn rectangle
         self.rect_roiInRoi = None
         self.press = None           # Mouse press coordinates
-        self.rois = {}              # List to store all rois
-        self.rois_roiInRoi = {}
-        self.roi_counter = 0            # Counter for numbering rois
-        self.roi_counter_roiInRoi = 0
-        self.patches_toTrack = []
-        self.patches_toTrack_roiInRoi = []
+        self.patches_axNav = []
+        self.patches_axTrack = []
 
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
@@ -511,65 +437,162 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def set_threadNo(self, value):
         self.threadpool.setMaxThreadCount(value)
     
+    def empty_main_dataframe(self):
+        self.cols_df = ['use', 'init', 'in_rois', 'end', 
+                        'ref', 'out_rois', 'mask', 'dp']
+        self.df_rois = pd.DataFrame([], columns=self.cols_df)
+        self.df_rois = self.df_rois.astype({'use': int, 'init': object,
+                                            'in_rois': object, 'end': int, 'out_rois': object,
+                                            'dp': object, 'ref':str, 'mask':object})
+    
+    def reset_rois(self):
+        self.tree_objects.clear()
+    
     def update_canvas(self, imgNo=None):
-        # self.canvas.restore_region(self.canvas_background)
-        if not imgNo:
+        if imgNo is None:
             imgNo = self.slider_imgNo.value()
-        if hasattr(self, 'nav_imgs'):
-            img = self.nav_imgs[imgNo]
             
-            # nav axis
-            self.img_display['nav'].set_data(img)
-            self.img_display['nav'].set_clim(vmin=img.min(), vmax=img.max())
-            shape_x, shape_y = img.shape
-            self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-            self.ax_nav.set_title(f'Nav Image No. {imgNo+1:d}')
-            self.draw_rois_nav(self.patches_toTrack, self.ax_nav, self.rois)
-            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_nav.bbox))
-            self.canvas.blit(self.ax_nav.bbox)
+        img = self.nav_imgs[imgNo]
         
-        # draw rois from roi in roi
-        if hasattr(self, 'tracking_finished'):
-            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
-            if (self.tracking_finished) and (hasattr(self, 'rois_tracked_roiInRoi_trans')):
-                self.draw_rois_nav(self.patches_toTrack_roiInRoi, self.ax_nav, self.rois_roiInRoi)
+        self.update_ax(img, 'nav', self.ax_nav, f'Nav Image No. {imgNo+1:d}')
+        self.draw_rois_in(imgNo)
+        
+        selected_items = self.tree_objects.selectedItems()
+        if selected_items:
+            item = selected_items[0]
+            idx = int(item.text(1))
+            # track
+            if not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])):
+                self.update_ax(img, 'track', self.ax_track, f'Nav Image No. {imgNo+1:d}')
+                self.draw_rois_out(imgNo)
+
+                # mask
+                img_mask, img_roi = self.threshold_img(
+                    img, self.df_rois.loc[idx, 'out_rois'][imgNo], 
+                    self.combo_thresh_method.currentText(),
+                    self.slider_thresh.value())
+                self.update_ax_mask(img_roi, img_mask)
             else:
-                self.draw_rois_nav(self.patches_toTrack_roiInRoi, self.ax_track, self.rois_roiInRoi)
-            self.canvas.blit(self.ax_track.bbox)
-        # draw image mask
-        if hasattr(self, 'rois_tracked'):
-            self.plot_tracking_results(imgNo)
-            th = self.slider_thresh.value()
-            self.plot_image_mask(th)
+                self.update_ax(self.img_zero, 'track', self.ax_track)
+                self.update_ax_mask(self.img_zero, self.img_zero)
+            
+            # dp
+            if idx in self.df_rois.dp.dropna().index:
+                try:
+                    self.update_ax(self.df_rois.loc[idx, 'dp'][imgNo], 'dp', self.ax_dp)
+                    #TODO set the content size after getting the data
+                except:
+                    self.update_ax(self.img_zero, 'dp', self.ax_dp)
+            else:
+                self.update_ax(self.img_zero, 'dp', self.ax_dp)
+                
+    def update_ax(self, img, img_disp, ax, title=None,):
+        # self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
+        self.img_display[img_disp].set_data(img)
+        ax.set_title(title)
+        self.img_display[img_disp].set_clim(vmin=img.min(), vmax=img.max())
+        # self.canvas.blit(ax.bbox)
+        self.canvas.draw_idle()
+    
+    def draw_rois_in(self, imgNo):
+        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_nav.bbox))
+        if len(self.patches_axNav) > 0:
+            for p in self.patches_axNav:
+                p.remove()
+            self.patches_axNav.clear()
+        df = self.df_rois[self.df_rois.use == 1]
+        if len(df) > 0:
+            for i in df.index:
+                if imgNo in df.loc[i, 'init']:
+                    idx = df.loc[i, 'init'].index(imgNo)
+                    roi = df.loc[i, 'in_rois'][idx]
+                    x,y,w,h = roi
+                    rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='r', 
+                                             facecolor='none')
+                    self.ax_nav.add_patch(rect)
+                    self.patches_axNav.append(rect)
+                    
+                    # id
+                    # pos = (x+w+15, y+h+15)
+                    font_size = 8
+                    pos = (x+w/2, y-15)
+                    # font_size = 12
+                    t = self.ax_nav.text(pos[0], pos[1], str(i), horizontalalignment='center', 
+                                         verticalalignment='center', color='red', fontsize=font_size)
+                    self.patches_axNav.append(t)
+        self.canvas.blit(self.ax_nav.bbox)
+        # self.canvas.draw_idle()
+                
+    def draw_rois_out(self, imgNo):
+        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
+        if len(self.patches_axTrack) > 0:
+            for p in self.patches_axTrack:
+                p.remove()
+            self.patches_axTrack.clear()
+        df = self.df_rois[self.df_rois.use == 1]
+        df = df.loc[df.out_rois.dropna().index]
+        if len(df) > 0:
+            for i in df.index:
+                try:
+                    roi = self.df_rois.loc[i, 'out_rois'][imgNo]
+                    x,y,w,h = roi
+                    rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
+                                             facecolor='none')
+                    self.ax_track.add_patch(rect)
+                    self.patches_axTrack.append(rect)
+                    
+                    # id
+                    # pos = (x+w+15, y+h+15)
+                    font_size = 8
+                    pos = (x+w/2, y-15)
+                    # font_size = 12
+                    t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center', 
+                                           verticalalignment='center', color='tab:orange', fontsize=font_size)
+                    self.patches_axTrack.append(t)
+                except:
+                    pass
+        self.canvas.blit(self.ax_track.bbox)
+            
+            
+    
+    def update_ax_mask(self, img_roi, img_mask):
+        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_mask.bbox))
+        shape_x, shape_y = img_mask.shape
+        self.img_display['img_mask'].set_data(img_roi)
+        self.img_display['img_mask'].set_clim(vmin=img_roi.min(), vmax=img_roi.max())
+        self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
         
-        # draw dp
-        if hasattr(self, 'tomo_ds'):
-            self.canvas.restore_region(self.backgrounds['dp'])
-            # roiNo = self.combo_roiNo.currentText()
-            roiNo = self.combo_dp_plot.currentText()
-            roiNo = eval(roiNo)
-            self.plot_dp(roiNo, imgNo)
+        self.img_display['mask'].set_data(img_mask)
+        self.img_display['mask'].set_clim(vmin=0, vmax=1)
+        self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
+        self.canvas.blit(self.ax_mask.bbox)
+        # self.canvas.draw_idle()
         
-        # scale bars 
-        #TODO adding and removing the artist is not efficient
-        scale_real = self.lineEdit_scale_real.text()
-        try:
-            scale_real = float(scale_real)
-            for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
-                self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
-                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
-                for artist in ax.artists:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-                ax.add_artist(scalebar_real)
-                self.canvas.blit(ax.bbox)
-        except Exception as e:
-            # print(e)
-            pass
-        scale_recip = self.lineEdit_scale_recip.text()
-        try:
-            scale_recip = float(scale_recip)
-            if scale_recip != 0:
+    def update_scalebar(self, which):
+        if which == 'real':
+            scale_real = self.lineEdit_scale_real.text()
+            try:
+                scale_real = float(scale_real)
+                for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
+                    self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
+                    scalebar_patch = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
+                    for artist in ax.artists:
+                        if isinstance(artist, ScaleBar):
+                            artist.remove()
+                            ax.add_artist(scalebar_patch)
+                    self.canvas.blit(ax.bbox)
+            except:
+                for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
+                    self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
+                    for artist in ax.artists:
+                        if isinstance(artist, ScaleBar):
+                            artist.remove()
+                    self.canvas.blit(ax.bbox)
+
+        elif which == 'reciprocal':
+            scale_recip = self.lineEdit_scale_recip.text()
+            try:
+                scale_recip = float(scale_recip)
                 self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
                 scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
                                     scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
@@ -578,13 +601,33 @@ class Tab_Tracking_CV2(qtw.QWidget):
                             artist.remove()
                 self.ax_dp.add_artist(scalebar_recip)
                 self.canvas.blit(self.ax_dp.bbox)
-        except Exception as e:
-            # print(e)
-            pass
-        # self.canvas.draw()
-        # self.canvas.draw_idle()
-        
-            
+            except:
+                self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
+                for artist in self.ax_dp.artists:
+                        if isinstance(artist, ScaleBar):
+                            artist.remove()
+                self.canvas.blit(self.ax_dp.bbox)
+
+    def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full'):
+        # thresh_method = self.combo_thresh_method.currentText()
+        blur_kernel = int(self.combo_blur.currentText())
+        threshold_methods = {'otsu': threshold_otsu, 'li': threshold_li, 
+                             'yen': threshold_yen, 'mean': threshold_mean}
+        threshold_func = threshold_methods[thresh_method]
+
+        y,x,h,w = roi
+        img_blur = io.gaussian_blur(img, blur_kernel)
+        img_cut = img[x:x+w, y:y+h]
+        if mode == 'full':
+            th = threshold_func(img_blur)
+        elif mode == 'roi':
+            th = threshold_func(img_cut)
+        thresh_offset = thresh_offset / 100
+        thresh = thresh_offset * th
+        img_mask = img_blur > thresh
+        img_mask = img_mask[x:x+w, y:y+h]
+        return img_mask, img_cut
+
     def load_navSignal(self):
         def get_signal(fn):
             return load(fn)
@@ -594,19 +637,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         #TODO delete the previous batch
         if hasattr(self, 'rois_tracked'):
             self.reset_rois()
-# =============================================================================
-#             del self.rois_tracked
-#             img_temp = np.zeros((512,512), dtype='int8')
-#             axes = ['nav', 'track', 'mask', 'dp']
-#             for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_mask, self.ax_dp]):
-#                 self.img_display[axes[i]] = ax.imshow(img_temp, cmap='viridis')
-#             if hasattr(self, 'patches_tracked'):
-#                 for p in self.patches_tracked:
-#                     p.remove()
-#             if hasattr(self, 'patches_toTrack'):
-#                 for p in self.patches_toTrack:
-#                     p.remove()
-# =============================================================================
             self.disable_3ded_widgets(True)
                     
         fn = self.lineEdit_dir_navSignal.text()
@@ -617,16 +647,25 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
     def initiate_processing(self, result, index):
         self.s = result
-        self.spinner.stop()
         self.s_8bit = io.convert_to_8bit(self.s)
         self.nav_imgs_raw = self.s.data
         self.nav_imgs = self.s_8bit.data
+        self.spinner.stop()
+        
+        shape_x, shape_y = self.nav_imgs[0].shape
+        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        
         self.update_canvas(0)
+        self.canvas.draw()
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
         print('No. of Images:', len(self.nav_imgs))
         
         self.button_reset_rois.setEnabled(True)
-        self.button_cur_roi.setEnabled(True)
+        # self.button_cur_roi.setEnabled(True)
         self.button_track.setEnabled(True)
     
     def on_press(self, event):
@@ -637,7 +676,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.rect.remove()
             self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1, 
                                           edgecolor='r', facecolor='none')
-            self.patches_toTrack.append(self.rect)
+            self.patches_axNav.append(self.rect)
             self.ax_nav.add_patch(self.rect)
             self.canvas.draw()
             self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
@@ -649,7 +688,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             
             self.rect_roiInRoi = patches.Rectangle(self.press, 0, 0, linewidth=1, 
                                                    edgecolor='r', facecolor='none')
-            self.patches_toTrack_roiInRoi.append(self.rect_roiInRoi)
+            self.patches_axTrack.append(self.rect_roiInRoi)
             self.ax_track.add_patch(self.rect_roiInRoi)
             self.canvas.draw()
             self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
@@ -687,9 +726,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
             height = event.ydata - y0
         
             # Confine ROI
-            roiRef = int(self.combo_roiNo.currentText())
+            selected_items = self.tree_objects.selectedItems()
+            item = selected_items[0]
+            ind = int(item.text(1))
             imgNo = self.slider_imgNo.value()
-            xr, yr, wr, hr = self.rois_tracked[roiRef][imgNo]
+            xr, yr, wr, hr = self.df_rois.loc[ind, 'out_rois'][imgNo]
         
             # Clamp logic
             x1 = x0 + width
@@ -716,12 +757,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # Mouse release event: finalize the rectangle
         if self.press is None or event.inaxes is None:
             return
-
         # Finalize the rectangle and store it
         x0, y0 = self.press
         width = event.xdata - x0
         height = event.ydata - y0
-        
         # ROI might be drawn reversed
         if width < 0:
             width = abs(width)
@@ -729,179 +768,171 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if height < 0:
             height = abs(height)
             y0 = event.ydata
-            
         if width==0:
             width = 1
         if height==0:
             height = 1
         roi = (int(x0), int(y0), int(width), int(height))
-                
+        
+        # updating df roi
+        # new roi or roi in roi
         imgNo = self.slider_imgNo.value()
+        roiInRoi = False
         if (event.inaxes == self.ax_nav):
-            # Store the rectangle's properties
-            if imgNo == 0:
-                self.roi_counter += 1
-                self.rois[self.roi_counter] = {0: roi}
-                text_id = str(self.roi_counter)
-                self.combo_roiNo.addItem(str(self.roi_counter))
+            ref = None
+        elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+            selected_items = self.tree_objects.selectedItems()
+            if selected_items:
+                item = selected_items[0]
+                ref = item.text(1)
+            roiInRoi = True
+        
+        # new roi or extension
+        if event.button == 1: # left click
+            new_row = True
+            init = [imgNo]
+            for idx in np.arange(1, 1000):
+                if idx not in self.df_rois.index:
+                    break
+            # idx = self.df_rois.index.max() + 1
+            # idx = len(self.df_rois)
+            
+        elif event.button == 3: # right click
+            new_row = False
+            selected_items = self.tree_objects.selectedItems()
+            if selected_items:
+                item = selected_items[0]
             else:
-                roiNo = int(self.combo_roiNo.currentText())
-                self.rois[roiNo][imgNo] = roi
-                text_id = roiNo
-    
-            # Draw a label (counter) at the center of the rectangle
-            t = self.ax_nav.text(x0 + width/2, y0-15, text_id,
-                         horizontalalignment='center', verticalalignment='center', 
-                         color='red', fontsize=12)
-            self.patches_toTrack.append(t)
-            # Set the press attribute to None for future drawings
-            self.rect = None
-            # self.canvas.blit(self.ax_nav.bbox)
-            print('The added ROI coordintations: ', roi)
+                count = self.tree_objects.topLevelItemCount()
+                item = self.tree_objects.topLevelItem(count - 1) # last one
+            init = eval(item.text(2))
+            init.append(imgNo)
+            idx = int(item.text(1))
+        # self.add_item_tree(idx=idx, init=init, ref=ref)
+        
+        # plotting
+        self.rect = None
+        if not roiInRoi:
+            t = self.ax_nav.text(x0 + width/2, y0-15, str(idx), horizontalalignment='center', 
+                                 verticalalignment='center', color='red', fontsize=12)
+            self.patches_axNav.append(t)
             self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
             self.canvas.restore_region(self.backgrounds['nav'])
             self.ax_nav.draw_artist(t)
             self.canvas.blit(self.ax_nav.bbox)
-        
-        elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
-            self.canvas.restore_region(self.backgrounds['track'])
-            # Store the rectangle's properties
-            roiNo_ref = int(self.combo_roiNo.currentText())
-            
-            # (roiInRoi counter, reference ROI) => imgNo => roi
-            if imgNo == 0:
-                self.roi_counter_roiInRoi += 1
-                self.rois_roiInRoi[(self.roi_counter_roiInRoi, roiNo_ref)] = {0: roi}
-            else:
-                self.rois_roiInRoi[(self.roi_counter_roiInRoi, roiNo_ref)][imgNo] = roi
-            text_id = f'{self.roi_counter_roiInRoi}_{roiNo_ref}'
-            
-            # Draw a label (counter) at the center of the rectangle
-            t = self.ax_track.text(x0, y0-15, text_id,
-                         horizontalalignment='center', verticalalignment='center', 
-                         color='red', fontsize=6)
-            self.patches_toTrack_roiInRoi.append(t)
+        else:
+            # self.patches_axTrack.append(t)
             self.rect_roiInRoi = None
-            print('The addedd ROI coordintations: ', roi)
+            # self.canvas.restore_region(self.backgrounds['track'])
+            t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center', 
+                                   verticalalignment='center', color='red', fontsize=6)
+            self.patches_axTrack.append(t)
             self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
             self.canvas.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(t)
             self.canvas.blit(self.ax_track.bbox)
-        # self.canvas.draw()
-        self.press = None
-
-    
-    def draw_rois_nav(self, patch, ax, rois):
-        # self.canvas.restore_region(self.backgrounds['nav'])
-        for p in patch:
-            try:
-                p.remove()
-            # except ValueError:
-            except:
-                pass
-        patch.clear()
-        imgNo = self.slider_imgNo.value()
-        # roiNo = int(self.combo_roiNo.currentText())
-        for rn in rois.keys():
-            try:
-                roi = rois[rn][imgNo]
-                x,y,w,h = roi
-                rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='r', 
-                                         facecolor='none')
-                ax.add_patch(rect)
-                patch.append(rect)
-                if type(rn) == tuple:
-                    pos = (x+w+15, y+h+15)
-                    font_size = 8
-                else:
-                    pos = (x+w/2, y-15)
-                    font_size = 12
-                t = ax.text(pos[0], pos[1], str(rn), horizontalalignment='center', 
-                             verticalalignment='center', color='red', fontsize=font_size)
-                patch.append(t)
-            except KeyError:
-                pass
-        self.canvas.draw()
-    
-    def reset_rois(self): #TODO add a button to reset the last ROI
-        # self.ax_nav.clear()  # Clear the axes
-        imgNo = self.slider_imgNo.value()
-        self.rois.clear()  # Clear the list of rois
-        self.roi_counter = 0  # Reset the counter
-        self.combo_roiNo.clear()
-        self.combo_3ded.clear()
-        self.checkbox_roiInRoi.setChecked(False)
-        self.disable_3ded_widgets(True)
-        self.disable_roiInRoi_widgets(True)
-        
-        if hasattr(self, 'nav_imgs'): # if images are already loaded
-            self.canvas.restore_region(self.backgrounds['nav'])
-            self.img_display['nav'].set_data(self.nav_imgs[imgNo])
-            shape_x, shape_y = self.nav_imgs[imgNo].shape
-            self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-            self.canvas.blit(self.ax_nav.bbox)
             
-        # delete patches/rois drawn
-        for p in self.patches_toTrack:
-            p.remove()
-        for p in self.patches_toTrack_roiInRoi:
-            p.remove()
+        if new_row:
+            self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
+                                                   ref, None, None, None]
+            self.add_item_tree(idx=idx, init=init, end=None, ref=ref)
+            # TODO add clear selection of the tree
+        else:
+            # self.df_rois['init'] = self.df_rois['init'].astype(object)
+            self.df_rois.at[idx, 'init'] = init
+            self.df_rois.at[idx, 'in_rois'].append([roi])
+            item.setText(2, str(init))
+        
+        self.press = None
+        # # self.canvas.draw()
+        # self.press = None
 
-        # remove rois
-        if hasattr(self, 'rois_tracked'):
-            del self.rois_tracked
-            # re-draw axes with empty images (except for navigation)
-            # for ax in self.img_display.keys():
-            #     if ax != 'nav':
-            #         self.img_display[ax].set_data(self.img_zero)
-            axes = [self.ax_track, self.ax_mask, self.ax_dp]
-            titles = ['track', 'mask', 'dp']
-            for ax, t_bg in zip(axes, titles):
-                    self.canvas.restore_region(self.backgrounds[t_bg])
-                    self.img_display[ax].set_data(self.img_zero)
-                    self.canvas.blit(ax.bbox)
+# =============================================================================
+#     def get_active_rois(self): # TODO
+#         # self.rois_toDraw = self.df_rois.where(self.df_rois.loc[:,'use'] == 1).dropna()
+#         self.rois_toDraw = self.df_rois[self.df_rois['use'] == 1]
+# =============================================================================
 
-        # delete patches tracked
-        if hasattr(self, 'patches_tracked'):
-            self.canvas.restore_region(self.backgrounds['track'])
-            for p in self.patches_tracked:
-                p.remove()
-            self.canvas.blit(self.ax_track.bbox)
+    def add_item_tree(self, idx, init=[0], end=None, ref=None):
+        cols = {col: i for i,col in enumerate(self.cols_tree)}
+        item = qtw.QTreeWidgetItem()
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        # item.setCheckState(cols['use'], Qt.Unchecked)
+        item.setCheckState(cols['use'], Qt.Checked)
+        item.setText(cols['idx'], f"{idx}")
+        item.setText(cols['init'], f"{init}")
+        
+        self.tree_objects.addTopLevelItem(item)
 
-        # delete extracted dps
-        if hasattr(self, 'tomo_ds'):
-            self.canvas.restore_region(self.backgrounds['dp'])
-            del self.tomo_ds
-            self.canvas.blit(self.ax_dp.bbox)
+        # end frame
+        spinbox = qtw.QSpinBox()
+        spinbox.setRange(0, len(self.nav_imgs))
+        spinbox.setValue(len(self.nav_imgs))
+        self.tree_objects.setItemWidget(item, cols['end'], spinbox)
+        spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
+        # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
         
-        if hasattr(self, 'rois_tracked_roiInRoi_trans'):
-            del self.rois_tracked_roiInRoi_trans
+        # ref
+        if ref is None:
+            item.setText(cols['ref'], "Nav")
+        else:
+            item.setText(cols['ref'], f"{ref}")
+        self.tree_objects.addTopLevelItem(item)
         
-        if hasattr(self, 'rois_roiInRoi'):
-            self.rois_roiInRoi = {}
+        # tracked
+        cancel_icon = self.style().standardIcon(self.style().SP_DialogCancelButton)
+        item.setIcon(cols['trk'], cancel_icon)
+        item.setData(cols['trk'], Qt.UserRole, False)  # Store status boolean (False = not checked)
         
-        # self.canvas.draw()
-        self.update_progress_bar(0, 100)
+        # extracted
+        item.setIcon(cols['ext'], cancel_icon)
+        item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
         
-    def del_current_roi(self):
-        roiNo = self.combo_roiNo.currentText()
-        try:
-            roiNo = int(roiNo)
-            imgNo = self.slider_imgNo.value()
-                
-            try:
-                if len(self.rois[roiNo]) == 1:
-                    del self.rois[roiNo]
-                    index = self.combo_roiNo.findText(str(roiNo))
-                    self.combo_roiNo.removeItem(index)
-                else:
-                    del self.rois[roiNo][imgNo]
-            except Exception as e:
-                print(f'Could not delete the ROI: {e}')
-            self.update_canvas()
-        except ValueError: # there might not be any roi
-            pass
-        gc.collect()
+        # delete
+        delete_button = qtw.QPushButton()
+        delete_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_TrashIcon))
+        delete_button.setFixedSize(30, 30)
+        delete_button.setToolTip("Delete this item")
+        
+        def delete_row():
+            index = self.tree_objects.indexOfTopLevelItem(item)
+            self.tree_objects.takeTopLevelItem(index)
+            self.df_rois = self.df_rois.drop(self.df_rois.index[index])
+
+        delete_button.clicked.connect(delete_row)
+
+        # Wrap the button in a QWidget to add it to column 2
+        container = qtw.QWidget()
+        layout = qtw.QHBoxLayout(container)
+        layout.addWidget(delete_button)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignRight)
+        container.setLayout(layout)
+
+        self.tree_objects.setItemWidget(item, cols['del'], container)
+    
+    def on_spinboxEnd_changed(self, idx, value):
+        self.df_rois.at[idx, 'end'] = value
+        
+    def toggle_tree_icon(self, row_index: int, col, status):
+        item = self.tree_objects.topLevelItem(row_index)
+        col = self.cols_tree.index(col)
+        if item is None:
+            return  # Invalid index
+        # current_status = item.data(col, Qt.UserRole)
+        icon = self.style().standardIcon(self.style().SP_DialogApplyButton if 
+                                         status else self.style().SP_DialogCancelButton)
+        item.setIcon(col, icon)
+        item.setData(col, Qt.UserRole, status)
+        
+    
+    def get_checked_items(self):
+        checked = []
+        for i in range(self.tree_objects.topLevelItemCount()):
+            item = self.tree_objects.topLevelItem(i)
+            if item.checkState(0) == Qt.Checked:
+                checked.append(item.text(1))
+        print("Checked Items:", checked)
     
     def load_spinner(self,):
         # Create spinner as a floating overlay on the main widget
@@ -916,155 +947,125 @@ class Tab_Tracking_CV2(qtw.QWidget):
     
         self.spinner.raise_()
         self.spinner.start()
-        
-    def track_rois(self, imgs, rois, roiInRoi_index=False):
+    
+    def launch_auto_detector(self):
+        self.imgNo_autoDet = self.slider_imgNo.value()
+        self.object_detector = Object_Detector_Widget(self.nav_imgs[self.imgNo_autoDet])
+        self.object_detector.final_objects.connect(self.receive_objects)
+        self.object_detector.show()
+    
+    def receive_objects(self, objects):
+        no_objs = len(self.df_rois)
+        for i, obj in enumerate(objects):
+            self.add_item_tree(idx=i+no_objs, init=[self.imgNo_autoDet], end=None, ref=None)
+    
+    def track_rois(self):
         self.load_spinner()
-        if len(rois) == 0:
+        if len(self.df_rois) == 0:
             return
+        df = self.df_rois[self.df_rois.use == 1]
+        if len(df) == 0:
+            return
+        
         self.tracking_counter = 0
         self.tracking_finished = False
         tracking_method = self.combo_trackMethod.currentText()
-        # threadpool = QThreadPool()
-        if not roiInRoi_index:
-            self.rois_tracked = {}
-        else:
-            self.rois_tracked_roiInRoi = {}
-            self.tracking_counter_2 += 1
-            rois = {0: rois}
-        # print(rois)
-        for r_id in rois.keys():
-            rs = rois[r_id]
-            if roiInRoi_index:
-                index = roiInRoi_index
-            else:
-                index = (r_id, False)
-            worker = WorkerThread_General(tr.track_roi_cv2, index, imgs, 
-                                          rs, tracking_method)
+
+        self.tracking_counter_end = len(df.index)
+        for ind in df.index:
+            init = df.loc[ind, 'init']
+            beg = min(init)
+            end = df.loc[ind, 'end']
+            imgs = self.nav_imgs[beg:end]
+            
+            rois_in = df.loc[ind, 'in_rois']
+            try:
+                ref = int(df.loc[ind, 'ref'])
+                try:
+                    rois_ref = df[df.idx == ref].out_rois.to_numpy()
+                except:
+                    raise ValueError(f'The reference roi for roi #{ind} is not available') 
+                imgs = tr.cut_imgs_by_roi(imgs, rois_ref)
+                rois_in = tr.translate_roiInRoi(rois_in, rois_ref, fwd=True)
+            except:
+                pass
+            worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in, 
+                                          init, tracking_method)
             worker.signals.results.connect(self.get_tracking_results)  # Connect to result signal
             # worker.signals.finished.connect(self.plot_tracking_result)
             self.threadpool.start(worker)
-    
-    def track_roiInRoi(self):
-        self.tracking_counter_2 = 0
-        self.tracking_finished = False
-        # imgs_cut = deepcopy(self.nav_imgs)
-        self.roiInRoi_ids = list(self.rois_roiInRoi.keys())
-        for key in self.rois_roiInRoi.keys():
-            roiNo, roi_ref = key
-            imgs_cut = []
-            # crop rois from images
-            for i, img in enumerate(self.nav_imgs):
-                y,x,h,w = self.rois_tracked[roi_ref][i]
-                imgs_cut.append(img[x:x+w, y:y+h])
-            imgs_toTrack = io.create_array_from_dissimilar_imgs(imgs_cut, mode='edge', 
-                                                                signal=False) #, counter=self.tracking_counter_2
-            # self.tracking_counter_2 += 1
-            # s.plot()
-            
-            # create new rois
-            rois_toTrack = {}
-            for imgNo, roi in self.rois_roiInRoi[key].items():
-                # translate roi coords to the cut img
-                x,y,w,h = roi
-                x0,y0,w0,h0 = self.rois_tracked[roi_ref][imgNo]
-                # new width and height might be larger than the first ROI
-                if x+w > x0+w0:
-                    w = x-(x0+w0)
-                if y+h > y0+h0:
-                    h = y-(y0+h0)
-                rois_toTrack[imgNo] = (x-x0, y-y0, w, h)
-            self.track_rois(imgs_toTrack, rois_toTrack, key)
-            
             
     def get_tracking_results(self, result, index):
-        roiInRoi = False
-        if index[1]:
-            roiInRoi = True
+        self.tracking_counter += 1
+        self.df_rois.at[index, 'out_rois'] = result
+        self.toggle_tree_icon(self.df_rois.index.get_loc(index), 'trk', True)
+        self.update_progress_bar(self.tracking_counter, self.tracking_counter_end)
+        if self.tracking_counter == self.tracking_counter_end:
+            self.tracking_finished = True
         
-        if not roiInRoi:
-            self.tracking_counter += 1
-            index = index[0]
-            self.rois_tracked[index] = result
-            self.update_progress_bar(self.tracking_counter, len(self.rois))
-            if self.tracking_counter == len(self.rois):
-                self.tracking_finished = True
-                self.spinner.stop()
-        
-        else:
-            self.rois_tracked_roiInRoi[index] = result
-            self.update_progress_bar(self.tracking_counter_2, len(self.rois_roiInRoi))
-            if self.tracking_counter_2 == len(self.rois_roiInRoi):
-                self.tracking_finished = True
-                self.spinner.stop()
-            
         if self.tracking_finished:
-            # in roiInRoi translate tracked ROIs to the full images
-            if roiInRoi:
-                self.rois_tracked_roiInRoi_trans = {}
-                for key in self.rois_tracked_roiInRoi.keys():
-                    roiID, roi_ref = key
-                    rois = self.rois_tracked_roiInRoi[key]
-                    rois_trans = []
-                    for i, roi in enumerate(rois):
-                        x,y,w,h = roi
-                        x0,y0,w0,h0 = self.rois_tracked[roi_ref][i]
-                        roi_translated = [x+x0, y+y0, w, h]
-                        rois_trans.append(roi_translated)
-                    self.rois_tracked_roiInRoi_trans[key] = rois_trans
-            self.slider_imgNo.setValue(0)
+            # re-translate roi in roi coords
+            df = self.df_rois[self.df_rois['use']==1]
+            df = df[df.ref.dropna().index]
+            for idx in df.index:
+                try:
+                    ref = int(self.df_rois.loc[idx].ref)
+                    rois_ref = self.df_rois[self.df_rois.index == ref].out_rois.to_numpy()
+                    rois_pre = self.df_rois.loc[idx, 'out_rois'].to_numpy()
+                    self.df_rois.at[idx, 'out_rois'] = tr.translate_roiInRoi(rois_pre, rois_ref, fwd=False)
+                except:
+                    pass
+                            
+            # self.slider_imgNo.setValue(0)
             # activating widgets
             self.slider_thresh.setEnabled(True)
             self.slider_thresh.setValue(100)
-            self.update_combo_3ded()
             self.disable_3ded_widgets(False)
-            self.disable_roiInRoi_widgets(False)
+            self.checkbox_roiInRoi.setEnabled(True)
+            item = self.tree_objects.topLevelItem(0)
+            item.setSelected(True)
             self.update_canvas(0)
-            self.spinbox_finalFrame.setMaximum(len(self.nav_imgs))
-            self.spinbox_finalFrame.setValue(len(self.nav_imgs))
+            self.canvas.draw()
+            self.spinner.stop()
      
     def extract_3ded(self):
-        self.spinner = self.load_spinner()
-        self.combo_dp_plot.clear()
-        rois_selected = self.combo_3ded.currentText()
-        rois_all = [eval(self.combo_3ded.itemText(i)) for i in range(self.combo_3ded.count()) if self.combo_3ded.itemText(i) != 'all']
-        if rois_selected == 'all':
-            rois_selected = rois_all
-        else:
-            pass
-        self.combo_dp_plot.addItems([str(item) for item in rois_selected])
+        self.load_spinner()
+        
         path_4d = self.lineEdit_dir_4d.text()
         if path_4d == '': # no entry in 4D signals path
+            self.spinner.stop()   
             qtw.QMessageBox.critical(self, 'No Entry', 'Enter the path for 4D signals before the extraction!')
             return
-
+        
+        # check if no of files matches with no of images
         fns_4d = glob(os.path.join(path_4d, '*'))
         if len(fns_4d) == 0:
+            self.spinner.stop()   
             qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
             return
-        dtype = os.path.splitext(fns_4d[0])[-1]
-        
-        # check if no of files with no of images
         if len(self.nav_imgs) != len(fns_4d):
             reply = qtw.QMessageBox.question(self, 'Mismatch',
                    'No. of 4D signals mismatches the number of images. Do you want to continue?',)
             if reply == qtw.QMessageBox.No:
+                self.spinner.stop()   
                 return
-            
+        
+
+        dtype = os.path.splitext(fns_4d[0])[-1]
         blur_kernel = int(self.combo_blur.currentText())
         # make masks
         thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value() / 100
         
-        rois_to_extract = {}
-        for item in rois_selected:
-            # print(item)
-            if type(item) == int:
-                rois_to_extract[item] = self.rois_tracked[item]
-            else:
-                rois_to_extract[item] = self.rois_tracked_roiInRoi_trans[item]
-                print(len(rois_to_extract[item]))
-        self.masks = tr.create_masks(self.nav_imgs, rois_to_extract, 
-                                thresh_method, self.thresh_offset, blur_kernel)
         
+        for ind in self.df_rois[self.df_rois.use == 1].index:
+            beg = min(self.df_rois.loc[ind, 'init'])
+            end = self.df_rois.loc[ind, 'end']
+            self.df_rois.at[ind, 'mask'] = tr.create_masks(
+                self.nav_imgs[beg:end], self.df_rois.loc[ind, 'out_rois'],
+                thresh_method, thresh_offset, blur_kernel)
+            
+
         # set detector size for tpx3
         if dtype == '.tpx3': # TODO not good
             shape_d_x, shape_d_y = 512, 512
@@ -1072,33 +1073,32 @@ class Tab_Tracking_CV2(qtw.QWidget):
             shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])
         scanSize = self.nav_imgs.shape[1:]
         
-        self.tomo_counter = 0
-        self.tomo_ds = {}
-        
-        # extract to a certain frame no
-        final_frame = self.spinbox_finalFrame.value()
-        fns_4d = fns_4d[:final_frame]
-        
-        self.tomo_counter_total = len(rois_to_extract) * len(fns_4d)
-        self.update_progress_bar(0, self.tomo_counter_total)
+        df = self.df_rois[self.df_rois['use'] == 1]
+                
         self.tic = perf_counter()
         
+        self.tomo_counter = 0
         self.tasks = []
         self.temp_dir = self.get_temp_dir()
-        for r_id in rois_to_extract.keys():
-            self.tomo_ds[r_id] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
-            for i_fr, fn in enumerate(fns_4d):
-                self.tasks.append([fn, rois_to_extract[r_id][i_fr], 
-                                   os.path.join(self.temp_dir, f"mask_r{r_id}_f{i_fr}.npy"),
-                                   dtype, scanSize, (r_id, i_fr)])
-            # for i_fr, fn in enumerate(fns_4d):
-            #     self.tasks.append([fn, self.masks[r_id][i_fr], dtype, scanSize, rois_to_extract[r_id][i_fr]])
-               
-               
+        lengths = df.end - [min(df.init[idx]) for idx in df.index]
+        self.tomo_counter_total = np.sum(lengths)
+        self.update_progress_bar(0, self.tomo_counter_total)
+        for idx in df.index:
+            self.df_rois.at[idx, 'dp'] = np.zeros((lengths.loc[idx], shape_d_x, 
+                                                   shape_d_y), dtype='uint32')
+            beg = min(df.loc[idx].init)
+            end = df.loc[idx].end
+            for i_fr, fn in enumerate(fns_4d[beg:end]):
+                self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
+                                   os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
+                                   dtype, scanSize, (idx, i_fr)])
+
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
         self.process_task_map = {}
-        self.launch_initial_tasks()
+        # self.launch_initial_tasks()
+        for _ in range(min(self.max_processes, len(self.tasks))):
+            self.launch_next_task()
 
     def get_temp_dir(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1107,23 +1107,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
         print('temp dir', temp_dir)
         return temp_dir
     
-    def save_mask_to_temp(self, temp_dir, mask_array, r_id, i_fr):
-        filename = f"mask_r{r_id}_f{i_fr}.npy"
-        filepath = os.path.join(temp_dir, filename)
-        np.save(filepath, mask_array)
-        return filepath
-
-    def launch_initial_tasks(self):
-        for _ in range(min(self.max_processes, len(self.tasks))):
-            self.launch_next_task()
+# =============================================================================
+#     def launch_initial_tasks(self):
+#         for _ in range(min(self.max_processes, len(self.tasks))):
+#             self.launch_next_task()
+# =============================================================================
 
     def launch_next_task(self):
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
     
         args = self.tasks.pop(0)
-        *_, (r_id,i_fr) = args
-        mask_path = self.save_mask_to_temp(self.temp_dir, self.masks[r_id][i_fr], r_id, i_fr)
+        mask_path = args[2]
+        idx, i_fr = args[-1]
+        np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
         
         process = QProcess()
         process.setProgram(sys.executable)
@@ -1161,9 +1158,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
             return
     
         # *_ , (r_id, i_fr) = task_info
-        img , idx = result_array
-        r_id, i_fr = eval(idx)
-        self.tomo_ds[r_id][i_fr] = img
+        img , i_c = result_array
+        idx, i_fr = eval(i_c)
+        self.df_rois.loc[idx, 'dp'][i_fr] = img
         
     def handle_finished(self, process):
         if process in self.running_processes:
@@ -1182,145 +1179,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
             time = self.toc - self.tic
             print(f'Data Extraction Time: {time/60:.1f} min')
             self.spinner.stop()
+            for idx in self.df_rois[self.df_rois.use == 1].index:
+                self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)
+            
             if self.checkbox_autosave.isChecked():
                 self.save_results()
         else:
             self.launch_next_task()  # trigger next task if any left
         
-    def plot_dp(self, roiNo=None, imgNo=None):
-        if hasattr(self, 'tomo_ds'):
-            self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
-            if not imgNo:
-                imgNo = self.slider_imgNo.value()
-            if not roiNo:
-                roiNo = int(self.combo_dp_plot.currentText())
-            try:
-                img = self.tomo_ds[roiNo][imgNo]
-            except IndexError:
-                img = self.img_zero
-            self.img_display['dp'].set_data(img)
-            self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
-            shape_x, shape_y = img.shape
-            self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-            self.canvas.blit(self.ax_dp.bbox)
-    
     def update_progress_bar(self, value, total):
         value = value / total * 100
         value = int(value)
         self.progress_bar.setValue(value)
     
-    def plot_tracking_results(self, imgNo):
-        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
-        if hasattr(self, 'patches_tracked'):
-            try:
-                for p in self.patches_tracked:
-                    p.remove()
-            except ValueError:
-                pass
-        self.patches_tracked = []
-        
-        img = self.nav_imgs[imgNo]
-        self.img_display['track'].set_data(img)
-        self.img_display['track'].set_clim(vmin=img.min(), vmax=img.max())
-        shape_x, shape_y = img.shape
-        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
-
-        for i_r in self.rois_tracked.keys():
-            roi = self.rois_tracked[i_r][imgNo]
-            x,y,w,h = roi
-            rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
-                                     facecolor='none')
-            self.ax_track.add_patch(rect)
-            t = self.ax_track.text(x + w/2, y - 15, str(i_r), horizontalalignment='center', 
-                                   verticalalignment='center', color='tab:orange', fontsize=12)
-            self.patches_tracked.append(rect)
-            self.patches_tracked.append(t)
-            self.ax_track.set_title(f'Tracking Result: Image No. {imgNo+1:d}')
-        
-        # plot roi in roi
-        if hasattr(self, 'rois_tracked_roiInRoi_trans'):
-            for index in self.rois_tracked_roiInRoi_trans.keys():
-                roi = self.rois_tracked_roiInRoi_trans[index][imgNo]
-                x,y,w,h = roi
-                rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
-                                         facecolor='none')
-                self.ax_track.add_patch(rect)
-                t = self.ax_track.text(x+w, y+h, f'{index[0]}_{index[1]}', horizontalalignment='center', 
-                                       verticalalignment='center', color='tab:orange', fontsize=8)
-                self.patches_tracked.append(rect)
-                self.patches_tracked.append(t)
-        self.canvas.blit(self.ax_track.bbox)
- 
- 
-    def plot_image_mask(self, thresh_offset):
-        if hasattr(self, 'rois_tracked') and (self.combo_roiNo.currentText() != ''):
-            self.backgrounds['mask'] = self.canvas.copy_from_bbox(self.ax_mask.bbox)
-            self.canvas.restore_region(self.backgrounds['mask'])
-            
-            self.thresh_offset = thresh_offset / 100
-            imgNo = self.slider_imgNo.value()
-            roiNo = int(self.combo_roiNo.currentText())
-            roi = self.rois_tracked[roiNo][imgNo]
-            y,x,h,w = roi
-            img = deepcopy(self.nav_imgs[imgNo][x:x+w, y:y+h])
-            img = io.convert_img_to_8bit(img)
-            
-            blur_kernel = int(self.combo_blur.currentText())
-            img_blur = io.gaussian_blur(img, blur_kernel)
-            
-            thresh_method = self.combo_thresh_method.currentText()
-            threshold_methods = {
-            'otsu': threshold_otsu,
-            'li': threshold_li,
-            'yen': threshold_yen,
-            'mean': threshold_mean}
-            threshold_func = threshold_methods[thresh_method]
-            th = threshold_func(img_blur)
-            
-            self.thresh = self.thresh_offset * th
-            img_mask = img_blur > self.thresh
-            
-            shape_x, shape_y = img_mask.shape
-            self.img_display['img_mask'].set_data(img)
-            self.img_display['img_mask'].set_clim(vmin=img.min(), vmax=img.max())
-            self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
-            
-            self.img_display['mask'].set_data(img_mask)
-            self.img_display['mask'].set_clim(vmin=0, vmax=1)
-            self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
-            self.canvas.blit(self.ax_mask.bbox)
-            self.canvas.draw()
-            # self.backgrounds['mask'] = self.canvas.copy_from_bbox(self.ax_mask.bbox)
-    
     def reset_thresh(self):
         self.slider_thresh.setValue(100)
         self.update_canvas()
     
-    def update_combo_3ded(self):
-        if self.combo_3ded.count() > 0:
-            self.combo_3ded.clear()
-        rois = [self.combo_roiNo.itemText(i) for i in range(self.combo_roiNo.count())]
-        # check whether there is roi in roi for each one
-        if hasattr(self, 'rois_tracked_roiInRoi_trans'):
-            for key in self.rois_tracked_roiInRoi_trans.keys():
-                roi_id, roi_ref = key
-                try: #TODO check
-                    rois.remove(str(roi_ref))
-                except:
-                    pass
-                rois.append(str(key))
-        items = ['all'] + rois
-        self.combo_3ded.addItems(items)
-        # self.combo_dp_plot.addItems(rois)
-    
-# =============================================================================
-#     def run_func_in_workerThread(self, threadpool, func, *args, **kwargs):
-#         worker = WorkerThread_General(func, args, kwargs)
-#         worker.signals.results.connect(self.display_result)  # Connect to result signal
-#         worker.signals.finished.connect(self.task_complete)  # Connect to finished signal
-#         threadpool.start(worker)
-# =============================================================================
-
     def save_results(self):
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
@@ -1333,24 +1208,21 @@ class Tab_Tracking_CV2(qtw.QWidget):
         os.mkdir(path_save)
         
         # tracking results, rois, dp
-        for roi_id, ds in self.tomo_ds.items():
-            path_save_roi = os.path.join(path_save, f'roi No {roi_id}')
+        for idx in self.df_rois.index:
+            path_save_roi = os.path.join(path_save, f'roi No {idx}')
             os.mkdir(path_save_roi)
-            if type(roi_id) == int:
-                with open(os.path.join(path_save_roi, f'roi coords_id {roi_id}.npy'), 'wb') as f:
-                    np.save(f, self.rois_tracked[roi_id])
-            else: # roi in roi
-                with open(os.path.join(path_save_roi, f'roi coords_ref_id {roi_id[1]}.npy'), 'wb') as f:
-                    np.save(f, self.rois_tracked[roi_id[1]])
-                with open(os.path.join(path_save_roi, f'roi coords_id {roi_id}.npy'), 'wb') as f:
-                    np.save(f, self.rois_tracked_roiInRoi_trans[roi_id])
+            df = self.df_rois.loc[idx, ['use', 'init', 'in_rois', 'end', 'ref']]
+            df['thresh'] = [('blur kernel', self.combo_blur.currentText()),
+                            ('thresh method', self.combo_thresh_method.currentText()),
+                            ('thresh offset', self.slider_thresh.value())]
+            df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
+            np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
+            np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
             
-            s = signals.Signal2D(self.tomo_ds[roi_id])
-            s.save(os.path.join(path_save_roi, f'3DED_id {roi_id}.hspy'))
-
             # write frames
+            np.save(os.path.join(path_save_roi, '3DED.npy'), self.df_rois.loc[idx, 'dp'])
             fld_frames = os.path.join(path_save_roi, 'frames')
-            worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, s)
+            worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, self.df_rois.loc[idx, 'dp'])
             self.threadpool.start(worker_frames)
             
             # clip for dp
@@ -1360,9 +1232,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
             except:
                 scale_recip = None
             fn_dp = os.path.join(path_save_roi, 'tomo clip')
-            worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_dp, s, scale_recip)
+            worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_dp, 
+                                                  self.df_rois.loc[idx, 'dp'], scale_recip)
             self.threadpool.start(worker_clip_dp)
-            
             
             # clip for tracking
             scale_real = self.lineEdit_scale_real.text()
@@ -1371,24 +1243,18 @@ class Tab_Tracking_CV2(qtw.QWidget):
             except:
                 scale_real = None
             
-            if type(roi_id) == int:
-                rois_ref = self.rois_tracked[roi_id]
-            else:
-                rois_ref = self.rois_tracked[roi_id[1]]
-                rois = self.rois_tracked_roiInRoi_trans[roi_id]
-                fn_roiInRoi = os.path.join(path_save_roi, 'tracking clip_ROIINROI')
-                worker_clip_tr = WorkerThread_General(io.create_clip_tracking, 0, 
-                                                      fn_roiInRoi, self.nav_imgs, rois, scale_real)
-                self.threadpool.start(worker_clip_tr)
             fn = os.path.join(path_save_roi, 'tracking clip')
-            worker_clip_tr_ref = WorkerThread_General(io.create_clip_tracking, 0,
-                                                      fn, self.nav_imgs, rois_ref, scale_real)
+            worker_clip_tr_ref = WorkerThread_General(
+                io.create_clip_tracking, 0, fn, self.nav_imgs, 
+                self.df_rois.loc[idx, 'out_rois'], scale_real)
             self.threadpool.start(worker_clip_tr_ref)
+            
     def kill_running_process(self):
         for process in self.running_processes:
             process.kill()  # Forcefully terminates the subprocess
             process.deleteLater()
         self.running_processes.clear()
+#%%
 # =============================================================================
 # if __name__ == "__main__":
 #     app = qtw.QApplication(sys.argv)
@@ -1400,3 +1266,4 @@ class Tab_Tracking_CV2(qtw.QWidget):
 #     # Start the event loop
 #     sys.exit(app.exec_())
 # =============================================================================
+

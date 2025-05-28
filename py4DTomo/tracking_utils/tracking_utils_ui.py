@@ -135,7 +135,8 @@ def select_rois_manual(s):
     return rois, tracked_imgs
 
 
-def track_roi_cv2(imgs, rois, tracking_method='csrt'):
+
+def track_roi_cv2(imgs, rois, init=0, tracking_method='csrt'):
     path_origin = os.getcwd()
     path_file = os.path.abspath(__file__)
     path_file = os.path.split(path_file)[0]
@@ -158,13 +159,12 @@ def track_roi_cv2(imgs, rois, tracking_method='csrt'):
     if tracking_method in ['nano', 'dasiamrpn']:
         flag_3ch_cvt = True
     
-    img_rng = list(rois.keys())
-    img_rng.append(len(imgs))
+    init.append(len(imgs))
     tracked_rois = []
     
-    for i_c, _ in enumerate(img_rng[:-1]):
-        imgs_temp = imgs[img_rng[i_c]:img_rng[i_c+1]]
-        roi = rois[img_rng[i_c]]
+    for i_c, _ in enumerate(init[:-1]):
+        imgs_temp = imgs[init[i_c]:init[i_c+1]]
+        roi = rois[init[i_c]]
         x,y,w,h = roi
         # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
         # roi = convert_roi_to_int((x,y,w,h))
@@ -433,8 +433,6 @@ def check_threshold(img, dev=0.1, step=0.05):
         ax[i_t,0].set_ylabel(lbls[i_t])
 
 def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kernel=1):
-    masks = {}
-
     threshold_methods = {
     'otsu': threshold_otsu,
     'li': threshold_li,
@@ -442,32 +440,44 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
     'mean': threshold_mean}
     threshold_func = threshold_methods[thresh_method]
     
-    for r_id in rois.keys():
-        masks_temp = np.zeros(navImgs.shape, dtype=navImgs.dtype)
-        for i, img in enumerate(navImgs):
-            y,x,h,w = rois[r_id][i]
-            if blur_kernel != 1:
-                img = io.convert_img_to_8bit(img)
-                img = io.gaussian_blur(img, blur_kernel)
-            masks_temp[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
-            th = threshold_func(masks_temp[i])
-            th *= thresh_offset
-            
-            masks_temp[i] = masks_temp[i] > th
-        masks_temp = masks_temp.astype('bool')
-        masks[r_id] = masks_temp
+    masks = np.zeros(navImgs.shape, dtype=navImgs.dtype)
+    for i, img in enumerate(navImgs):
+        y,x,h,w = rois[i]
+        if blur_kernel != 1:
+            img = io.convert_img_to_8bit(img)
+            img = io.gaussian_blur(img, blur_kernel)
+        masks[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
+        th = threshold_func(masks[i])
+        th *= thresh_offset
+        
+        masks[i] = masks[i] > th
+    masks = masks.astype('bool')
     return masks
     
-def cut_signal_by_roi(signal, rois):
-    ls = []
-    assert len(rois) == 1, 'Cutting signal works only for 1 ROI'
-    roi = rois[0]
-    for i_r, r in enumerate(roi):
-        x, y, w, h = r
-        cut_img = signal.inav[i_r].isig[x:x+w, y:y+h].data
-        ls.append(cut_img)
-    signal = create_array_from_dissimilar_imgs(ls)
-    return signal
+def cut_imgs_by_roi(imgs, rois):
+    imgs_cut = []
+    for i_r, r in enumerate(rois):
+        y,x,h,w = r
+        cut_img = imgs[i_r][x:x+w, y:y+h]
+        imgs_cut.append(cut_img)
+    imgs_cut = io.create_array_from_dissimilar_imgs(imgs_cut, mode='edge', 
+                                                        signal=False)
+    return imgs_cut
+
+def translate_roiInRoi(rois_1, rois_2, fwd=True):
+    rois_new = []
+    for i, roi in rois_1:
+        x,y,w,h = roi
+        x0,y0,w0,h0 = rois_2[i]
+        if fwd:
+            if x+w > x0+w0:
+                w = x-(x0+w0)
+            if y+h > y0+h0:
+                h = y-(y0+h0)
+            rois_new.append((x-x0, y-y0, w, h))
+        else:
+            rois_new.append((x+x0, y+y0, w, h))
+    return rois_new
 
 def make_tracking_signal(imgs, rois, border_value=65000):
     tracking_images = np.zeros(imgs.shape, dtype=imgs.dtype)

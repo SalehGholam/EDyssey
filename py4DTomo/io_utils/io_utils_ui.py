@@ -352,20 +352,21 @@ def create_array_from_dissimilar_imgs(imgs, mode='constant', signal=True):
         new_arr = hs.signals.Signal2D(new_arr)
     return new_arr
 
-def create_frames(pathSave, s):
+def create_frames(pathSave, frames):
     # pathSave = os.path.join(path, 'frames')
     if os.path.isdir(pathSave):
         [os.remove(os.path.join(pathSave, fn)) for fn in os.listdir(pathSave)]
     else:
         os.mkdir(pathSave)
-    for i, fr in enumerate(tqdm(s.data)):
+    # for i, fr in enumerate(tqdm(s.data)):
+    for i, fr in enumerate(tqdm(frames)):
         tifffile.imwrite(os.path.join(pathSave, f'{i+1:04d}.tif'), fr)
 
 def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, cmap='inferno'):
     print('Making DP clip...')
     plt.ioff()
     fig, ax = plt.subplots()
-    img = ax.imshow(s.data[0], cmap=cmap, norm=mcolors.SymLogNorm(
+    img = ax.imshow(s[0], cmap=cmap, norm=mcolors.SymLogNorm(
         vmin=vmin, vmax=vmax, linthresh=1))
     fig.tight_layout()
     if scale is not None:
@@ -374,14 +375,14 @@ def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, c
 
         ax.add_artist(scalebar)
     def update_frame(fr_no):
-        img.set_data(s.data[fr_no])
+        img.set_data(s[fr_no])
         return (img, )
     
     if fps is None:
-        fps = len(s.data) // 20 # sec
+        fps = len(s) // 20 # sec
         if fps == 0:
             fps = 1
-    ani = FuncAnimation(fig, update_frame, frames=range(s.data.shape[0]), blit=True)
+    ani = FuncAnimation(fig, update_frame, frames=range(s.shape[0]), blit=True)
     try:
         ani.save(fn + '.mp4', writer='ffmpeg', fps=fps, dpi=dpi)
     except:
@@ -426,6 +427,8 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400,
             fps = len(imgs) // 20 # sec
         else:
             fps = len(imgs) // duration # sec
+    if fps == 0:
+        fps = 1
             
     ani = FuncAnimation(fig, update_frame, frames=range(imgs.shape[0]), blit=True)
     path, fn_raw = os.path.split(fn)

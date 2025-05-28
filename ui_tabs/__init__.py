@@ -4,3 +4,4 @@ from .tab_roi_4d import Tab_ROI_on_4D
 from .tab_sam2 import Tab_SAM2
 from .worker_thread import WorkerThread_General
 from .loading_label import LoadingSpinner
+from .object_detection_widget import Object_Detector_Widget
