@@ -10,7 +10,7 @@ from glob import glob
 import sys
 from PyQt5.QtCore import (Qt, QThreadPool)
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QDoubleValidator
+from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.colors import SymLogNorm
 import numpy as np
 import py4DTomo.io_utils as io
@@ -208,9 +208,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_featureBottom = qtw.QHBoxLayout()
         layout_top_2.addLayout(layout_featureBottom)
         
-        self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
-        layout_featureBottom.addWidget(self.checkbox_roiInRoi)
-        self.checkbox_roiInRoi.setDisabled(True)
+        # self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
+        # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
+        # self.checkbox_roiInRoi.setDisabled(True)
 
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         layout_featureBottom.addItem(spacer)
@@ -342,7 +342,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_dp]):
             self.img_display[axes[i]] = ax.imshow(self.img_zero, cmap='viridis') 
-            ax.set_axis_off()
+            # ax.set_axis_off()
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+        self.ax_track.set_xlabel('Draw ROIinROI on this plot', fontsize=7)
+        self.ax_nav.set_xlabel('Use Left Click to add new ROI and\nRight Click to add init to an existing ROI', fontsize=7)
+        self.ax_nav.xaxis.label.set_visible(True)
+        self.ax_track.xaxis.label.set_visible(True)
         
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
@@ -352,6 +360,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.figure.tight_layout()
         # self.layout.addWidget(self.canvas)
         layout_canvas.addWidget(self.canvas)
+        
         
         # Connect mouse events
         self.rect = None            # Currently drawn rectangle
@@ -373,7 +382,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         for i, ax in enumerate(self.axes):
             self.backgrounds[axes[i]] = self.canvas.copy_from_bbox(ax.bbox)
         
-        #%% slider layout
+        #%% slider img num
         layout_slider = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider)
 
@@ -386,6 +395,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
+        
+        self.lineEdit_imgNo = qtw.QLineEdit()
+        layout_slider.addWidget(self.lineEdit_imgNo)
+        self.lineEdit_imgNo.setFixedWidth(35)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
+        self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
+
         
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
@@ -447,6 +463,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
     
     def reset_rois(self):
         self.tree_objects.clear()
+    
+    def jump_to_frame_no(self):
+        num = int(self.lineEdit_imgNo.text())
+        self.slider_imgNo.setValue(num)
     
     def update_canvas(self, imgNo=None):
         if imgNo is None:
@@ -658,6 +678,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
         
         self.update_canvas(0)
         self.canvas.draw()
@@ -681,7 +702,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.canvas.draw()
             self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
             
-        elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+        elif (event.inaxes == self.ax_track):
             self.canvas.restore_region(self.backgrounds['track'])
             if self.rect_roiInRoi is not None:
                 self.rect_roiInRoi.remove()
@@ -701,8 +722,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # Mouse motion event: update the rectangle size as the mouse moves
         if self.press is None or event.inaxes is None:
             return
-        if (event.inaxes == self.ax_track) and (not self.checkbox_roiInRoi.isChecked()):
-            return
+        # if (event.inaxes == self.ax_track) and (not self.checkbox_roiInRoi.isChecked()):
+            # return
         if event.inaxes == self.ax_nav:
             x0, y0 = self.press
             width = event.xdata - x0
@@ -717,7 +738,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.ax_nav.draw_artist(self.rect)
             self.canvas.blit(self.ax_nav.bbox)
             
-        elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+        elif (event.inaxes == self.ax_track):
             if event.xdata is None or event.ydata is None:
                 return
         
@@ -726,9 +747,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
             height = event.ydata - y0
         
             # Confine ROI
-            selected_items = self.tree_objects.selectedItems()
-            item = selected_items[0]
-            ind = int(item.text(1))
+            try:
+                selected_items = self.tree_objects.selectedItems()
+                item = selected_items[0]
+                ind = int(item.text(1))
+            except:
+                qtw.QMessageBox.critical(self, 'No Ref ROI', 'There is no reference ROI selected for ROI in ROI.')
+                print('First select a reference ROI')
+                self.press = None
+                self.rect_roiInRoi = None
+                return
             imgNo = self.slider_imgNo.value()
             xr, yr, wr, hr = self.df_rois.loc[ind, 'out_rois'][imgNo]
         
@@ -780,14 +808,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
         roiInRoi = False
         if (event.inaxes == self.ax_nav):
             ref = None
-        elif (event.inaxes == self.ax_track) and (self.checkbox_roiInRoi.isChecked()):
+            # new roi or extension
+            # self.add_item_tree(idx=idx, init=init, ref=ref)
+        elif (event.inaxes == self.ax_track):
             selected_items = self.tree_objects.selectedItems()
             if selected_items:
                 item = selected_items[0]
                 ref = item.text(1)
             roiInRoi = True
         
-        # new roi or extension
         if event.button == 1: # left click
             new_row = True
             init = [imgNo]
@@ -808,7 +837,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
             init = eval(item.text(2))
             init.append(imgNo)
             idx = int(item.text(1))
-        # self.add_item_tree(idx=idx, init=init, ref=ref)
         
         # plotting
         self.rect = None
@@ -1021,7 +1049,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.slider_thresh.setEnabled(True)
             self.slider_thresh.setValue(100)
             self.disable_3ded_widgets(False)
-            self.checkbox_roiInRoi.setEnabled(True)
+            # self.checkbox_roiInRoi.setEnabled(True)
             item = self.tree_objects.topLevelItem(0)
             item.setSelected(True)
             self.update_canvas(0)

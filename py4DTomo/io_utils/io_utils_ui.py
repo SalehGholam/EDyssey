@@ -201,11 +201,9 @@ def get_scan_size(fn):
     if dtype == '.hdf5':
         with h5py.File(fn, 'r') as f:
             scanSize = tuple(f['shape'])[:2]
-        print('scan size:', scanSize)
         return scanSize
     else:
-        s = load_signal(fn)
-        print('scan size:', scanSize)
+        s = load_signal(fn, lazy=True)
         return (s.data.shape[1], s.data.shape[0]) # TODO return y and x?
 
 def get_det_size(fn):
