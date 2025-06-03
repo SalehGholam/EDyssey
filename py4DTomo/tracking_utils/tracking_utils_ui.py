@@ -164,7 +164,8 @@ def track_roi_cv2(imgs, rois, init=0, tracking_method='csrt'):
     
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
-        roi = rois[init[i_c]]
+        # roi = rois[init[i_c]]
+        roi = rois[i_c]
         x,y,w,h = roi
         # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
         # roi = convert_roi_to_int((x,y,w,h))

@@ -19,6 +19,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from matplotlib_scalebar.scalebar import ScaleBar
+from dask.diagnostics import ProgressBar
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 # from skimage import exposure
@@ -484,7 +485,8 @@ class Worker_CalculateDP(QRunnable):
         navImg_cut = s_cut.sum(axis=(2,3)).data
         dp = s_cut.sum(axis=(0,1)).data
         if hasattr(dp, 'compute'): # lazy signals
-            dp.compute()
+            with ProgressBar():
+                dp.compute()
         if hasattr(navImg_cut, 'compute'): # lazy signals
             navImg_cut = navImg_cut.compute()
         if hasattr(self, 'f'):
