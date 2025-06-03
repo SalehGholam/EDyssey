@@ -868,7 +868,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         else:
             # self.df_rois['init'] = self.df_rois['init'].astype(object)
             self.df_rois.at[idx, 'init'] = init
-            self.df_rois.at[idx, 'in_rois'].append([roi])
+            self.df_rois.at[idx, 'in_rois'].append(roi)
             item.setText(2, str(init))
         
         self.press = None
