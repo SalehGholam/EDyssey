@@ -13,7 +13,7 @@ def process_file(in_file,out_file):
     det_size = 512
     det_bin = 1
     scan_bin = 1
-    scan_size = 512
+    scan_size = 128
     dwellTime = 50 # usec
     dwellTime *= 1000
     chunksize = 8
@@ -41,7 +41,7 @@ def process_file(in_file,out_file):
     fourD.run() # run the processing
     fourD.save_dose_image() # save the dose image
     toc = perf_counter()
-    print(f'Duration: {(toc-tic)/60:0.2f} min')
+    # print(f'Duration: {(toc-tic)/60:0.2f} min')
 
 def delete_existing(fns_tpx3, path_hdf5):
     fns_tpx3_new = []
@@ -56,9 +56,9 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 #%%
 if __name__ == '__main__':
-    path_in = r'C:\My Files\Microscope Data\Tecnai\25-01-27_Irina_S2\S2\2025-01-27_17-52-29'
+    path_in = r'J:\Tecnai Data\250604_CsPbBr3_TiO2\probe\2025-06-04_17-06-44'
     # path_out = path_in
-    path_out = r'D:\Microscope Sessions\CsPbBr3 Datasets\2nd Sample\25-01-27\S2\4D signals'
+    path_out = r'C:\My Files\Microscope Data\Tecnai\25-06-04_mix_CsPbBr3_TiO2\probe'
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files
@@ -66,9 +66,11 @@ if __name__ == '__main__':
     
     #### delete existing files
     # in_files = delete_existing(in_files, path_out)
-    
+    tic = perf_counter()
     out_files = [os.path.split(fn)[1] for fn in in_files]
     out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
-    N_processes = 4
+    N_processes = 1
     with Pool(N_processes) as p:
         p.starmap(process_file, zip(in_files,out_files))
+    toc = perf_counter()
+    print(f'Duration: {(toc-tic)/60:0.2f} min')

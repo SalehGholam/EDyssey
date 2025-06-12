@@ -369,6 +369,7 @@ def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, c
     fig.tight_layout()
     if scale is not None:
         scalebar = ScaleBar(scale*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
+                            box_alpha=0, color='w',
                             scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
 
         ax.add_artist(scalebar)
@@ -396,7 +397,8 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400,
     fig, ax = plt.subplots()
     img = ax.imshow(imgs[0], cmap=cmap)
     if scale is not None:
-        scalebar = ScaleBar(scale, 'nm', dimension='si-length', location='lower left')
+        scalebar = ScaleBar(scale, 'nm', dimension='si-length', 
+                            location='lower left', box_alpha=0, color='w')
         ax.add_artist(scalebar)
     if rois is not None:
         patch = []
@@ -467,7 +469,8 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
     img_mask = ax.imshow(img_0)
     show_mask(masks[0], obj_id, img_mask)
     if scale is not None:
-        scalebar = ScaleBar(scale, 'nm', dimension='si-length', location='lower left')
+        scalebar = ScaleBar(scale, 'nm', dimension='si-length', 
+                            location='lower left', box_alpha=0, color='w')
         ax.add_artist(scalebar)
     fig.tight_layout()
     

@@ -161,7 +161,6 @@ def track_roi_cv2(imgs, rois, init=0, tracking_method='csrt'):
     
     init.append(len(imgs))
     tracked_rois = []
-    
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
         # roi = rois[init[i_c]]

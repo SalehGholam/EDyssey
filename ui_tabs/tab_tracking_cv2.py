@@ -201,8 +201,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
-        self.empty_main_dataframe()
         self.patches_tracked = []
+        self.patches_axNav = []
+        self.patches_axTrack = []
+        self.empty_main_dataframe()
         
         # bottom 
         layout_featureBottom = qtw.QHBoxLayout()
@@ -366,8 +368,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.rect = None            # Currently drawn rectangle
         self.rect_roiInRoi = None
         self.press = None           # Mouse press coordinates
-        self.patches_axNav = []
-        self.patches_axTrack = []
 
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
@@ -457,12 +457,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.cols_df = ['use', 'init', 'in_rois', 'end', 
                         'ref', 'out_rois', 'mask', 'dp']
         self.df_rois = pd.DataFrame([], columns=self.cols_df)
-        self.df_rois = self.df_rois.astype({'use': int, 'init': object,
-                                            'in_rois': object, 'end': int, 'out_rois': object,
-                                            'dp': object, 'ref':str, 'mask':object})
-    
+        self.df_rois = self.df_rois.astype({'use': int, 'init': object, 'in_rois': object, 'end': int, 
+                                            'out_rois': object, 'dp': object, 'ref':str, 'mask':object})
+        
+        self.patches_axTrack.clear()
+        self.patches_axNav.clear()
+        self.patches_tracked.clear()
+        
     def reset_rois(self):
         self.tree_objects.clear()
+        self.empty_main_dataframe()
+        self.update_canvas()
     
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
@@ -595,7 +600,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 scale_real = float(scale_real)
                 for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
                     self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
-                    scalebar_patch = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
+                    scalebar_patch = ScaleBar(scale_real, 'nm', dimension='si-length', 
+                                              location='lower left', box_alpha=0, color='w')
                     for artist in ax.artists:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
@@ -615,6 +621,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 scale_recip = float(scale_recip)
                 self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
                 scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
+                                    box_alpha=0, color='w',
                                     scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
                 for artist in self.ax_dp.artists:
                         if isinstance(artist, ScaleBar):
@@ -666,6 +673,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.threadpool.start(worker)
 
     def initiate_processing(self, result, index):
+        self.empty_main_dataframe()
         self.s = result
         self.s_8bit = io.convert_to_8bit(self.s)
         self.nav_imgs_raw = self.s.data
@@ -983,10 +991,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.object_detector.show()
     
     def receive_objects(self, objects):
-        no_objs = len(self.df_rois)
+        try:
+            idx_max = self.df_rois.index.to_numpy().max()
+        except:
+            idx_max = 0
         for i, obj in enumerate(objects):
-            self.add_item_tree(idx=i+no_objs, init=[self.imgNo_autoDet], end=None, ref=None)
-    
+            self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
+                                           'None', None, None, None]
+            # self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
+            #                                        ref, None, None, None]
+            self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
+        print(self.df_rois)
+        self.update_canvas(self.imgNo_autoDet)
+        self.canvas.draw()
+            
     def track_rois(self):
         self.load_spinner()
         if len(self.df_rois) == 0:
@@ -1034,7 +1052,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if self.tracking_finished:
             # re-translate roi in roi coords
             df = self.df_rois[self.df_rois['use']==1]
-            df = df[df.ref.dropna().index]
+            df = df.loc[df.ref.dropna().index.to_list()]
             for idx in df.index:
                 try:
                     ref = int(self.df_rois.loc[idx].ref)

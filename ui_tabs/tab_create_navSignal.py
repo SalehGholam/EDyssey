@@ -381,7 +381,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             [os.remove(os.path.join(path_imgs, fn)) for fn in os.listdir(path_imgs)]
         else:
             os.mkdir(path_imgs)
-        worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s)
+        worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s.data)
         self.threadpool.start(worker_frames)
         # save clip
         # fn_clip = os.path.join(self.pathSave, 'navigation_images_clip')
@@ -410,7 +410,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
             scale_real = self.lineEdit_scale_real.text()
             try:
                 scale_real = float(scale_real)
-                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
+                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', 
+                                         location='lower left', box_alpha=0, color='w')
                 for artist in self.ax.artists:
                     if isinstance(artist, ScaleBar):
                         artist.remove()

@@ -1051,7 +1051,7 @@ class Tab_SAM2(qtw.QWidget):
                 s = hsSignals.Signal2D(self.tomo_ds[obj_id])
                 s.save(os.path.join(path_save_roi, f'3DED_id {obj_id}.hspy'))
                 fld_dp = os.path.join(path_save_roi, 'frames')
-                worker_frames = WorkerThread_General(io.create_frames, 0, fld_dp, s)
+                worker_frames = WorkerThread_General(io.create_frames, 0, fld_dp, s.data)
                 self.threadpool.start(worker_frames)
                 
                 # clip dp
@@ -1062,7 +1062,7 @@ class Tab_SAM2(qtw.QWidget):
                     scale_recip = None
                 fn_clip_dp = os.path.join(path_save_roi, 'tomo clip')
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
-                                                      s, scale_recip)
+                                                      s.data, scale_recip)
                 self.threadpool.start(worker_clip_dp)
             except: # no 3DED extracted yet
                 pass

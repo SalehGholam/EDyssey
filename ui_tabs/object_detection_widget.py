@@ -383,7 +383,7 @@ class Object_Detector_Widget(qtw.QWidget):
             # Draw the bounding box on the image
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(img, f"{idx}", (x, y - 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             # Optionally, extract the ROI for further processing (e.g., classification)
             roi = img[y:y+h, x:x+w]
             # ... perform further operations on roi if needed
