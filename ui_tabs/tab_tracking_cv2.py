@@ -214,6 +214,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
         # self.checkbox_roiInRoi.setDisabled(True)
 
+        label_blur_track = qtw.QLabel('Blur')
+        layout_featureBottom.addWidget(label_blur_track)
+        self.combo_blur_track = qtw.QComboBox()
+        layout_featureBottom.addWidget(self.combo_blur_track)
+        self.combo_blur_track.addItems([str(i) for i in range(1,23,2)])
+        self.combo_blur_track.currentIndexChanged.connect(self.blur_navImages)
+
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         layout_featureBottom.addItem(spacer)
 
@@ -584,7 +591,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_mask.bbox))
         shape_x, shape_y = img_mask.shape
         self.img_display['img_mask'].set_data(img_roi)
-        self.img_display['img_mask'].set_clim(vmin=img_roi.min(), vmax=img_roi.max())
+        try:
+            self.img_display['img_mask'].set_clim(vmin=img_roi.min(), vmax=img_roi.max())
+        except:
+            pass
         self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
         
         self.img_display['mask'].set_data(img_mask)
@@ -677,7 +687,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.s = result
         self.s_8bit = io.convert_to_8bit(self.s)
         self.nav_imgs_raw = self.s.data
-        self.nav_imgs = self.s_8bit.data
+        self.nav_imgs = deepcopy(self.s_8bit.data)
         self.spinner.stop()
         
         shape_x, shape_y = self.nav_imgs[0].shape
@@ -697,6 +707,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.button_cur_roi.setEnabled(True)
         self.button_track.setEnabled(True)
     
+    def blur_navImages(self):
+        kernelSize = int(self.combo_blur_track.currentText())
+        new_images = np.zeros_like(self.nav_imgs)
+        for i, img in enumerate(self.s_8bit.data):
+            new_images[i] = io.gaussian_blur(img, kernelSize)
+        self.nav_imgs = new_images
+        self.update_canvas()
+        
     def on_press(self, event):
         # Mouse press event: record the starting point
         self.press = (event.xdata, event.ydata)
@@ -846,19 +864,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
             init.append(imgNo)
             idx = int(item.text(1))
         
+# =============================================================================
+#         # addition of init to roiInRoi should be made with correct ref
+#         if pd.isna(self.df_rois.loc[idx, 'ref']): 
+#             self.press = None
+#             return
+# =============================================================================
+        
         # plotting
         self.rect = None
-        if not roiInRoi:
-            t = self.ax_nav.text(x0 + width/2, y0-15, str(idx), horizontalalignment='center', 
-                                 verticalalignment='center', color='red', fontsize=12)
-            self.patches_axNav.append(t)
-            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
-            self.canvas.restore_region(self.backgrounds['nav'])
-            self.ax_nav.draw_artist(t)
-            self.canvas.blit(self.ax_nav.bbox)
-        else:
+        if roiInRoi:
             # self.patches_axTrack.append(t)
-            self.rect_roiInRoi = None
             # self.canvas.restore_region(self.backgrounds['track'])
             t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center', 
                                    verticalalignment='center', color='red', fontsize=6)
@@ -867,27 +883,33 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.canvas.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(t)
             self.canvas.blit(self.ax_track.bbox)
+            self.rect_roiInRoi = None
+            
+# =============================================================================
+#         t = self.ax_nav.text(x0 + width/2, y0-15, str(idx), horizontalalignment='center', 
+#                              verticalalignment='center', color='red', fontsize=12)
+#         self.patches_axNav.append(t)
+#         self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
+#         self.canvas.restore_region(self.backgrounds['nav'])
+#         self.ax_nav.draw_artist(t)
+#         self.canvas.blit(self.ax_nav.bbox)
+# =============================================================================
             
         if new_row:
             self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
                                                    ref, None, None, None]
             self.add_item_tree(idx=idx, init=init, end=None, ref=ref)
-            # TODO add clear selection of the tree
+
         else:
             # self.df_rois['init'] = self.df_rois['init'].astype(object)
             self.df_rois.at[idx, 'init'] = init
             self.df_rois.at[idx, 'in_rois'].append(roi)
+            # print(self.df_rois.at[idx, 'in_rois'])
             item.setText(2, str(init))
         
         self.press = None
-        # # self.canvas.draw()
-        # self.press = None
+        self.update_canvas(imgNo)
 
-# =============================================================================
-#     def get_active_rois(self): # TODO
-#         # self.rois_toDraw = self.df_rois.where(self.df_rois.loc[:,'use'] == 1).dropna()
-#         self.rois_toDraw = self.df_rois[self.df_rois['use'] == 1]
-# =============================================================================
 
     def add_item_tree(self, idx, init=[0], end=None, ref=None):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
@@ -932,8 +954,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         def delete_row():
             index = self.tree_objects.indexOfTopLevelItem(item)
+            print(index)
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
+            print(self.df_rois)
+            self.update_canvas()
 
         delete_button.clicked.connect(delete_row)
 

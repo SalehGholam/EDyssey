@@ -136,7 +136,7 @@ def select_rois_manual(s):
 
 
 
-def track_roi_cv2(imgs, rois, init=0, tracking_method='csrt'):
+def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     path_origin = os.getcwd()
     path_file = os.path.abspath(__file__)
     path_file = os.path.split(path_file)[0]
@@ -159,41 +159,51 @@ def track_roi_cv2(imgs, rois, init=0, tracking_method='csrt'):
     if tracking_method in ['nano', 'dasiamrpn']:
         flag_3ch_cvt = True
     
-    init.append(len(imgs))
+    # the image numbers might not be sorted
+    init = np.array(init)
+    rnk = np.argsort(init)
+    rois = np.array(rois)[rnk]
+    init = init[rnk]
+    init = np.append(init, len(imgs))
+    
     tracked_rois = []
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
-        # roi = rois[init[i_c]]
-        roi = rois[i_c]
-        x,y,w,h = roi
-        # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
-        # roi = convert_roi_to_int((x,y,w,h))
-        img_0 = imgs_temp[0]
-        if flag_3ch_cvt:
-            img_0 = cv2.cvtColor(img_0, cv2.COLOR_GRAY2BGR)
-        # print(roi)
-        tracker.init(img_0, roi)
-        tracked_rois.append(roi)
-        for img in imgs_temp[1:]:
+        if len(imgs_temp > 1):
+            # roi = rois[init[i_c]]
+            roi = rois[i_c]
+            x,y,w,h = roi
+            # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
+            # roi = convert_roi_to_int((x,y,w,h))
+            img_0 = imgs_temp[0]
             if flag_3ch_cvt:
-                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            (success, box) = tracker.update(img)
-            if success:
-                box = [int(a) for a in box]
-                x, y, w, h = box
-                # roi might be out of image
-                if x < 0:
-                    x = 0
-                if y < 0:
-                    y = 0
-                if (x+w) > img.shape[0]:
-                    w = img.shape[0] - x
-                if (y+h) > img.shape[1]:
-                    h = img.shape[1] - y
-                # y = img.shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
-                # TODO check box is correct
-                box = (x,y,w,h)
+                img_0 = cv2.cvtColor(img_0, cv2.COLOR_GRAY2BGR)
+            # print(roi)
+            tracker.init(img_0, roi)
+            tracked_rois.append(roi)
+            for img in imgs_temp[1:]:
+                if flag_3ch_cvt:
+                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                (success, box) = tracker.update(img)
+                if success:
+                    box = [int(a) for a in box]
+                    x, y, w, h = box
+                    # roi might be out of image
+                    if x < 0:
+                        x = 0
+                    if y < 0:
+                        y = 0
+                    if (x+w) > img.shape[0]:
+                        w = img.shape[0] - x
+                    if (y+h) > img.shape[1]:
+                        h = img.shape[1] - y
+                    # y = img.shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
+                    # TODO check box is correct
+                    box = (x,y,w,h)
                 tracked_rois.append(box)
+        else:
+            box = rois[i_c]
+            tracked_rois.append(box)
     cv2.destroyAllWindows() #TODO not sure if it is needed
     return tracked_rois
 
