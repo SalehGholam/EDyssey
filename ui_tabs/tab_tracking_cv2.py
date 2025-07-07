@@ -954,10 +954,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         def delete_row():
             index = self.tree_objects.indexOfTopLevelItem(item)
-            print(index)
+            # print(index)
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
-            print(self.df_rois)
+            # print(self.df_rois)
             self.update_canvas()
 
         delete_button.clicked.connect(delete_row)
@@ -1026,7 +1026,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             # self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
             #                                        ref, None, None, None]
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
-        print(self.df_rois)
+        # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
         self.canvas.draw()
             
