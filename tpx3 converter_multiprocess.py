@@ -10,11 +10,11 @@ from time import perf_counter, sleep
 def process_file(in_file,out_file):
     sleep(0.1)
     tic = perf_counter()
-    det_size = 512
+    det_size = 128
     det_bin = 1
     scan_bin = 1
-    scan_size = 128
-    dwellTime = 50 # usec
+    scan_size = 512
+    dwellTime = 10 # usec
     dwellTime *= 1000
     chunksize = 8
     compression_factor =  4 #1 is least compression, 9 is most compression
@@ -56,9 +56,9 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 #%%
 if __name__ == '__main__':
-    path_in = r'J:\Tecnai Data\250604_CsPbBr3_TiO2\probe\2025-06-04_17-06-44'
+    path_in = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
     # path_out = path_in
-    path_out = r'C:\My Files\Microscope Data\Tecnai\25-06-04_mix_CsPbBr3_TiO2\probe'
+    path_out = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files

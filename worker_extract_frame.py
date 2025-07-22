@@ -103,7 +103,6 @@ def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8,512,512,512), **kwargs):
             s = s.reshape(shape)
         s = s.reshape(-1, *s.shape[2:])
         mask_idx = np.where(mask.flatten() == 1)[0]
-        # dp = s[mask_idx].sum(axis=0).compute()
         dp = s[mask_idx].sum(axis=0).compute()
     return dp
     

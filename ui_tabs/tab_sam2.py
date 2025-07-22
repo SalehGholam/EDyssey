@@ -21,25 +21,26 @@ from PyQt5.QtGui import QDoubleValidator
 from matplotlib_scalebar.scalebar import ScaleBar
 import numpy as np
 import os
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-# from sam2.build_sam import build_initiate_prediction
-from sam2.build_sam import build_sam2_video_predictor
-from torch.cuda import empty_cache
+import re
+# from sam2.build_sam import build_sam2
+# from sam2.sam2_image_predictor import SAM2ImagePredictor
+# from sam2.build_sam import build_sam2_video_predictor
+# from torch.cuda import empty_cache
 from PIL import Image
 import gc
 from copy import deepcopy
 import datetime
 from time import perf_counter
 import py4DTomo.io_utils as io
-import torch
+# import torch
 from typing import Literal
 from .worker_thread import WorkerThread_General
 from glob import glob
 from matplotlib.colors import SymLogNorm
-import py4DTomo.tracking_utils as tr
+# import py4DTomo.tracking_utils as tr
 import shutil
 from hyperspy.api import signals as hsSignals
+import pandas as pd
 path_ffmpeg = r'C:\Users\sgholam\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1-essentials_build\bin\ffmpeg.exe'
 plt.rcParams['animation.ffmpeg_path'] = path_ffmpeg  # Windows example
 #%% tab class
@@ -50,18 +51,17 @@ class Tab_SAM2(qtw.QWidget):
         # threadpool to use in the entire tab
         self.threadpool = QThreadPool()
         # self.threadpool = QThreadPool.globalInstance()
-        # logical_processors = os.cpu_count()
+        logical_processors = os.cpu_count()
         
-# =============================================================================
-#         if logical_processors > 2:
-#             self.threadpool.setMaxThreadCount(logical_processors - 2)
-# =============================================================================
-        self.threadpool.setMaxThreadCount(3)
+        if logical_processors > 2:
+            self.threadpool.setMaxThreadCount(logical_processors - 2)
+        # self.threadpool.setMaxThreadCount(3)
         
         self.init_ui()
-        self.device = self.check_torch_device()
+        # self.device = self.check_torch_device()
         
     def init_ui(self):
+        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         # Set the window title and dimensions
         self.setWindowTitle("SAM2 Segmentation")
         
@@ -160,10 +160,8 @@ class Tab_SAM2(qtw.QWidget):
         layout_scale_recip.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         
-        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
+        self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
+        self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
         
         
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
@@ -171,72 +169,61 @@ class Tab_SAM2(qtw.QWidget):
         self.button_loadNavigation.setFixedSize(110, 50)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
-        self.masks_images = {}
+        self.box_table = qtw.QGroupBox('Features Handling')
+        self.box_table.setFixedSize(350, height_layout_top)
+        layout_top.addWidget(self.box_table)
+        layout_features = qtw.QVBoxLayout()
+        self.box_table.setLayout(layout_features)
         
-        layout_topRight = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_topRight)
-        self.box_buttons = qtw.QGroupBox('Features Handling')
-        self.box_buttons.setFixedSize(350, height_layout_top//2)
-        layout_topRight.addWidget(self.box_buttons)
-        
-        layout_features = qtw.QHBoxLayout(self)
-        self.box_buttons.setLayout(layout_features)
-        self.layout.addLayout(layout_features)
-        
-        self.label_obj_id = qtw.QLabel('Object ID')
-        layout_features.addWidget(self.label_obj_id)
-
-        self.spinbox_obj_id = qtw.QSpinBox()
-        layout_features.addWidget(self.spinbox_obj_id)
-        self.spinbox_obj_id.setFixedWidth(50)
-        self.spinbox_obj_id.setMinimum(1)
-        self.spinbox_obj_id.setMaximum(1)
-        # self.spinbox_obj_id.valueChanged.connect(lambda: self.update_max_obj_id(1))
-        self.spinbox_obj_id.valueChanged.connect(lambda: self.update_canvas(self.slider_imgNo.value()))
-
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_features.addItem(spacer)
-
-        self.button_reset_image = qtw.QPushButton('Reset Image Points', self)
-        self.button_reset_image.setFixedSize(button_w, button_h_sml)
-        layout_features.addWidget(self.button_reset_image)
-        self.button_reset_image.clicked.connect(self.reset_image_points)
-        
-        self.button_reset_allPoints = qtw.QPushButton('Reset All Points', self)
-        self.button_reset_allPoints.setFixedSize(button_w, button_h_sml)
-        layout_features.addWidget(self.button_reset_allPoints)
-        self.button_reset_allPoints.clicked.connect(self.reset_all_points)
+        # tree
+        self.tree_objects = qtw.QTreeWidget()
+        layout_features.addWidget(self.tree_objects)
+        self.tree_objects.setMaximumWidth(400)
+        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "del"]
+        self.tree_objects.setColumnCount(len(self.cols_tree))
+        self.tree_objects.setHeaderLabels(self.cols_tree)
+        for i, _ in enumerate(self.cols_tree):
+            self.tree_objects.setColumnWidth(i, 20)
+        self.tree_objects.setColumnWidth(2, 50)
+        self.tree_objects.setColumnWidth(3, 50)
+        self.box_table.setFixedSize(self.tree_objects.width(), height_layout_top)
+        # self.box_table.setFixedSize(280, height_layout_top)
+        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
+        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         #%% run sam2
-        self.box_sam2 = qtw.QGroupBox('SAM2 Segmentation & Tracker')
-        self.box_sam2.setFixedSize(350, height_layout_top//2)
-        layout_topRight.addWidget(self.box_sam2)
-        layout_sam = qtw.QHBoxLayout(self)
-        self.box_sam2.setLayout(layout_sam)
-        
-        # combine_images
-        self.spinbox_comImgs = qtw.QSpinBox()
-        layout_sam.addWidget(self.spinbox_comImgs)
-        self.spinbox_comImgs.setMinimum(1)
-        
-        
-        self.button_comImgs = qtw.QPushButton('Combine Images')
-        self.button_comImgs.setFixedSize(button_w, button_h_lrg)
-        layout_sam.addWidget(self.button_comImgs)
-        self.button_comImgs.clicked.connect(lambda: self.combine_images(self.imgs, 
-                                                                    self.spinbox_comImgs.value()))
+        layout_sam_buttons = qtw.QHBoxLayout(self)
+        layout_features.addLayout(layout_sam_buttons)
         
         # image
-        self.button_runSeg_img = qtw.QPushButton('Segment Image', self)
-        self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
-        layout_sam.addWidget(self.button_runSeg_img)
+        self.button_runSeg_img = qtw.QPushButton('Segment Image(s)', self)
+        # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons.addWidget(self.button_runSeg_img)
         # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
-        self.button_runSeg_img.clicked.connect(self.initiate_prediction)
+        self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
+        
+        layout_sam_buttons.addItem(spacer)
+        
+        # num
+        layout_stack = qtw.QVBoxLayout()
+        layout_sam_buttons.addLayout(layout_stack)
+        layout_stack_top = qtw.QHBoxLayout()
+        layout_stack.addLayout(layout_stack_top)
+        
+        label_stackNum = qtw.QLabel('Stack Num')
+        layout_stack_top.addWidget(label_stackNum)
+        self.spinbox_stackNum = qtw.QSpinBox()
+        layout_stack_top.addWidget(self.spinbox_stackNum)
+        self.spinbox_stackNum.setSingleStep(25)
+        
+        self.label_stack = qtw.QLabel('')
+        layout_stack.addWidget(self.label_stack)
+        self.spinbox_stackNum.valueChanged.connect(self.update_stack_label)
         
         # clip
-        self.button_runSeg_clip = qtw.QPushButton('Track Segment(s)!', self)
-        self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
-        layout_sam.addWidget(self.button_runSeg_clip)
-        self.button_runSeg_clip.clicked.connect(self.propagate_in_video)
+        self.button_runSeg_clip = qtw.QPushButton('Track Segment(s)', self)
+        # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons.addWidget(self.button_runSeg_clip)
+        self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
         self.button_runSeg_clip.setEnabled(False)
 
 # =============================================================================
@@ -246,7 +233,7 @@ class Tab_SAM2(qtw.QWidget):
 #         self.button_reset_state.clicked.connect(self.reset_state)
 # =============================================================================
         
-        for wid in layout_sam.findChildren(qtw.QWidget):
+        for wid in layout_sam_buttons.findChildren(qtw.QWidget):
             wid.setDisabled(True)
         #%% extract 3DED
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
@@ -263,7 +250,6 @@ class Tab_SAM2(qtw.QWidget):
         self.combo_3ded = qtw.QComboBox()
         self.combo_3ded.setFixedWidth(50)
         layout_roi_frame.addWidget(self.combo_3ded)
-        self.update_combo_3ded()
         
         # layout_roi_frame.addItem(spacer)
         
@@ -299,7 +285,7 @@ class Tab_SAM2(qtw.QWidget):
         self.button_save_results.clicked.connect(self.save_results)
         
         self.disable_3ded_widgets(True)
-        layout_top.addItem(spacer)
+        # layout_top.addItem(spacer)
         #%% canvas
         layout_canvas = qtw.QHBoxLayout()
         self.layout.addLayout(layout_canvas)
@@ -327,8 +313,10 @@ class Tab_SAM2(qtw.QWidget):
         layout_canvas.addWidget(self.canvas)
         
         self.canvas.mpl_connect("button_press_event", self.on_click)
-        
-        self.masks_plotted = []
+        # self.masks_plotted = []
+        self.create_main_dataframe()
+        self.imgs = deepcopy([self.img_zero])
+        self.scatter_plots = []
         #%% slider
         layout_slider_imgCounter = qtw.QHBoxLayout(self)
         self.layout.addLayout(layout_slider_imgCounter)
@@ -350,240 +338,491 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
-    #%% GUI functions
-    def check_torch_device(self):
-        
-        # check device (cuda or cpu)
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-        print(f"using device: {device}")
-        
-        if device.type == "cuda":
-            # use bfloat16 for the entire notebook
-            torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-            # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
-            if torch.cuda.get_device_properties(0).major >= 8:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-        elif device.type == "mps":
-            print(
-                "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
-                "give numerically different outputs and sometimes degraded performance on MPS. "
-                "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
-            )
-        
-        return device
-
-            
-    def make_SAM2_predictor(self, opt: Literal['video', 'image']):
-        if not hasattr(self, 'device'):
-            self.device = self.check_torch_device()
-        # SAM2 checkpoints
-        path_file = os.path.abspath(__file__)
-        path_file = os.path.dirname(path_file)
-        path_main = os.path.dirname(path_file)
-        path_checkpoints = os.path.join(path_main, 'py4DTomo', 'tracking_utils', 'SAM2_checkpoints')
-        fn_checkpoint = 'sam2.1_hiera_large.pt'
-        sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
-        if not os.path.isfile(sam2_checkpoint):
-            raise FileNotFoundError('SAM2 model checkpoints are not found for version 2.1!')
-# =============================================================================
-#             fn_checkpoint = [fn for fn in os.listdir(path_checkpoints) if 'hiera_large.pt' in fn][0]
-#             sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
-# =============================================================================
-
-        model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-        if opt == 'video':
-            # predictor = build_initiate_prediction(model_cfg, sam2_checkpoint, device=self.device)
-            predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=self.device)
-        elif opt == 'image':
-            sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=self.device)
-            predictor = SAM2ImagePredictor(sam2_model)
-        return predictor
-            
-# =============================================================================
-#     def SAM2_image_predictor(self):
-#         if not hasattr(self, 'predictor_img'):
-#             self.predictor_img = self.make_SAM2_predictor(opt='image')
-# 
-#         imgNo = self.slider_imgNo.value()
-#         img_rgb = io.convert_to_rgb(np.array([self.imgs_8bit[imgNo]]))[:,:,:,0]
-#         self.predictor_img.set_image(img_rgb)
-#         #TODO should it run over all objects?!
-#         obj_id = self.spinbox_obj_id.value()
-# 
-#         input_points = []
-#         input_labels = []
-#         if 1 not in self.seg_points[obj_id][imgNo]:
-#             raise KeyError('There is no positive points to perform segmentation!')
-#         for i_p, pt in self.seg_points[obj_id][imgNo].items():
-#             input_points += pt
-#             input_labels += [i_p for i in pt]
-#             
-#         masks, scores, _ = self.predictor_img.predict(
-#             point_coords=input_points,
-#             point_labels=input_labels,
-#             multimask_output=False,)
-#         
-#         self.img_display['seg'].set_data(self.imgs[imgNo])
-#         self.show_mask(masks[0])
-#         self.canvas.draw()
-#         empty_cache()
-#         gc.collect()
-# =============================================================================
-
-    def initiate_prediction(self):
-        if hasattr(self, 'imgs_com'):
-            worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs_com)
-        else:
-            worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, self.imgs)
-        self.threadpool.start(worker_make_jpg)
-        worker_make_jpg.signals.results.connect(self.make_predictor)
-    
-    def make_predictor(self):
-        # print(self.seg_points)
-        if not hasattr(self, 'predictor_video'):
-            self.predictor_video = self.make_SAM2_predictor('video')
-        self.predictor_video = self.make_SAM2_predictor('video')
-        if not hasattr(self, 'inference_state'): # check if predictor had run
-            self.inference_state = None
-        worker_add_points = WorkerThread_General(self.add_points_to_predictor, 0, 
-                                                 self.predictor_video, self.inference_state,
-                                                 self.path_jpg, self.seg_points)
-        self.threadpool.start(worker_add_points)
-        worker_add_points.signals.results.connect(self.get_segment_image_results)
-
-    def add_points_to_predictor(self, predictor_video, inference_state, path_jpg, seg_points_dict): # TODO check this carefully
-        if inference_state is None:
-            inference_state = predictor_video.init_state(path_jpg) # TODO memory efficient?!
-        for obj_id in seg_points_dict.keys():
-            for i_img in seg_points_dict[obj_id].keys():
-                input_points = []
-                input_labels = []
-                for i_p, pt in seg_points_dict[obj_id][i_img].items():
-                    input_points += pt
-                    input_labels += [i_p for i in pt]
+#%% load data
+    def show_dialog(self, f):
+        sender = self.sender()
+        if sender == self.button_dir_navSignal:
+            file_filter = "supported signals (*.zspy *.hspy);;All Files (*)"
+            # path = qtw.QFileDialog.getOpenFileNames(self, "Select 4D Signals Folder", '', file_filter)
+            path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
+            if path:
+                self.lineEdit_dir_navSignal.setText(path[0])
+                path_save = os.path.join(os.path.dirname(path[0]), '5DED Analysis')
+                self.lineEdit_dir_save.setText(path_save)
                 
-                _, out_obj_ids, out_mask_logits = predictor_video.add_new_points_or_box(
-                                        inference_state=inference_state,
-                                        frame_idx=i_img,
-                                        obj_id=obj_id,
-                                        points=input_points,
-                                        labels=input_labels)
-        shape = tuple(out_mask_logits.cpu().shape)
-        shape = (shape[0], shape[2], shape[3])
-        out_mask_logits_np = np.zeros(shape, dtype=bool)
-        for i, _ in enumerate(out_obj_ids):
-            out_mask_logits_np[i] = (out_mask_logits[i] > 0.0).cpu().numpy()
-        return inference_state, out_obj_ids, out_mask_logits_np 
-    
-    def get_segment_image_results(self, result, index):
-        self.inference_state, out_obj_ids, out_mask_logits = result
-        # print(out_obj_ids)
-        # print(self.out_mask_logits)
-        imgNo = self.slider_imgNo.value()
-        self.masks_images[imgNo] = (out_obj_ids, out_mask_logits)
-        
-        self.button_runSeg_clip.setEnabled(True)
-        self.update_canvas(imgNo)
-        
-    
-    def propagate_in_video(self):
-        def propagate_func(predictor_video, inference_state):
-            video_segments = {}  # video_segments contains the per-frame segmentation results
-            for out_frame_idx, out_obj_ids, out_mask_logits in predictor_video.propagate_in_video(inference_state):
-                video_segments[out_frame_idx] = {
-                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                    for i, out_obj_id in enumerate(out_obj_ids)
-                }
-            
-            del out_frame_idx, out_obj_ids, out_mask_logits
-            empty_cache()
-            gc.collect()
-            return video_segments
-        worker_propagate = WorkerThread_General(propagate_func, 0, self.predictor_video, self.inference_state)
-        worker_propagate.signals.results.connect(self.get_segment_video_results)
-        self.threadpool.start(worker_propagate)
-        
-    def get_segment_video_results(self, result, index):
+        elif sender == self.button_dir_4dSignals:
+            path = qtw.QFileDialog.getExistingDirectory(self, "Select 4D Folder")
+            if path:
+                self.lineEdit_dir_4d.setText(path)
+                
+        elif sender == self.button_dir_save:
+            path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+            if path:
+                self.lineEdit_dir_save.setText(path)
+
 # =============================================================================
-#         self.video_segments = {}  # video_segments contains the per-frame segmentation results
+#     def check_torch_device(self):
+#         import torch
+#         # check device (cuda or cpu)
+#         if torch.cuda.is_available():
+#             device = torch.device("cuda")
+#         elif torch.backends.mps.is_available():
+#             device = torch.device("mps")
+#         else:
+#             device = torch.device("cpu")
+#         print(f"using device: {device}")
 #         
-#         for out_frame_idx, self.out_obj_ids, self.out_mask_logits in result:
-#             self.video_segments[out_frame_idx] = {
-#                     out_obj_id: (self.out_mask_logits[i] > 0.0).cpu().numpy()
-#                     for i, out_obj_id in enumerate(self.out_obj_ids)
-#             }
+#         if device.type == "cuda":
+#             # use bfloat16 for the entire notebook
+#             torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+#             # turn on tfloat32 for Ampere GPUs (https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices)
+#             if torch.cuda.get_device_properties(0).major >= 8:
+#                 torch.backends.cuda.matmul.allow_tf32 = True
+#                 torch.backends.cudnn.allow_tf32 = True
+#         elif device.type == "mps":
+#             print(
+#                 "\nSupport for MPS devices is preliminary. SAM 2 is trained with CUDA and might "
+#                 "give numerically different outputs and sometimes degraded performance on MPS. "
+#                 "See e.g. https://github.com/pytorch/pytorch/issues/84936 for a discussion."
+#             )
+#         
+#         return device
 # =============================================================================
-        w, h = self.imgs[0].shape
-        # print('object IDs: ', self.seg_points.keys())
-        self.masks_video = {}
-        
-        # in case of combining images
-        combined = False
-        if hasattr(self, 'imgs_com'):
-            combined = True
-            num_com = self.spinbox_comImgs.value()
-        
-        for i_obj in self.seg_points.keys():
-            self.masks_video[i_obj] = np.zeros((len(self.imgs), w, h), dtype=bool)
-            if combined:
-                for i_com in range(len(result)):
-                        for i_rep in range(num_com):
-                            idx = i_com*num_com + i_rep
-                            if idx < len(self.imgs):
-                                self.masks_video[i_obj][idx] = result[i_com][i_obj]
-            else:
-                for i_img, _ in enumerate(self.imgs):
-                    self.masks_video[i_obj][i_img] = result[i_img][i_obj]
-        self.activate_3ded_widgets(True)
-        self.update_canvas(self.slider_imgNo.value())
-        self.spinbox_finalFrame.setMaximum(len(self.imgs))
-        self.spinbox_finalFrame.setValue(len(self.imgs))
     
-    def make_jpg_imgs(self, imgs):
-        pathSave = self.lineEdit_dir_save.text()
-        self.path_jpg = os.path.join(pathSave, 'JPG Images')
-        if not os.path.isdir(pathSave):
-            os.mkdir(pathSave)
+    def load_navSignal(self):
+        self.reset_data()
 
-        if not os.path.isdir(self.path_jpg):
-            os.mkdir(self.path_jpg)
+        self.fn_navSignal = self.lineEdit_dir_navSignal.text()
+        s = hs.load(self.fn_navSignal)
+        self.imgs = s.data
+        self.imgs_8bit = io.convert_to_8bit(s).data
+        self.create_main_dataframe()
+
+        self.spinbox_stackNum.setMaximum(len(s))
+        # set size and limit of the navigation data
+        shape_x, shape_y = self.imgs[0].shape
+        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['nav'].set_clim(vmin=self.imgs.min(), vmax=self.imgs.max())
+        self.img_display['seg'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['seg_mask'].set_extent([0, shape_y, shape_x, 0])
+        self.update_canvas(0)
+        self.slider_imgNo.setRange(0, len(self.imgs)-1)
+        self.button_runSeg_clip.setEnabled(True)
+        self.spinbox_stackNum.setValue(len(self.imgs))
+    
+    def create_main_dataframe(self):    
+        self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end', 
+                        'single_mask', 'mask', 'dp']
+        self.df_obj = pd.DataFrame([], columns=self.cols_df)
+        self.df_obj = self.df_obj.astype({'use': int, 'idx': int,'frame_idx': object, 
+                                          'points': object, 'labels': object, 'end': int, 
+                                          'single_mask': object, 'dp': object,'mask':object})
+    def reset_data(self):
+        for p in self.scatter_plots:
+            p.remove()
+        self.scatter_plots = []
+        self.create_main_dataframe()
+        self.label_stack.setText('')
+        self.update_canvas()
+        # self.button_runSeg_clip.setEnabled(False)    
+
+#%% object tree and funcs
+    def add_item_tree(self, idx, fr_idx=[0], end=None):
+        cols = {col: i for i,col in enumerate(self.cols_tree)}
+        item = qtw.QTreeWidgetItem()
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        # item.setCheckState(cols['use'], Qt.Unchecked)
+        item.setCheckState(cols['use'], Qt.Checked)
+        item.setText(cols['idx'], f"{idx}")
+        item.setText(cols['fr_idx'], f"{fr_idx}")
         
-        # recreate jpg files if they are not the same number as navigation images
-        fns = glob(os.path.join(self.path_jpg, '*.jpg'))
-        if len(fns) != len(imgs):
-            if len(fns) > 0:
-                for fn in fns:
-                    os.remove(os.path.join(self.path_jpg, fn))
+        # end frame
+        spinbox = qtw.QSpinBox()
+        spinbox.setRange(0, len(self.imgs))
+        spinbox.setValue(len(self.imgs))
+        self.tree_objects.setItemWidget(item, cols['end'], spinbox)
+        spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
+        # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
+        
+        # self.tree_objects.addTopLevelItem(item)
+        
+        # tracked
+        cancel_icon = self.style().standardIcon(self.style().SP_DialogCancelButton)
+        item.setIcon(cols['trk'], cancel_icon)
+        item.setData(cols['trk'], Qt.UserRole, False)  # Store status boolean (False = not checked)
+        
+        # extracted
+        item.setIcon(cols['ext'], cancel_icon)
+        item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
+        
+        # delete
+        delete_button = qtw.QPushButton()
+        delete_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_TrashIcon))
+        delete_button.setFixedSize(30, 30)
+        delete_button.setToolTip("Delete this item")
+        
+        def delete_row():
+            index = self.tree_objects.indexOfTopLevelItem(item)
+            # print(index)
+            self.tree_objects.takeTopLevelItem(index)
+            self.df_obj = self.df_obj.drop(self.df_obj.index[index])
+            # print(self.df_obj)
+            self.update_canvas()
+    
+        delete_button.clicked.connect(delete_row)
+    
+        # Wrap the button in a QWidget to add it to a column
+        container = qtw.QWidget()
+        layout = qtw.QHBoxLayout(container)
+        layout.addWidget(delete_button)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignLeft)
+        container.setLayout(layout)
+        self.tree_objects.setItemWidget(item, cols['del'], container)
+    
+        # set as selected item
+        self.tree_objects.addTopLevelItem(item)
 
-            for i, img in enumerate(imgs):
-            # for i, img in enumerate(self.imgs_8bit):
-                img = io.convert_img_to_8bit(img)
-                img = Image.fromarray(img)
-                # img = img.convert('L')  # Convert to grayscale
-                img.save(os.path.join(self.path_jpg, f'{i:04d}.jpg'))
-      
+        # Later: select it
+        self.tree_objects.setCurrentItem(item)
+        item.setSelected(True)  # optional: highlight
+    
+    def on_spinboxEnd_changed(self, idx, value):
+        self.df_obj.at[idx, 'end'] = value
+
+    def on_click(self, event):
+        if (event.inaxes != self.ax_nav) or (event.button not in [1,3]):
+            return
+        
+        imgNo = self.slider_imgNo.value()
+        p = [event.xdata, event.ydata]
+        # left click is positive and right click negative
+        # click = 'pos' if event.button() == Qt.LeftButton else 'neg' # if event.button == 3 else False
+        new_roi = not ('shift' in event.modifiers) # if shift is held, it is NOT a new object
+        print('new roi:', new_roi)
+        if event.button == 1:
+            label = 1
+        elif event.button == 3:
+            label = 0
+        if new_roi:
+            idx = 1
+            while idx in self.df_obj.index:
+                idx += 1
+            fr_idx = [imgNo]
+            self.df_obj.loc[idx] = [1, idx, fr_idx, [p], [label], len(self.imgs), 
+                                    None, None, None]
+            self.add_item_tree(idx, fr_idx)
+        
+        else:
+            selected_items = self.tree_objects.selectedItems()
+            if selected_items:
+                item = selected_items[0]
+            else: # the last item, if nothing is selected
+                count = self.tree_objects.topLevelItemCount()
+                item = self.tree_objects.topLevelItem(count - 1) # last one
+            idx = int(item.text(1))
+            self.df_obj.at[idx, 'frame_idx'].append(imgNo)
+            self.df_obj.at[idx, 'points'].append(p)
+            self.df_obj.at[idx, 'labels'].append(label)
+            item.setText(2, str(self.df_obj.at[idx, 'frame_idx']))
+        
+        self.update_canvas(imgNo) # TODO fix
+#%% canvas        
+    def update_canvas(self, imgNo=None, obj_id=None):
+        if imgNo is None:
+            imgNo = self.slider_imgNo.value()
+        if obj_id is None:
+            try:
+                item_selected = self.tree_objects.currentItem()
+                obj_id = int(item_selected.text(1))
+            except:
+                obj_id = None
+                
+        self.img_display['nav'].set_data(self.imgs[imgNo])
+        self.ax_nav.set(title=f'Nav. Image No: {imgNo}')
+    
+        if obj_id is not None:
+            self.plot_points(imgNo, obj_id)
+            # plot segmentation masks for video
+            if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'mask']))):
+                self.img_display['seg'].set_data(self.imgs[imgNo])
+                self.img_display['seg'].set_clim(vmin=self.imgs[imgNo].min(), vmax=self.imgs[imgNo].max())
+                
+                self.show_mask(self.df_obj.loc[obj_id, 'mask'][imgNo], obj_id)
+            
+            # plot segmentation masks for single images
+            else:
+                try:
+                    self.img_display['seg'].set_data(self.imgs[imgNo])
+                    self.img_display['seg'].set_clim(vmin=self.imgs[imgNo].min(), vmax=self.imgs[imgNo].max())
+                    mask = self.df_obj.loc[obj_id, 'single_mask'][imgNo]
+                    self.show_mask(mask, 0)
+                except:
+                    self.img_display['seg'].set_data(self.img_zero)
+            
+            # diffraction pattern
+            if (not pd.isna(self.df_obj.loc[obj_id, 'dp'])):
+                self.plot_dp()
+        shape_x, shape_y = self.imgs[0].shape
+        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+        self.canvas.draw() 
+       
+    def add_scalebar(self):
+        scale_real = self.lineEdit_scale_real.text()
+        try:
+            scale_real = float(scale_real)
+            for ax in [self.ax_nav, self.ax_seg]:
+                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', 
+                                     location='lower left', box_alpha=0.4)
+                for artist in ax.artists:
+                    if isinstance(artist, ScaleBar):
+                        artist.remove()
+                ax.add_artist(scalebar_real)
+        except Exception as e:
+            # print(e)
+            pass
+        
+        scale_recip = self.lineEdit_scale_recip.text()
+        try:
+            scale_recip = float(scale_recip)
+            if scale_recip != 0:
+                scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', 
+                    location='lower left', box_alpha=0.4,
+                    scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
+                for artist in self.ax_dp.artists:
+                        if isinstance(artist, ScaleBar):
+                            artist.remove()
+                self.ax_dp.add_artist(scalebar_recip)
+        except Exception as e:
+            # print(e)
+            pass
+        
+        self.canvas.draw()
+    
+    def show_mask(self, mask, cmap_idx=0):
+        cmap = plt.get_cmap("tab10")
+        color = np.array([*cmap(cmap_idx)[:3], 0.6])
+        h, w = mask.shape[-2:]
+        # mask = mask.astype(np.uint8)
+        mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+        self.img_display['seg_mask'].set_data(mask_image)
+
+    def plot_points(self, imgNo, obj_id):
+        # remove previous points
+        for p in self.scatter_plots:
+            try:
+                p.remove()
+            except:
+                pass
+        self.scatter_plots.clear()
+        
+        if imgNo not in self.df_obj.loc[obj_id, 'frame_idx']: # no point for this image and object id
+            return
+        
+        for i, p in enumerate(self.df_obj.loc[obj_id, 'points']):
+            label = self.df_obj.loc[obj_id, 'labels'][i]
+            if label: # positive point
+                scatter_p = self.ax_nav.scatter(p[0], p[1], color='green', 
+                                                marker='o', s=20, linewidth=1.25)
+            else: # negative point
+                scatter_p = self.ax_nav.scatter(p[0], p[1], color='red', 
+                                                marker='o', s=20, linewidth=1.25)
+            self.scatter_plots.append(scatter_p)
+    
+    def plot_dp(self, roiNo=None, imgNo=None):
+        if hasattr(self, 'tomo_ds'):
+            if not imgNo:
+                imgNo = self.slider_imgNo.value()
+            if not roiNo:
+                obj_id = self.spinbox_obj_id.value()
+            if obj_id in self.tomo_ds.keys():
+                img = self.tomo_ds[obj_id][imgNo]
+                self.img_display['dp'].set_data(img)
+                self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
+                # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
+                shape_x, shape_y = img.shape
+                self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])       
+#%% SAM2 video segmentation
+    def update_stack_label(self):
+        try:
+            stack = self.spinbox_stackNum.value()
+            arr = np.arange(0, len(self.imgs_8bit), stack)[1:]
+            self.label_stack.setText(f'Img num guide: {arr.tolist()}')
+        except:
+            self.label_stack.setText('')
+
+    def initiate_video_segmentation(self):
+        # self.button_runSeg_img.setDisabled(True)
+        self.button_runSeg_clip.setDisabled(True)
+        
+        # jpg path
+        pathSave = self.lineEdit_dir_save.text()
+        if not (os.path.isdir(pathSave)):
+            os.mkdir(pathSave)
+        self.path_jpg = os.path.join(pathSave, 'JPG Images')
+        if os.path.isdir(self.path_jpg):
+            shutil.rmtree(self.path_jpg)
+            # os.rmdir(self.path_jpg)
+        os.mkdir(self.path_jpg)
+
+        df = self.df_obj[self.df_obj.use == 1]
+        self.stack_num = self.spinbox_stackNum.value()
+        if self.stack_num == 0:
+            self.stack_num = len(self.imgs)
+            self.spinbox_stackNum.setValue(self.stack_num)
+        
+        # count the total number of workers
+        self.total_threads_jpg = 0
+        for idx in df.index:
+            st = min(df.loc[idx, 'frame_idx'])
+            end = df.loc[idx, 'end']
+            imgs = self.imgs_8bit[st:end]
+            arr_stack = np.arange(0, len(imgs), self.stack_num)
+            self.total_threads_jpg += len(arr_stack)
+        
+        self.df_toSegment = pd.DataFrame(data=[], columns=[
+            'path_jpg', 'idx_ref', 'stack_num', 'frame_idx', 'points', 
+            'labels', 'mask'])
+        self.df_toSegment = self.df_toSegment.astype({
+            'path_jpg': str,
+            'idx_ref': int,
+            'stack_num': int,
+            'frame_idx': int, 
+            'points': object, 
+            'labels': object,
+            'mask': object})
+        
+        self.worker_count_jpg = 0
+        for idx in df.index:
+            st = min(df.loc[idx, 'frame_idx'])
+            end = df.loc[idx, 'end']
+            imgs = self.imgs_8bit[st:end]
+            arr_stack = np.arange(0, len(imgs), self.stack_num)
+            arr_stack = np.append(arr_stack, len(imgs))
+            self.df_obj.at[idx, 'mask'] = np.zeros(imgs.shape, dtype=bool)
+            
+            for i_fld, _ in enumerate(arr_stack[:-1]):
+                path_stack = os.path.join(self.path_jpg, f'{i_fld}')
+                os.mkdir(path_stack)
+                
+                st_2 = arr_stack[i_fld]
+                end_2 = arr_stack[i_fld+1]
+                imgs_stack = imgs[st_2:end_2]
+                frame_idx, points, labels = df.loc[idx, 
+                   ['frame_idx', 'points', 'labels']]
+                frame_idx = np.array(frame_idx) - st - st_2
+                cond = np.where((frame_idx>=0) & (frame_idx<len(imgs_stack)))
+                points = np.array(points)[cond]
+                labels = np.array(labels)[cond]
+                self.df_toSegment.loc[i_fld] = [path_stack, idx, i_fld, frame_idx,
+                                                points, labels, None]
+                
+                worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, 
+                                           path_stack, imgs_stack)
+                print('Stack num:', len(imgs_stack))
+                self.threadpool.start(worker_make_jpg)
+                worker_make_jpg.signals.finished.connect(self.check_jpg_completion)
+    
+    def make_jpg_imgs(self, path, imgs):
+        for i_img, img in enumerate(imgs):
+            img = Image.fromarray(img)
+            # img = img.convert('L')  # Convert to grayscale
+            img.save(os.path.join(path, f'{i_img:04d}.jpg'))
+
+    def check_jpg_completion(self):
+        self.worker_count_jpg += 1
+        if self.total_threads_jpg == self.worker_count_jpg:
+            self.run_video_segmentation()
+        
+    def run_video_segmentation(self):
+         self.running_processes_sam = {}
+         self.running_processes_sam_total = len(self.df_toSegment.index)
+         idx = self.df_toSegment.index[0]
+         path = self.df_toSegment.loc[idx, 'path_jpg']
+         self.df_toSegment.loc[idx][:-1].to_pickle(os.path.join(
+            path, 'seg_input.pkl'))
+         self.launch_next_video_seg(path, idx)
+                
+    def launch_next_video_seg(self, path, idx):
+        process_sam = QProcess()
+        process_sam.setProgram(sys.executable)
+        process_sam.setArguments(["worker_sam.py"] + ['video', path, str(idx)])
+
+        # process_sam.setProcessChannelMode(QProcess.MergedChannels)  # Combine stdout+stderr
+        process_sam.readyReadStandardOutput.connect(lambda: 
+                            self.handle_error_sam(process_sam))
+        process_sam.readyReadStandardError.connect(lambda: 
+                            self.handle_error_sam(process_sam))
+        process_sam.finished.connect(lambda:
+                            self.handle_finished_sam(process_sam))
+        process_sam.errorOccurred.connect(self.process_failed_sam)
+
+        self.running_processes_sam[idx] = process_sam
+        # self.process_task_map[process_sam] = args
+        process_sam.start()
+        
+    def process_failed_sam(self, error):
+        print("QProcess error occurred:", error)    
+        
+    def handle_error_sam(self, process):
+        error_output = process.readAllStandardError().data().decode()
+        print("Worker ERROR:", error_output)
+        # self.spinner.stop()
+    
+    def handle_output_sam(self, process):
+        data = process.readAllStandardOutput()
+        text = bytes(data).decode("utf-8")
+        self.output_box.append(text)
+    
+        match = re.search(r"(\d+)%\|", text)
+        if match:
+            percent = int(match.group(1))
+            self.progress_bar.setValue(percent)
+    
+    def handle_finished_sam(self, process):
+        data = process.readAllStandardOutput()
+        text = bytes(data).decode("utf-8")
+        print(text)
+        try:
+            result = json.loads(text.strip())
+            fn_output = result["path"]
+            idx = result["idx"]
+        # except json.JSONDecodeError:
+        #     print("Could not decode result:", text)
+        
+            with np.load(fn_output) as f:
+                mask_stack = f['masks']
+            self.df_toSegment.at[idx, 'mask'] = mask_stack
+            
+            if len(self.running_processes_sam) != self.running_processes_sam_total:
+                for idx in self.df_toSegment:
+                    if idx not in self.running_processes_sam:
+                        path = self.df_toSegment.loc[idx, 'path_jpg']
+                        self.df_toSegment[idx].to_parquet(os.path.join(
+                           path, 'seg_input.parquet'))
+                        self.launch_next_video_seg(path, idx)
+            else: # finished
+                for ref in np.unique(self.df_toSegment.idx_ref):
+                    df = self.df_toSegment[self.df_toSegment.idx_ref==ref]
+                    print(df)
+                    for idx in df.index:
+                        i_c = df.loc[idx, 'stack_num']
+                        self.df_obj.at[ref, 'mask'][
+                            (i_c)*self.stack_num : (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
+                del self.df_toSegment
+                _ = gc.collect()
+                self.update_canvas()
+        except json.JSONDecodeError:
+            print("Could not decode result:", text)
+#%% image segmentation    
+    def initiate_image_segmentation(self):
+        pass
+
+#%% 3DED   
     def activate_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
                 wid.setEnabled(state)
-    
-    def reset_state(self):
-        try:
-            self.predictor_video.reset_state(self.inference_state) #TODO check
-        except Exception as e:
-            print(f"An error occurred: {e}")
-        try: 
-            del self.masks_video
-        except: pass
-    
-    def clear_instances(self):
-        pass
     
     def make_rois(self, masks):
         rois = {}
@@ -670,7 +909,7 @@ class Tab_SAM2(qtw.QWidget):
         
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
-        self.process_task_map = {}
+        self.process_sam_task_map = {}
         self.launch_initial_tasks()
         
 # =============================================================================
@@ -712,24 +951,24 @@ class Tab_SAM2(qtw.QWidget):
         process = QProcess()
         process.setProgram(sys.executable)
         process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
-        process.readyReadStandardOutput.connect(lambda: self.handle_output(process))
-        process.readyReadStandardError.connect(lambda: self.handle_error(process))
-        process.finished.connect(lambda: self.handle_finished(process))
-        process.errorOccurred.connect(self.process_failed)
+        process.readyReadStandardOutput.connect(lambda: self.handle_output_3ded(process))
+        process.readyReadStandardError.connect(lambda: self.handle_error_3ded(process))
+        process.finished.connect(lambda: self.handle_finished_3ded(process))
+        process.errorOccurred.connect(self.process_failed_3ded)
 
 
         self.running_processes.append(process)
-        self.process_task_map[process] = args
+        self.process_sam_task_map[process] = args
         process.start()
         
-    def process_failed(self, error):
+    def process_failed_3ded(self, error):
         print("QProcess error occurred:", error)    
         
-    def handle_error(self, process):
+    def handle_error_3ded(self, process):
         error_output = process.readAllStandardError().data().decode()
         print("Worker ERROR:", error_output)    
     
-    def handle_output(self, process):
+    def handle_output_3ded(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
         try:
             result_array = pickle.loads(base64.b64decode(raw_output))
@@ -738,7 +977,7 @@ class Tab_SAM2(qtw.QWidget):
             # print("Raw output was:", raw_output)
             return
     
-        task_info = self.process_task_map.get(process, None)
+        task_info = self.process_sam_task_map.get(process, None)
         if task_info is None:
             print("Unknown process")
             return
@@ -748,10 +987,10 @@ class Tab_SAM2(qtw.QWidget):
         r_id, i_fr = eval(idx)
         self.tomo_ds[r_id][i_fr] = img
         
-    def handle_finished(self, process):
+    def handle_finished_3ded(self, process):
         if process in self.running_processes:
             self.running_processes.remove(process)
-        _ = self.process_task_map.pop(process, None)
+        _ = self.process_sam_task_map.pop(process, None)
         process.deleteLater()
         
         # progress bar update
@@ -769,244 +1008,20 @@ class Tab_SAM2(qtw.QWidget):
         else:
             self.launch_next_task()  # trigger next task if any left
 
-
-    # def show_mask(self, mask, obj_id=None, random_color=False, borders=True):
-    def show_mask(self, mask, obj_id=None, random_color=False, disp_ax=None):
-        if random_color:
-            color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
-        else:
-            # color = np.array([30/255, 144/255, 255/255, 0.6])
-            cmap = plt.get_cmap("tab10")
-            cmap_idx = 0 if obj_id is None else obj_id
-            color = np.array([*cmap(cmap_idx)[:3], 0.6])
-        h, w = mask.shape[-2:]
-        # mask = mask.astype(np.uint8)
-        mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-        if disp_ax is None: 
-            self.img_display['seg_mask'].set_data(mask_image)
-        else: # TODO not needed anymore
-            disp_ax.set_data(mask_image)
-            
-
-    def show_dialog(self, f):
-        sender = self.sender()
-        if sender == self.button_dir_navSignal:
-            file_filter = "supported signals (*.zspy *.hspy);;All Files (*)"
-            # path = qtw.QFileDialog.getOpenFileNames(self, "Select 4D Signals Folder", '', file_filter)
-            path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
-            if path:
-                self.lineEdit_dir_navSignal.setText(path[0])
-                path_save = os.path.join(os.path.dirname(path[0]), '5DED Analysis')
-                self.lineEdit_dir_save.setText(path_save)
-                
-        elif sender == self.button_dir_4dSignals:
-            path = qtw.QFileDialog.getExistingDirectory(self, "Select 4D Folder")
-            if path:
-                self.lineEdit_dir_4d.setText(path)
-                
-        elif sender == self.button_dir_save:
-            path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
-            if path:
-                self.lineEdit_dir_save.setText(path)
-    
-    def load_navSignal(self):
-        self.reset_data() # TODO
-
-        self.fn_navSignal = self.lineEdit_dir_navSignal.text()
-        s = hs.load(self.fn_navSignal)
-        self.imgs = s.data
-        self.imgs_8bit = io.convert_to_8bit(s).data
-        self.seg_points = {}
-        self.scatter_plots = []
-        
-        # set size and limit of the navigation data
-        shape_x, shape_y = self.imgs[0].shape
-        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['nav'].set_clim(vmin=self.imgs.min(), vmax=self.imgs.max())
-        self.update_canvas(0)
-        self.slider_imgNo.setRange(0, len(self.imgs)-1)
-    
     def set_threadNo(self, value):
         self.threadpool.setMaxThreadCount(value)
-    
-    def reset_data(self):
-        # resetting previous run
-        if hasattr(self, 'masks_video'):
-            del self.masks_video
-        if hasattr(self, 'inference_state'):
-            del self.inference_state
-        self.button_runSeg_clip.setEnabled(False)
-        
-    def update_canvas(self, imgNo=None, obj_id=None):
-        if imgNo is None:
-            imgNo = self.slider_imgNo.value()
-        if obj_id is None:
-            obj_id = self.spinbox_obj_id.value()
-        
-            
-        self.img_display['nav'].set_data(self.imgs[imgNo])
-        self.plot_points(imgNo, obj_id)
-        self.ax_nav.set(title=f'Nav. Image No: {imgNo}')
-    
-        # plot segmentation masks if they exist
-        if hasattr(self, 'predictor_video'): #  or hasattr(self, 'masks_images')
-            self.img_display['seg'].set_data(self.imgs[imgNo])
-            self.img_display['seg'].set_clim(vmin=self.imgs[imgNo].min(), vmax=self.imgs[imgNo].max())
-            try:
-                self.show_mask(self.masks_video[obj_id][imgNo], obj_id=obj_id)
-            except:
-                try:
-                    if imgNo in self.masks_images.keys():
-                        obj_ids, obj_logits = self.masks_images[imgNo]
-                        obj_id = obj_ids[obj_id - 1]
-                        obj_logit = obj_logits[obj_id - 1]
-                        self.show_mask(obj_logit, obj_id=obj_id)
-                except:
-                    self.img_display['seg_mask'].set_data(self.img_zero)
-                    self.img_display['seg'].set_data(self.img_zero)
-        if hasattr(self, 'tomo_ds'):
-            self.plot_dp()
-            
-        # scale bars 
-        #TODO adding and removing the artist is not efficient
-        scale_real = self.lineEdit_scale_real.text()
-        try:
-            scale_real = float(scale_real)
-            for ax in [self.ax_nav, self.ax_seg]:
-                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
-                for artist in ax.artists:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-                ax.add_artist(scalebar_real)
-        except Exception as e:
-            # print(e)
-            pass
-        scale_recip = self.lineEdit_scale_recip.text()
-        try:
-            scale_recip = float(scale_recip)
-            if scale_recip != 0:
-                scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
-                                    scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
-                for artist in self.ax_dp.artists:
-                        if isinstance(artist, ScaleBar):
-                            artist.remove()
-                self.ax_dp.add_artist(scalebar_recip)
-        except Exception as e:
-            # print(e)
-            pass
-        shape_x, shape_y = self.imgs[0].shape
-        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.canvas.draw()
-    
-    def update_combo_3ded(self):
-        if self.combo_3ded.count() > 0:
-            self.combo_3ded.clear()
-        object_ids = [self.combo_3ded.itemText(i) for i in range(self.spinbox_obj_id.maximum())]
-        object_ids = ['all'] + object_ids
-        self.combo_3ded.addItems(object_ids)
-    
-    def plot_points(self, imgNo=None, obj_id=None):
-        if not imgNo:
-            imgNo = self.slider_imgNo.value()
-        if not obj_id:
-            obj_id = self.spinbox_obj_id.value()
-        for p in self.scatter_plots:
-            try:
-                p.remove()
-            except ValueError:
-                pass
-        self.scatter_plots = []
-        if (obj_id in self.seg_points):
-            if(imgNo in self.seg_points[obj_id]):
-                if 1 in self.seg_points[obj_id][imgNo]:
-                    pos_points = self.seg_points[obj_id][imgNo][1]
-                    pos_points = np.array(pos_points)
-                    scatter_p = self.ax_nav.scatter(pos_points[:,0], pos_points[:, 1], 
-                                                    color='green', marker='o', s=20, 
-                                                    linewidth=1.25)
-                    self.scatter_plots.append(scatter_p)
-    
-                if 0 in self.seg_points[obj_id][imgNo]:
-                    neg_points = self.seg_points[obj_id][imgNo][0]
-                    neg_points = np.array(neg_points)
-                    scatter_n = self.ax_nav.scatter(neg_points[:,0], neg_points[:, 1], 
-                                                    color='red', marker='o', s=20, 
-                                                    linewidth=1.25)
-                    self.scatter_plots.append(scatter_n)
-        
-        self.canvas.draw()
-            
-    def on_click(self, event):
-        imgNo = self.slider_imgNo.value()
-        obj_id = self.spinbox_obj_id.value()
-        if event.inaxes == self.ax_nav:
-            p = [event.xdata, event.ydata]
-            # left click is positive and right click negative
-            click = 1 if event.button == 1 else 0 # if event.button == 3 else False
-            if obj_id not in self.seg_points: # check obj_id
-                self.seg_points[obj_id] = {}
-            if imgNo not in self.seg_points[obj_id]: # check imgNo
-                self.seg_points[obj_id][imgNo] = {}
-            try:
-                self.seg_points[obj_id][imgNo][click].append(p)
-            except:
-                self.seg_points[obj_id][imgNo][click] = [p]
-        self.update_max_obj_id(len(self.seg_points)+1)
-        # self.plot_points()
-        self.update_canvas(imgNo, obj_id)
-            
-    def update_max_obj_id(self, value):
-        self.spinbox_obj_id.setMaximum(value)
-    
-    def reset_all_points(self):
-        self.seg_points = {}
-        imgNo = self.slider_imgNo.value()
-        try:
-            self.update_canvas(imgNo)
-        except:
-            print('No points to reset')
-    
-    def reset_image_points(self):
-        imgNo = self.slider_imgNo.value()
-        obj_id = self.spinbox_obj_id.value()
-        try:
-            self.seg_points[obj_id][imgNo] = {}
-            self.update_canvas(imgNo)
-        except:
-            print('No points for this object or image no. to reset!')
-    
     def disable_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
                 wid.setDisabled(state)
     
-    def plot_dp(self, roiNo=None, imgNo=None):
-        if hasattr(self, 'tomo_ds'):
-            if not imgNo:
-                imgNo = self.slider_imgNo.value()
-            if not roiNo:
-                obj_id = self.spinbox_obj_id.value()
-            if obj_id in self.tomo_ds.keys():
-                img = self.tomo_ds[obj_id][imgNo]
-                self.img_display['dp'].set_data(img)
-                self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
-                # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
-                shape_x, shape_y = img.shape
-                self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-
     def update_progress_bar(self, value, total):
         value = value / total * 100
         value = int(value)
         self.progress_bar.setValue(value)
     
-    def combine_images(self, imgs, num):
-        l = (len(imgs) // num) if (len(imgs) % num)==0 else (len(imgs) // num) +1
-        scanSize_x, scanSize_y = imgs[0].shape
-        self.imgs_com = np.zeros((l, scanSize_x, scanSize_y), dtype='uint32')
-        for i, _ in enumerate(self.imgs_com):
-            self.imgs_com[i] = imgs[(i*num):(i+1)*num].sum(axis=0)
-        # return imgs_new
-    
+#%% Save Data
+# TODO    
     def save_masks(self):
         obj_ids = self.spinbox_obj_id.value()
         fn_suffix = f'{datetime.date.today()}_{datetime.datetime.now().strftime("%H-%M-%S")}'
@@ -1082,22 +1097,6 @@ class Tab_SAM2(qtw.QWidget):
                                                  300, None,  'Grays_r')
             self.threadpool.start(worker_tracking)
     
-    def clear_model(self):
-        try:
-            if hasattr(self, 'inference_state'):
-                for arg in [self.inference_state, self.predictor_video, 
-                            self.out_mask_logits, self.masks_video,
-                            self.video_segments
-                            ]:
-                    try:
-                        del arg
-                    except:
-                        # print('didnt delete the data')
-                        pass
-        except:
-            pass
-        empty_cache()
-        
     def closeEvent(self,event):
         # empty_cache()
         self.clear_model()

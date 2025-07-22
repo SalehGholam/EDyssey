@@ -4,10 +4,11 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 5:
-    1. using canvas.blit and canvas.draw_idle instead of canvas.draw to accelerate re-draw speed
-    2. using processes instead of threads for frame extraction
-    3. change feature handling in opencv tab to dataframe and tree widget
+version 6:
+    1. Updating SAM2 widget
+        - Split a dataset for SAM2
+        - Load SAM2 in a parallel process
+        - Update feature handling to a tree
     
 """
 

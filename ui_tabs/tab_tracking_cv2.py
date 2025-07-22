@@ -846,11 +846,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if event.button == 1: # left click
             new_row = True
             init = [imgNo]
-            for idx in np.arange(1, 1000):
-                if idx not in self.df_rois.index:
-                    break
-            # idx = self.df_rois.index.max() + 1
-            # idx = len(self.df_rois)
+            idx = 1
+            while idx in self.df_rois.index:
+                idx += 1
             
         elif event.button == 3: # right click
             new_row = False
@@ -967,7 +965,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout = qtw.QHBoxLayout(container)
         layout.addWidget(delete_button)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setAlignment(Qt.AlignRight)
+        layout.setAlignment(Qt.AlignLeft)
         container.setLayout(layout)
 
         self.tree_objects.setItemWidget(item, cols['del'], container)
@@ -1325,7 +1323,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             process.kill()  # Forcefully terminates the subprocess
             process.deleteLater()
         self.running_processes.clear()
-#%%
+
 # =============================================================================
 # if __name__ == "__main__":
 #     app = qtw.QApplication(sys.argv)
