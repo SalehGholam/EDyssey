@@ -424,7 +424,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
-    #%% functions
+    #%% load data
     def show_dialog(self, f):
         sender = self.sender()
         if sender == self.button_dir_navSignal:
@@ -446,6 +446,48 @@ class Tab_Tracking_CV2(qtw.QWidget):
             path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
             if path and os.path.isdir(path[0]):
                 self.lineEdit_dir_save.setText(path)
+    
+    def load_navSignal(self):
+        def get_signal(fn):
+            return load(fn)
+        
+        self.load_spinner()
+        gc.collect()
+        #TODO delete the previous batch
+        if hasattr(self, 'rois_tracked'):
+            self.reset_rois()
+            self.disable_3ded_widgets(True)
+                    
+        fn = self.lineEdit_dir_navSignal.text()
+        # self.s = load(fn)
+        worker = WorkerThread_General(get_signal, 0, fn)
+        worker.signals.results.connect(self.initiate_processing)
+        self.threadpool.start(worker)
+
+    def initiate_processing(self, result, index):
+        self.empty_main_dataframe()
+        self.s = result
+        self.s_8bit = io.convert_to_8bit(self.s)
+        self.nav_imgs_raw = self.s.data
+        self.nav_imgs = deepcopy(self.s_8bit.data)
+        self.spinner.stop()
+        
+        shape_x, shape_y = self.nav_imgs[0].shape
+        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
+        
+        self.update_canvas(0)
+        self.canvas.draw()
+        self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
+        print('No. of Images:', len(self.nav_imgs))
+        
+        self.button_reset_rois.setEnabled(True)
+        # self.button_cur_roi.setEnabled(True)
+        self.button_track.setEnabled(True)
     
     def disable_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
@@ -470,12 +512,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.patches_axTrack.clear()
         self.patches_axNav.clear()
         self.patches_tracked.clear()
+
+    def blur_navImages(self):
+        kernelSize = int(self.combo_blur_track.currentText())
+        new_images = np.zeros_like(self.nav_imgs)
+        for i, img in enumerate(self.s_8bit.data):
+            new_images[i] = io.gaussian_blur(img, kernelSize)
+        self.nav_imgs = new_images
+        self.update_canvas()
         
     def reset_rois(self):
         self.tree_objects.clear()
         self.empty_main_dataframe()
         self.update_canvas()
-    
+#%% canvas functions    
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
         self.slider_imgNo.setValue(num)
@@ -568,25 +618,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 try:
                     roi = self.df_rois.loc[i, 'out_rois'][imgNo]
                     x,y,w,h = roi
-                    rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
-                                             facecolor='none')
-                    self.ax_track.add_patch(rect)
-                    self.patches_axTrack.append(rect)
-                    
-                    # id
-                    # pos = (x+w+15, y+h+15)
-                    font_size = 8
-                    pos = (x+w/2, y-15)
-                    # font_size = 12
-                    t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center', 
-                                           verticalalignment='center', color='tab:orange', fontsize=font_size)
-                    self.patches_axTrack.append(t)
+                    if (w>0) and (h>0):
+                        rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
+                                                 facecolor='none')
+                        self.ax_track.add_patch(rect)
+                        self.patches_axTrack.append(rect)
+                        
+                        # id
+                        # pos = (x+w+15, y+h+15)
+                        font_size = 8
+                        pos = (x+w/2, y-15)
+                        # font_size = 12
+                        t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center', 
+                                               verticalalignment='center', color='tab:orange', fontsize=font_size)
+                        self.patches_axTrack.append(t)
                 except:
                     pass
         self.canvas.blit(self.ax_track.bbox)
             
-            
-    
     def update_ax_mask(self, img_roi, img_mask):
         self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_mask.bbox))
         shape_x, shape_y = img_mask.shape
@@ -665,56 +714,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         img_mask = img_mask[x:x+w, y:y+h]
         return img_mask, img_cut
 
-    def load_navSignal(self):
-        def get_signal(fn):
-            return load(fn)
-        
-        self.load_spinner()
-        gc.collect()
-        #TODO delete the previous batch
-        if hasattr(self, 'rois_tracked'):
-            self.reset_rois()
-            self.disable_3ded_widgets(True)
-                    
-        fn = self.lineEdit_dir_navSignal.text()
-        # self.s = load(fn)
-        worker = WorkerThread_General(get_signal, 0, fn)
-        worker.signals.results.connect(self.initiate_processing)
-        self.threadpool.start(worker)
-
-    def initiate_processing(self, result, index):
-        self.empty_main_dataframe()
-        self.s = result
-        self.s_8bit = io.convert_to_8bit(self.s)
-        self.nav_imgs_raw = self.s.data
-        self.nav_imgs = deepcopy(self.s_8bit.data)
-        self.spinner.stop()
-        
-        shape_x, shape_y = self.nav_imgs[0].shape
-        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
-        
-        self.update_canvas(0)
-        self.canvas.draw()
-        self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
-        print('No. of Images:', len(self.nav_imgs))
-        
-        self.button_reset_rois.setEnabled(True)
-        # self.button_cur_roi.setEnabled(True)
-        self.button_track.setEnabled(True)
-    
-    def blur_navImages(self):
-        kernelSize = int(self.combo_blur_track.currentText())
-        new_images = np.zeros_like(self.nav_imgs)
-        for i, img in enumerate(self.s_8bit.data):
-            new_images[i] = io.gaussian_blur(img, kernelSize)
-        self.nav_imgs = new_images
-        self.update_canvas()
-        
     def on_press(self, event):
         # Mouse press event: record the starting point
         self.press = (event.xdata, event.ydata)
@@ -907,8 +906,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.press = None
         self.update_canvas(imgNo)
-
-
+#%%
     def add_item_tree(self, idx, init=[0], end=None, ref=None):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
         item = qtw.QTreeWidgetItem()
@@ -1066,7 +1064,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
             
     def get_tracking_results(self, result, index):
         self.tracking_counter += 1
-        self.df_rois.at[index, 'out_rois'] = result
+        self.df_rois.at[index, 'out_rois'] = np.zeros((len(self.nav_imgs), 4), dtype=np.int16)
+        st = min(self.df_rois.loc[index, 'init'])
+        end = self.df_rois.loc[index, 'end']
+        print(st, end, len(result))
+        self.df_rois.at[index, 'out_rois'][st:end] = result
         self.toggle_tree_icon(self.df_rois.index.get_loc(index), 'trk', True)
         self.update_progress_bar(self.tracking_counter, self.tracking_counter_end)
         if self.tracking_counter == self.tracking_counter_end:
@@ -1118,15 +1120,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
             if reply == qtw.QMessageBox.No:
                 self.spinner.stop()   
                 return
-        
 
         dtype = os.path.splitext(fns_4d[0])[-1]
         blur_kernel = int(self.combo_blur.currentText())
         # make masks
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
-        
-        
         for ind in self.df_rois[self.df_rois.use == 1].index:
             beg = min(self.df_rois.loc[ind, 'init'])
             end = self.df_rois.loc[ind, 'end']
@@ -1158,6 +1157,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             beg = min(df.loc[idx].init)
             end = df.loc[idx].end
             for i_fr, fn in enumerate(fns_4d[beg:end]):
+                i_fr += beg
                 self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
                                    os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
                                    dtype, scanSize, (idx, i_fr)])

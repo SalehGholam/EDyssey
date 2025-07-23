@@ -169,6 +169,7 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     tracked_rois = []
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
+        tracked_rois.append(rois[i_c])
         if len(imgs_temp > 1):
             # roi = rois[init[i_c]]
             roi = rois[i_c]
@@ -205,7 +206,7 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
             box = rois[i_c]
             tracked_rois.append(box)
     cv2.destroyAllWindows() #TODO not sure if it is needed
-    return tracked_rois
+    return np.array(tracked_rois)
 
 def convert_roi_to_int(roi):
     x,y,w,h = roi

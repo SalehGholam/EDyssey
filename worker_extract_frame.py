@@ -32,7 +32,8 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
         # Parse input args
         scanSize = tuple(map(int, scanSize.strip("()").split(",")))
         # roi = tuple(map(int, roi.strip("()").split(",")))
-        roi = eval(roi)
+        roi = [int(a) for a in str(roi)[1:-1].split()] # read as str of numpy array
+        # roi = eval(roi) # read as str of list
         mask = np.load(mask_path)
         
         dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize)

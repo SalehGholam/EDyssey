@@ -245,11 +245,6 @@ class Tab_SAM2(qtw.QWidget):
         
         layout_roi_frame = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_roi_frame)
-        label_roi_3ded = qtw.QLabel('Roi No')
-        layout_roi_frame.addWidget(label_roi_3ded)
-        self.combo_3ded = qtw.QComboBox()
-        self.combo_3ded.setFixedWidth(50)
-        layout_roi_frame.addWidget(self.combo_3ded)
         
         # layout_roi_frame.addItem(spacer)
         
@@ -412,11 +407,12 @@ class Tab_SAM2(qtw.QWidget):
     
     def create_main_dataframe(self):    
         self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end', 
-                        'single_mask', 'mask', 'dp']
+                        'single_mask', 'mask', 'rois', 'dp']
         self.df_obj = pd.DataFrame([], columns=self.cols_df)
         self.df_obj = self.df_obj.astype({'use': int, 'idx': int,'frame_idx': object, 
-                                          'points': object, 'labels': object, 'end': int, 
-                                          'single_mask': object, 'dp': object,'mask':object})
+                                          'points': object, 'labels': object, 
+                                          'end': int, 'single_mask': object, 
+                                          'dp': object,'mask':object, 'rois':object})
     def reset_data(self):
         for p in self.scatter_plots:
             p.remove()
@@ -425,7 +421,6 @@ class Tab_SAM2(qtw.QWidget):
         self.label_stack.setText('')
         self.update_canvas()
         # self.button_runSeg_clip.setEnabled(False)    
-
 #%% object tree and funcs
     def add_item_tree(self, idx, fr_idx=[0], end=None):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
@@ -486,6 +481,17 @@ class Tab_SAM2(qtw.QWidget):
         # Later: select it
         self.tree_objects.setCurrentItem(item)
         item.setSelected(True)  # optional: highlight
+
+    def toggle_tree_icon(self, row_index: int, col, status):
+        item = self.tree_objects.topLevelItem(row_index)
+        col = self.cols_tree.index(col)
+        if item is None:
+            return  # Invalid index
+        # current_status = item.data(col, Qt.UserRole)
+        icon = self.style().standardIcon(self.style().SP_DialogApplyButton if 
+                                         status else self.style().SP_DialogCancelButton)
+        item.setIcon(col, icon)
+        item.setData(col, Qt.UserRole, status)
     
     def on_spinboxEnd_changed(self, idx, value):
         self.df_obj.at[idx, 'end'] = value
@@ -510,7 +516,7 @@ class Tab_SAM2(qtw.QWidget):
                 idx += 1
             fr_idx = [imgNo]
             self.df_obj.loc[idx] = [1, idx, fr_idx, [p], [label], len(self.imgs), 
-                                    None, None, None]
+                                    None, None, None, None]
             self.add_item_tree(idx, fr_idx)
         
         else:
@@ -744,56 +750,62 @@ class Tab_SAM2(qtw.QWidget):
          self.launch_next_video_seg(path, idx)
                 
     def launch_next_video_seg(self, path, idx):
-        process_sam = QProcess()
+        process_sam = QProcess(self)
         process_sam.setProgram(sys.executable)
         process_sam.setArguments(["worker_sam.py"] + ['video', path, str(idx)])
 
         # process_sam.setProcessChannelMode(QProcess.MergedChannels)  # Combine stdout+stderr
-        process_sam.readyReadStandardOutput.connect(lambda: 
-                            self.handle_error_sam(process_sam))
+        
+        # process_sam.readyReadStandardOutput.connect(lambda: 
+        #                     self.handle_output_sam(process_sam, idx))
+            
         process_sam.readyReadStandardError.connect(lambda: 
-                            self.handle_error_sam(process_sam))
-        process_sam.finished.connect(lambda:
-                            self.handle_finished_sam(process_sam))
-        process_sam.errorOccurred.connect(self.process_failed_sam)
+                            self.handle_error_sam(process_sam, idx))
+        process_sam.finished.connect(
+            lambda exit_code, exit_status: self.handle_finished_sam(
+            process_sam, idx, exit_code, exit_status))
+        
+        process_sam.errorOccurred.connect(lambda error: self.process_failed_sam(error, idx))
 
         self.running_processes_sam[idx] = process_sam
-        # self.process_task_map[process_sam] = args
         process_sam.start()
         
-    def process_failed_sam(self, error):
-        print("QProcess error occurred:", error)    
+    def process_failed_sam(self, error, idx):
+        print(f"[{idx}] QProcess error occurred:", error) 
         
-    def handle_error_sam(self, process):
+    def handle_error_sam(self, process, idx):
         error_output = process.readAllStandardError().data().decode()
         print("Worker ERROR:", error_output)
         # self.spinner.stop()
     
-    def handle_output_sam(self, process):
+    def handle_output_sam(self, process, idx): #TODO
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
-        self.output_box.append(text)
+        # self.output_box.append(f"[{idx}] {text}")
     
         match = re.search(r"(\d+)%\|", text)
         if match:
             percent = int(match.group(1))
-            self.progress_bar.setValue(percent)
-    
-    def handle_finished_sam(self, process):
+            self.progress_bar.setValue(percent, 100)
+
+    def handle_finished_sam(self, process, idx, exit_code, exit_status):
+        print(f"[{idx}] Process finished with exit code {exit_code}, status {exit_status}")
+
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
-        print(text)
+        print('text:', text)
         try:
             result = json.loads(text.strip())
             fn_output = result["path"]
-            idx = result["idx"]
-        # except json.JSONDecodeError:
-        #     print("Could not decode result:", text)
-        
+            idx = int(result["idx"])
+         
             with np.load(fn_output) as f:
                 mask_stack = f['masks']
             self.df_toSegment.at[idx, 'mask'] = mask_stack
             
+            print('df1', self.df_obj)
+            print('df2', self.df_toSegment)
+            self.toggle_tree_icon(1, 'trk', True)
             if len(self.running_processes_sam) != self.running_processes_sam_total:
                 for idx in self.df_toSegment:
                     if idx not in self.running_processes_sam:
@@ -804,16 +816,17 @@ class Tab_SAM2(qtw.QWidget):
             else: # finished
                 for ref in np.unique(self.df_toSegment.idx_ref):
                     df = self.df_toSegment[self.df_toSegment.idx_ref==ref]
-                    print(df)
                     for idx in df.index:
                         i_c = df.loc[idx, 'stack_num']
                         self.df_obj.at[ref, 'mask'][
                             (i_c)*self.stack_num : (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
                 del self.df_toSegment
                 _ = gc.collect()
+                self.activate_3ded_widgets(True)
                 self.update_canvas()
         except json.JSONDecodeError:
             print("Could not decode result:", text)
+        self.button_runSeg_clip.setEnabled(True)
 #%% image segmentation    
     def initiate_image_segmentation(self):
         pass
@@ -824,12 +837,10 @@ class Tab_SAM2(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
                 wid.setEnabled(state)
     
-    def make_rois(self, masks):
-        rois = {}
-        for i_obj in masks.keys():
-            # rois[i_obj] = np.zeros((len(masks[i_obj]), 4), dtype='int16')
-            rois[i_obj] = []
-            for i_img, mask in enumerate(masks[i_obj]):
+    def make_rois(self):
+        for obj_id in self.df_obj.index:
+            rois = []
+            for i_img, mask in enumerate(self.df_obj.loc[obj_id, 'mask']):
                 temp = np.where(mask==True)
                 try:
                     if temp[0].shape != 0: # no pixel found
@@ -842,46 +853,32 @@ class Tab_SAM2(qtw.QWidget):
                         r = [xmin, ymin, w, h]
                         r = tuple([int(item) for item in r])
                         # rois[i_obj][i_img] = r
-                        rois[i_obj].append(r)
+                        rois.append(r)
                 except:
-                    # rois[i_obj][i_img] = (0,0,0,0)
-                    rois[i_obj].append((0,0,0,0))
-        return rois
+                    rois.append((0,0,0,0))
+            rois = np.array(rois)
+            self.df_obj.at[obj_id, 'rois'] = rois
     
     def extract_3ded(self):
-# =============================================================================
-#         def get_tomo_ds(result, index):
-#             obj_id, fr_id = index
-#             self.tomo_ds[obj_id][fr_id] = result
-#             
-#             # progressbar update
-#             self.tomo_counter += 1
-#             self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
-#             # plot results at the end
-#             if self.tomo_counter == self.tomo_counter_total:
-#                 self.update_canvas()
-# =============================================================================
-
-        self.rois = self.make_rois(self.masks_video)
+        self.make_rois()
         
         path_4d = self.lineEdit_dir_4d.text()
+        # check path
         if path_4d == '': # no entry in 4D signals path
             qtw.QMessageBox.critical(self, 'No 4D path', 'Please enter a valid path for 4D signals.')
             return
-        
         fns_4d = glob(os.path.join(path_4d, '*')) 
         if len(fns_4d) == 0:
             qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
             return
-        dtype = os.path.splitext(fns_4d[0])[1] # select data type on the gui
+        dtype = os.path.splitext(fns_4d[0])[1]
         
-        # check if no of files with no of images
+        # check if num of files with num of images
         if len(self.imgs) != len(fns_4d):
             reply = qtw.QMessageBox.question(self, 'Mismatch',
                    'No of 4D signals mismatches the number of images. Do you want to continue?',)
             if reply == qtw.QMessageBox.No:
                 return
-
         # set detector size for tpx3
         if dtype in ['.tpx3', '.hdf5']: # TODO not good
             shape_d_x, shape_d_y = 512, 512
@@ -889,23 +886,27 @@ class Tab_SAM2(qtw.QWidget):
             shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])
         scanSize = self.imgs.shape[1:]
         
+        df = self.df_obj[self.df_obj.use == 1]
         self.tomo_counter = 0
+        
         self.tomo_ds = {}
-        # extract to a certain frame no
-        final_frame = self.spinbox_finalFrame.value()
-        fns_4d = fns_4d[:final_frame]
-        self.tomo_counter_total = len(self.masks_video) * len(fns_4d)
+        lengths = df.end - [min(df.init[idx]) for idx in df.index]
+        self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
         self.tic = perf_counter()
         
         self.tasks = []
         self.temp_dir = self.get_temp_dir()
-        for r_id in self.masks_video.keys():
-            self.tomo_ds[r_id] = np.zeros((len(fns_4d), shape_d_x, shape_d_y), dtype='uint32')
-            for i_fr, fn in enumerate(fns_4d):
-                self.tasks.append([fn, self.rois[r_id][i_fr], 
-                                   os.path.join(self.temp_dir, f"mask_r{r_id}_f{i_fr}.npy"),
-                                   dtype, scanSize, (r_id, i_fr)])
+        for idx in df.index:
+            self.df_obj.at[idx, 'dp'] = np.zeros((len(self.imgs), shape_d_x, 
+                                                  shape_d_y), dtype='uint32')
+            beg = min(df.loc[idx].init)
+            end = df.loc[idx].end
+            for i_fr, fn in enumerate(fns_4d[beg:end]):
+                i_fr += beg
+                self.tasks.append([fn, df.loc[idx, 'rois'][i_fr], 
+                                   os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
+                                   dtype, scanSize, (idx, i_fr)])
         
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
@@ -945,15 +946,16 @@ class Tab_SAM2(qtw.QWidget):
             return
     
         args = self.tasks.pop(0)
-        *_, (r_id,i_fr) = args
-        mask_path = self.save_mask_to_temp(self.temp_dir, self.masks_video[r_id][i_fr], r_id, i_fr)
+        *_, (idx,i_fr) = args
+        _ = self.save_mask_to_temp(self.temp_dir, 
+                           self.df_obj.loc[idx, 'mask'][i_fr], idx, i_fr)
         
         process = QProcess()
         process.setProgram(sys.executable)
         process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
         process.readyReadStandardOutput.connect(lambda: self.handle_output_3ded(process))
         process.readyReadStandardError.connect(lambda: self.handle_error_3ded(process))
-        process.finished.connect(lambda: self.handle_finished_3ded(process))
+        process.finished.connect(lambda: self.handle_finished_3ded(process, idx))
         process.errorOccurred.connect(self.process_failed_3ded)
 
 
@@ -983,11 +985,11 @@ class Tab_SAM2(qtw.QWidget):
             return
     
         # *_ , (r_id, i_fr) = task_info
-        img , idx = result_array
-        r_id, i_fr = eval(idx)
-        self.tomo_ds[r_id][i_fr] = img
+        img , r_id = result_array
+        idx, i_fr = eval(r_id)
+        self.df_obj.at[idx, 'dp'][i_fr] = img
         
-    def handle_finished_3ded(self, process):
+    def handle_finished_3ded(self, process, idx):
         if process in self.running_processes:
             self.running_processes.remove(process)
         _ = self.process_sam_task_map.pop(process, None)
@@ -997,6 +999,7 @@ class Tab_SAM2(qtw.QWidget):
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
         
+        self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
         if self.tomo_counter >= self.tomo_counter_total:
             self.toc = perf_counter()
             if os.path.exists(self.temp_dir):
@@ -1010,6 +1013,7 @@ class Tab_SAM2(qtw.QWidget):
 
     def set_threadNo(self, value):
         self.threadpool.setMaxThreadCount(value)
+        
     def disable_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
@@ -1048,27 +1052,33 @@ class Tab_SAM2(qtw.QWidget):
         path_save = os.path.join(path_save, f'{date}__{tim}')
         os.mkdir(path_save)
         
-        self.rois = self.make_rois(self.masks_video)
         
         # tracking results, rois, dp
-        for obj_id, masks in self.masks_video.items():
-            path_save_roi = os.path.join(path_save, f'roi No {obj_id}')
+        for idx in self.df_obj.index:
+            path_save_roi = os.path.join(path_save, f'roi No {idx}')
             os.mkdir(path_save_roi)
-            # input points
-            with open(os.path.join(path_save_roi, 'input_points.json'), 'w') as f:
-                json.dump(self.seg_points[obj_id], f, indent=4)
-            # TODO there is no roi here!
-            with open(os.path.join(path_save_roi, f'roi coords_id {obj_id}.npy'), 'wb') as f:
-                np.save(f, self.rois[obj_id])
             
-            # dp frames
-            try:
-                s = hsSignals.Signal2D(self.tomo_ds[obj_id])
-                s.save(os.path.join(path_save_roi, f'3DED_id {obj_id}.hspy'))
-                fld_dp = os.path.join(path_save_roi, 'frames')
-                worker_frames = WorkerThread_General(io.create_frames, 0, fld_dp, s.data)
+            df = self.df_obj.loc[idx, ['use', 'idx', 'frame_idx', 'points', 'labels',
+                                       'end']]
+            df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
+            if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
+                np.save(os.path.join(path_save_roi, 'rois.npy'), 
+                    self.df_obj.loc[idx, 'rois'])
+            if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
+                np.save(os.path.join(path_save_roi, 'output_mask.npy'), 
+                        self.df_obj.loc[idx, 'mask'])
+            
+            # write frames
+            if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
+                np.save(os.path.join(path_save_roi, '3DED.npy'), 
+                        self.df_obj.loc[idx, 'dp'])
+                path_pets = os.path.join(path_save_roi, 'pets')
+                os.mkdir(path_pets)
+                fld_frames = os.path.join(path_pets, 'frames')
+                worker_frames = WorkerThread_General(io.create_frames, 0, 
+                                 fld_frames, self.df_obj.loc[idx, 'dp'])
                 self.threadpool.start(worker_frames)
-                
+            
                 # clip dp
                 scale_recip = self.lineEdit_scale_recip.text()
                 try:
@@ -1077,25 +1087,25 @@ class Tab_SAM2(qtw.QWidget):
                     scale_recip = None
                 fn_clip_dp = os.path.join(path_save_roi, 'tomo clip')
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
-                                                      s.data, scale_recip)
+                                self.df_obj.loc[idx, 'dp'], scale_recip)
                 self.threadpool.start(worker_clip_dp)
-            except: # no 3DED extracted yet
-                pass
             
             # clip tracking
-            np.save(os.path.join(path_save_roi, f'segmentation masks_ obj ID {obj_id}.npy'), 
-                    self.masks_video[obj_id])
-            scale_real = self.lineEdit_scale_real.text()
-            try:
-                scale_real = float(scale_real)
-            except:
-                scale_real = None
-            fn_clip_tracking = os.path.join(os.path.join(path_save_roi, 'tracking clip'))
-            worker_tracking = WorkerThread_General(io.create_clip_tracking_with_mask, 0, 
-                                                 fn_clip_tracking, self.imgs, 
-                                                 self.masks_video[obj_id], obj_id, scale_real, 
-                                                 300, None,  'Grays_r')
-            self.threadpool.start(worker_tracking)
+            if not (np.all(pd.isna(self.df_obj.loc[idx, 'mask']))):
+                np.save(os.path.join(path_save_roi, f'segmentation masks_ obj ID {idx}.npy'), 
+                        self.df_obj.loc[idx, 'mask'])
+                scale_real = self.lineEdit_scale_real.text()
+                try:
+                    scale_real = float(scale_real)
+                except:
+                    scale_real = None
+                fn_clip_tracking = os.path.join(os.path.join(path_save_roi, 'tracking clip'))
+                worker_tracking = WorkerThread_General(
+                    io.create_clip_tracking_with_mask, 0, 
+                    fn_clip_tracking, self.imgs, 
+                    self.df_obj.loc[idx, 'mask'], idx, scale_real, 
+                    300, None,  'Grays_r')
+                self.threadpool.start(worker_tracking)
     
     def closeEvent(self,event):
         # empty_cache()
