@@ -360,7 +360,7 @@ def create_frames(pathSave, frames):
     for i, fr in enumerate(tqdm(frames)):
         tifffile.imwrite(os.path.join(pathSave, f'{i+1:04d}.tif'), fr)
 
-def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, cmap='inferno'):
+def create_clip_dp(fn, s, scale=None, dpi=400, fps=5, vmin=None, vmax=None, cmap='inferno'):
     print('Making DP clip...')
     plt.ioff()
     fig, ax = plt.subplots()
@@ -391,7 +391,7 @@ def create_clip_dp(fn, s, scale=None, dpi=400, fps=None, vmin=None, vmax=None, c
     print('DP clip is created!')
         
 def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400, 
-                         fps=None, duration=None, cmap='viridis'):
+                         fps=5, duration=None, cmap='viridis'):
     print('Making tracking clip...')
     plt.ioff()
     fig, ax = plt.subplots()
@@ -443,7 +443,7 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400,
     print('Tracking clip is Created!')
 
 def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None, 
-                                   dpi=400, fps=None, cmap='viridis'):
+                                   dpi=400, fps=5, cmap='viridis'):
     def show_mask(mask, obj_id=None, random_color=False):
         if random_color:
             color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)

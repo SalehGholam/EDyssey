@@ -99,8 +99,6 @@ if __name__ == "__main__":
         delete_model([predictor, sam2_model])
         
     elif typ == 'video':
-        
-        
         df = pd.read_pickle(os.path.join(path_seg_input, 'seg_input.pkl'))
         predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
         inference_state = predictor.init_state(df['path_jpg'])

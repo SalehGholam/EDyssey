@@ -964,6 +964,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout.addWidget(delete_button)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignLeft)
+        container.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+
         container.setLayout(layout)
 
         self.tree_objects.setItemWidget(item, cols['del'], container)
@@ -981,7 +983,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
                                          status else self.style().SP_DialogCancelButton)
         item.setIcon(col, icon)
         item.setData(col, Qt.UserRole, status)
-        
     
     def get_checked_items(self):
         checked = []

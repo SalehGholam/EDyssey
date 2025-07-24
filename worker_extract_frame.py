@@ -114,7 +114,9 @@ def load_hs(fn, roi, mask, chunks=(16,16,64,64), **kwargs):
     except:
         pass
     x,y,w,h = roi # TODO check
-    s = s.inav[x:x+w, y:y+h].data
+    # s = s.inav[x:x+w, y:y+h].data
+    # mask = mask[]
+    s = s.data
     s = s.reshape(-1, *s.shape[2:])
     dp = s[np.where(mask.flatten() == 1)[0]].sum(axis=0)
     dp = dp.compute()

@@ -17,7 +17,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool, QProcess
 import pickle
 import base64
-from PyQt5.QtGui import QDoubleValidator
+from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from matplotlib_scalebar.scalebar import ScaleBar
 import numpy as np
 import os
@@ -217,7 +217,7 @@ class Tab_SAM2(qtw.QWidget):
         
         self.label_stack = qtw.QLabel('')
         layout_stack.addWidget(self.label_stack)
-        self.spinbox_stackNum.valueChanged.connect(self.update_stack_label)
+        self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
         
         # clip
         self.button_runSeg_clip = qtw.QPushButton('Track Segment(s)', self)
@@ -239,35 +239,30 @@ class Tab_SAM2(qtw.QWidget):
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
         layout_box_3ded = qtw.QVBoxLayout()
         # self.box_3ded.setFixedWidth(350)
-        self.box_3ded.setFixedSize(350, height_layout_top)
+        self.box_3ded.setFixedSize(250, height_layout_top)
         self.box_3ded.setLayout(layout_box_3ded)
         layout_top.addWidget(self.box_3ded)
         
-        layout_roi_frame = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_roi_frame)
+        layout_threadNum = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_threadNum)
         
-        # layout_roi_frame.addItem(spacer)
+        # layout_threadNum.addItem(spacer)
         
         label_threadNo = qtw.QLabel('Thread No')
-        layout_roi_frame.addWidget(label_threadNo)
-        self.spinbox_threadNo = qtw.QSpinBox(self)
-        layout_roi_frame.addWidget(self.spinbox_threadNo)
-        self.spinbox_threadNo.setRange(1,os.cpu_count()-1)
-        self.spinbox_threadNo.setValue(3)
-        self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
+        layout_threadNum.addWidget(label_threadNo)
+        self.spinbox_threadNum = qtw.QSpinBox(self)
+        layout_threadNum.addWidget(self.spinbox_threadNum)
+        self.spinbox_threadNum.setRange(1,os.cpu_count()-1)
+        self.spinbox_threadNum.setValue(3)
+        self.spinbox_threadNum.valueChanged.connect(self.set_threadNo)
         
-        label_finalFrame = qtw.QLabel('Final Frame')
-        self.spinbox_finalFrame = qtw.QSpinBox()
-        self.spinbox_finalFrame.setFixedWidth(50)
-        self.spinbox_finalFrame.setMinimum(1)
-        for wid in [label_finalFrame, self.spinbox_finalFrame]:
-            layout_roi_frame.addWidget(wid)
+        layout_threadNum.addSpacerItem(spacer)
+        
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_threadNum.addWidget(self.checkbox_autosave)
         
         layout_extract_button = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract_button)
-        self.checkbox_autosave = qtw.QCheckBox('Autosave')
-        layout_box_3ded.addWidget(self.checkbox_autosave)
-        
         self.button_3ded = qtw.QPushButton('Extract!')
         self.button_3ded.setFixedSize(button_w, button_h_lrg)
         layout_extract_button.addWidget(self.button_3ded)
@@ -288,7 +283,6 @@ class Tab_SAM2(qtw.QWidget):
         self.figure = Figure(constrained_layout=True)
         # self.figure = Figure(figsize=(16,8)) # with figsize
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(NavigationToolbar(self.canvas, self))
         self.ax_nav = self.figure.add_subplot(131)
         self.ax_seg = self.figure.add_subplot(132)
         self.ax_dp = self.figure.add_subplot(133)
@@ -303,26 +297,47 @@ class Tab_SAM2(qtw.QWidget):
                                                     norm=SymLogNorm(linthresh=1))
         self.ax_dp.set_title('Extracted DP')
         for ax in [self.ax_dp, self.ax_nav, self.ax_seg]:
-            ax.set_axis_off()
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
         # self.figure.tight_layout()
         layout_canvas.addWidget(self.canvas)
-        
+        self.ax_nav.set_xlabel('Left Click => Positive Point\nRight Click => Negative Point\n' + 
+                               'Hold "shift" for adding points to an existing object', fontsize=8.5)
+        self.ax_nav.xaxis.label.set_visible(True)
         self.canvas.mpl_connect("button_press_event", self.on_click)
         # self.masks_plotted = []
         self.create_main_dataframe()
         self.imgs = deepcopy([self.img_zero])
         self.scatter_plots = []
         #%% slider
-        layout_slider_imgCounter = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_slider_imgCounter)
+        layout_slider = qtw.QHBoxLayout()
+        self.layout.addLayout(layout_slider)
+        
+        layout_slider.addWidget(NavigationToolbar(self.canvas, self))
+        
+        vline = qtw.QFrame()
+        vline.setFrameShape(qtw.QFrame.VLine)
+        vline.setFrameShadow(qtw.QFrame.Sunken)
+        layout_slider.addWidget(vline)
         
         self.label_imgCounter = qtw.QLabel('Img No.')
-        layout_slider_imgCounter.addWidget(self.label_imgCounter)
+        layout_slider.addWidget(self.label_imgCounter)
+        
+        self.lineEdit_imgNo = qtw.QLineEdit()
+        layout_slider.addWidget(self.lineEdit_imgNo)
+        self.lineEdit_imgNo.setFixedWidth(35)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
+        self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
+        
+        self.label_imgCounter = qtw.QLabel('Img No.')
+        layout_slider.addWidget(self.label_imgCounter)
         
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
-        layout_slider_imgCounter.addWidget(self.slider_imgNo)
+        layout_slider.addWidget(self.slider_imgNo)
         
         # self.update_canvas(0)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
@@ -403,6 +418,7 @@ class Tab_SAM2(qtw.QWidget):
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.imgs)-1)
         self.button_runSeg_clip.setEnabled(True)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
     
     def create_main_dataframe(self):    
@@ -419,6 +435,7 @@ class Tab_SAM2(qtw.QWidget):
         self.scatter_plots = []
         self.create_main_dataframe()
         self.label_stack.setText('')
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.update_canvas()
         # self.button_runSeg_clip.setEnabled(False)    
 #%% object tree and funcs
@@ -430,6 +447,8 @@ class Tab_SAM2(qtw.QWidget):
         item.setCheckState(cols['use'], Qt.Checked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['fr_idx'], f"{fr_idx}")
+        # set as selected item
+        self.tree_objects.addTopLevelItem(item)
         
         # end frame
         spinbox = qtw.QSpinBox()
@@ -473,11 +492,13 @@ class Tab_SAM2(qtw.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignLeft)
         container.setLayout(layout)
+        container.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
         self.tree_objects.setItemWidget(item, cols['del'], container)
     
-        # set as selected item
-        self.tree_objects.addTopLevelItem(item)
-
+        
+        self.tree_objects.setColumnWidth(cols['end'], 60)
+        self.tree_objects.setColumnWidth(cols['del'], 40)
+        
         # Later: select it
         self.tree_objects.setCurrentItem(item)
         item.setSelected(True)  # optional: highlight
@@ -505,7 +526,6 @@ class Tab_SAM2(qtw.QWidget):
         # left click is positive and right click negative
         # click = 'pos' if event.button() == Qt.LeftButton else 'neg' # if event.button == 3 else False
         new_roi = not ('shift' in event.modifiers) # if shift is held, it is NOT a new object
-        print('new roi:', new_roi)
         if event.button == 1:
             label = 1
         elif event.button == 3:
@@ -531,9 +551,13 @@ class Tab_SAM2(qtw.QWidget):
             self.df_obj.at[idx, 'points'].append(p)
             self.df_obj.at[idx, 'labels'].append(label)
             item.setText(2, str(self.df_obj.at[idx, 'frame_idx']))
-        
+        # print(self.df_obj.loc[:,['idx', 'frame_idx', 'points', 'labels', 'end']])
         self.update_canvas(imgNo) # TODO fix
-#%% canvas        
+#%% canvas
+    def jump_to_frame_no(self):
+        num = int(self.lineEdit_imgNo.text())
+        self.slider_imgNo.setValue(num)
+    
     def update_canvas(self, imgNo=None, obj_id=None):
         if imgNo is None:
             imgNo = self.slider_imgNo.value()
@@ -567,8 +591,8 @@ class Tab_SAM2(qtw.QWidget):
                     self.img_display['seg'].set_data(self.img_zero)
             
             # diffraction pattern
-            if (not pd.isna(self.df_obj.loc[obj_id, 'dp'])):
-                self.plot_dp()
+            if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'dp']))):
+                self.plot_dp(obj_id=obj_id, imgNo=imgNo)
         shape_x, shape_y = self.imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
         self.canvas.draw() 
@@ -624,10 +648,12 @@ class Tab_SAM2(qtw.QWidget):
         
         if imgNo not in self.df_obj.loc[obj_id, 'frame_idx']: # no point for this image and object id
             return
-        
-        for i, p in enumerate(self.df_obj.loc[obj_id, 'points']):
-            label = self.df_obj.loc[obj_id, 'labels'][i]
-            if label: # positive point
+        frames = np.array(self.df_obj.loc[obj_id, 'frame_idx'])
+        toPlot = np.where(frames == imgNo)
+        points = np.array(self.df_obj.loc[obj_id, 'points'])[toPlot]
+        labels = np.array(self.df_obj.loc[obj_id, 'labels'])[toPlot]
+        for l, p in zip(labels, points):
+            if l: # positive point
                 scatter_p = self.ax_nav.scatter(p[0], p[1], color='green', 
                                                 marker='o', s=20, linewidth=1.25)
             else: # negative point
@@ -635,24 +661,24 @@ class Tab_SAM2(qtw.QWidget):
                                                 marker='o', s=20, linewidth=1.25)
             self.scatter_plots.append(scatter_p)
     
-    def plot_dp(self, roiNo=None, imgNo=None):
+    def plot_dp(self, obj_id=None, imgNo=None):
         if hasattr(self, 'tomo_ds'):
             if not imgNo:
                 imgNo = self.slider_imgNo.value()
-            if not roiNo:
-                obj_id = self.spinbox_obj_id.value()
-            if obj_id in self.tomo_ds.keys():
-                img = self.tomo_ds[obj_id][imgNo]
-                self.img_display['dp'].set_data(img)
-                self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
-                # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
-                shape_x, shape_y = img.shape
-                self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])       
+            img = self.df_obj.loc[obj_id, 'dp'][imgNo]
+            self.img_display['dp'].set_data(img)
+            self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
+            # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
+            shape_x, shape_y = img.shape
+            self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
 #%% SAM2 video segmentation
-    def update_stack_label(self):
+    def update_stack_guide(self):
         try:
             stack = self.spinbox_stackNum.value()
-            arr = np.arange(0, len(self.imgs_8bit), stack)[1:]
+            item = self.tree_objects.selectedItems()[0]
+            idx = int(item.text(1))
+            beg = min(self.df_obj.loc[idx, 'frame_idx'])
+            arr = np.arange(beg, len(self.imgs_8bit), stack)[1:]
             self.label_stack.setText(f'Img num guide: {arr.tolist()}')
         except:
             self.label_stack.setText('')
@@ -677,7 +703,7 @@ class Tab_SAM2(qtw.QWidget):
             self.stack_num = len(self.imgs)
             self.spinbox_stackNum.setValue(self.stack_num)
         
-        # count the total number of workers
+        # count the total number of workers for creating jpg
         self.total_threads_jpg = 0
         for idx in df.index:
             st = min(df.loc[idx, 'frame_idx'])
@@ -693,7 +719,7 @@ class Tab_SAM2(qtw.QWidget):
             'path_jpg': str,
             'idx_ref': int,
             'stack_num': int,
-            'frame_idx': int, 
+            'frame_idx': object, 
             'points': object, 
             'labels': object,
             'mask': object})
@@ -709,6 +735,8 @@ class Tab_SAM2(qtw.QWidget):
             
             for i_fld, _ in enumerate(arr_stack[:-1]):
                 path_stack = os.path.join(self.path_jpg, f'{i_fld}')
+                if os.path.isdir(path_stack):
+                    shutil.rmtree(path_stack)
                 os.mkdir(path_stack)
                 
                 st_2 = arr_stack[i_fld]
@@ -717,7 +745,8 @@ class Tab_SAM2(qtw.QWidget):
                 frame_idx, points, labels = df.loc[idx, 
                    ['frame_idx', 'points', 'labels']]
                 frame_idx = np.array(frame_idx) - st - st_2
-                cond = np.where((frame_idx>=0) & (frame_idx<len(imgs_stack)))
+                cond = np.where((frame_idx>=0) & (frame_idx<end_2))
+                frame_idx = frame_idx[cond]
                 points = np.array(points)[cond]
                 labels = np.array(labels)[cond]
                 self.df_toSegment.loc[i_fld] = [path_stack, idx, i_fld, frame_idx,
@@ -725,7 +754,6 @@ class Tab_SAM2(qtw.QWidget):
                 
                 worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, 
                                            path_stack, imgs_stack)
-                print('Stack num:', len(imgs_stack))
                 self.threadpool.start(worker_make_jpg)
                 worker_make_jpg.signals.finished.connect(self.check_jpg_completion)
     
@@ -778,15 +806,17 @@ class Tab_SAM2(qtw.QWidget):
         print("Worker ERROR:", error_output)
         # self.spinner.stop()
     
-    def handle_output_sam(self, process, idx): #TODO
-        data = process.readAllStandardOutput()
-        text = bytes(data).decode("utf-8")
-        # self.output_box.append(f"[{idx}] {text}")
-    
-        match = re.search(r"(\d+)%\|", text)
-        if match:
-            percent = int(match.group(1))
-            self.progress_bar.setValue(percent, 100)
+# =============================================================================
+#     def handle_output_sam(self, process, idx): #TODO
+#         data = process.readAllStandardOutput()
+#         text = bytes(data).decode("utf-8")
+#         # self.output_box.append(f"[{idx}] {text}")
+#     
+#         match = re.search(r"(\d+)%\|", text)
+#         if match:
+#             percent = int(match.group(1))
+#             self.progress_bar.setValue(percent, 100)
+# =============================================================================
 
     def handle_finished_sam(self, process, idx, exit_code, exit_status):
         print(f"[{idx}] Process finished with exit code {exit_code}, status {exit_status}")
@@ -802,16 +832,13 @@ class Tab_SAM2(qtw.QWidget):
             with np.load(fn_output) as f:
                 mask_stack = f['masks']
             self.df_toSegment.at[idx, 'mask'] = mask_stack
-            
-            print('df1', self.df_obj)
-            print('df2', self.df_toSegment)
-            self.toggle_tree_icon(1, 'trk', True)
             if len(self.running_processes_sam) != self.running_processes_sam_total:
-                for idx in self.df_toSegment:
+                for idx in self.df_toSegment.index:
                     if idx not in self.running_processes_sam:
+                        # print('columns', self.df_toSegment.columns)
                         path = self.df_toSegment.loc[idx, 'path_jpg']
-                        self.df_toSegment[idx].to_parquet(os.path.join(
-                           path, 'seg_input.parquet'))
+                        self.df_toSegment.loc[idx].to_pickle(os.path.join(
+                           path, 'seg_input.pkl'))
                         self.launch_next_video_seg(path, idx)
             else: # finished
                 for ref in np.unique(self.df_toSegment.idx_ref):
@@ -820,6 +847,10 @@ class Tab_SAM2(qtw.QWidget):
                         i_c = df.loc[idx, 'stack_num']
                         self.df_obj.at[ref, 'mask'][
                             (i_c)*self.stack_num : (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
+                    # toggling tracking icons
+                    row_index = self.df_obj.index.get_loc(ref)
+                    self.toggle_tree_icon(row_index, 'trk', True)
+
                 del self.df_toSegment
                 _ = gc.collect()
                 self.activate_3ded_widgets(True)
@@ -890,7 +921,7 @@ class Tab_SAM2(qtw.QWidget):
         self.tomo_counter = 0
         
         self.tomo_ds = {}
-        lengths = df.end - [min(df.init[idx]) for idx in df.index]
+        lengths = df.end - [min(df.frame_idx[idx]) for idx in df.index]
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
         self.tic = perf_counter()
@@ -900,7 +931,7 @@ class Tab_SAM2(qtw.QWidget):
         for idx in df.index:
             self.df_obj.at[idx, 'dp'] = np.zeros((len(self.imgs), shape_d_x, 
                                                   shape_d_y), dtype='uint32')
-            beg = min(df.loc[idx].init)
+            beg = min(df.loc[idx].frame_idx)
             end = df.loc[idx].end
             for i_fr, fn in enumerate(fns_4d[beg:end]):
                 i_fr += beg
@@ -908,7 +939,7 @@ class Tab_SAM2(qtw.QWidget):
                                    os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
                                    dtype, scanSize, (idx, i_fr)])
         
-        self.max_processes = self.spinbox_threadNo.value()
+        self.max_processes = self.spinbox_threadNum.value()
         self.running_processes = []
         self.process_sam_task_map = {}
         self.launch_initial_tasks()
@@ -999,13 +1030,15 @@ class Tab_SAM2(qtw.QWidget):
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
         
-        self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
         if self.tomo_counter >= self.tomo_counter_total:
             self.toc = perf_counter()
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
             time = self.toc - self.tic
             print(f'Data Extraction Time: {time/60:.1f} min')
+            for idx in self.df_obj[self.df_obj.use == 1].index:
+                self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
+            self.update_canvas()
             if self.checkbox_autosave.isChecked():
                 self.save_results()
         else:
@@ -1025,22 +1058,6 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar.setValue(value)
     
 #%% Save Data
-# TODO    
-    def save_masks(self):
-        obj_ids = self.spinbox_obj_id.value()
-        fn_suffix = f'{datetime.date.today()}_{datetime.datetime.now().strftime("%H-%M-%S")}'
-        self.path_main = os.path.dirname(self.fn_navSignal)
-        for i_seg in range(obj_ids):
-            i_seg += 1
-            try:
-                np.save(os.path.join(self.path_main, f'{fn_suffix}_sam2 masks_no {i_seg}'), self.masks_video[i_seg])
-                print(f'Masks saved in:\n{self.path_main}')
-            except Exception as e:
-                print(f'Saving Masks for video failed by an error: {e}')
-            # TODO save masks from images
-            # try:
-                # np.save(os.path.join(self.path_main, f'{sam2 masks_no i_seg}'), self.masks_video[i_seg])
-    
     def save_results(self):
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
@@ -1052,27 +1069,26 @@ class Tab_SAM2(qtw.QWidget):
         path_save = os.path.join(path_save, f'{date}__{tim}')
         os.mkdir(path_save)
         
-        
         # tracking results, rois, dp
         for idx in self.df_obj.index:
-            path_save_roi = os.path.join(path_save, f'roi No {idx}')
-            os.mkdir(path_save_roi)
+            path_save_objID = os.path.join(path_save, f'roi No {idx}')
+            os.mkdir(path_save_objID)
             
             df = self.df_obj.loc[idx, ['use', 'idx', 'frame_idx', 'points', 'labels',
                                        'end']]
-            df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
+            df.to_json(os.path.join(path_save_objID, f'roi No {idx}.json'), orient='index', indent=4)
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
-                np.save(os.path.join(path_save_roi, 'rois.npy'), 
+                np.save(os.path.join(path_save_objID, 'rois.npy'), 
                     self.df_obj.loc[idx, 'rois'])
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
-                np.save(os.path.join(path_save_roi, 'output_mask.npy'), 
+                np.save(os.path.join(path_save_objID, 'output_mask.npy'), 
                         self.df_obj.loc[idx, 'mask'])
             
             # write frames
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
-                np.save(os.path.join(path_save_roi, '3DED.npy'), 
+                np.save(os.path.join(path_save_objID, '3DED.npy'), 
                         self.df_obj.loc[idx, 'dp'])
-                path_pets = os.path.join(path_save_roi, 'pets')
+                path_pets = os.path.join(path_save_objID, 'pets')
                 os.mkdir(path_pets)
                 fld_frames = os.path.join(path_pets, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0, 
@@ -1085,21 +1101,21 @@ class Tab_SAM2(qtw.QWidget):
                     scale_recip = float(scale_recip)
                 except:
                     scale_recip = None
-                fn_clip_dp = os.path.join(path_save_roi, 'tomo clip')
+                fn_clip_dp = os.path.join(path_save_objID, 'tomo clip')
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
                                 self.df_obj.loc[idx, 'dp'], scale_recip)
                 self.threadpool.start(worker_clip_dp)
             
             # clip tracking
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'mask']))):
-                np.save(os.path.join(path_save_roi, f'segmentation masks_ obj ID {idx}.npy'), 
+                np.save(os.path.join(path_save_objID, f'segmentation masks_ obj ID {idx}.npy'), 
                         self.df_obj.loc[idx, 'mask'])
                 scale_real = self.lineEdit_scale_real.text()
                 try:
                     scale_real = float(scale_real)
                 except:
                     scale_real = None
-                fn_clip_tracking = os.path.join(os.path.join(path_save_roi, 'tracking clip'))
+                fn_clip_tracking = os.path.join(os.path.join(path_save_objID, 'tracking clip'))
                 worker_tracking = WorkerThread_General(
                     io.create_clip_tracking_with_mask, 0, 
                     fn_clip_tracking, self.imgs, 
