@@ -52,13 +52,7 @@ class MainWindow(qtw.QMainWindow):
         self.setCentralWidget(self.tabs)
         
     def closeEvent(self,event):
-        try:
-            self.tab_sam2.clear_model()
-            # self.tab_tracking_cv2.kill_running_process()
-        except:
-            pass
         gc.collect()
-        
         event.accept()
         
 if __name__ == "__main__":

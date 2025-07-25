@@ -375,6 +375,7 @@ def create_clip_dp(fn, s, scale=None, dpi=400, fps=5, vmin=None, vmax=None, cmap
         ax.add_artist(scalebar)
     def update_frame(fr_no):
         img.set_data(s[fr_no])
+        img.set_clim(vmin=s[fr_no].min(), vmax=s[fr_no].max())
         return (img, )
     
     if fps is None:
@@ -410,6 +411,7 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=400,
     
     def update_frame(fr_no):
         img.set_data(imgs[fr_no])
+        img.set_clim(vmin=imgs[fr_no].min(), vmax=imgs[fr_no].max())
         if rois is not None:
             for p in patch:
                 p.remove()
@@ -459,6 +461,7 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
 
     def update_frame(fr_no):
         img.set_data(imgs[fr_no])
+        img.set_clim(vmin=imgs[fr_no].min(), vmax=imgs[fr_no].max())
         show_mask(masks[fr_no], obj_id)
         return (img, )
     print('Making tracking clip...')

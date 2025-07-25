@@ -25,6 +25,7 @@ import re
 # from sam2.build_sam import build_sam2
 # from sam2.sam2_image_predictor import SAM2ImagePredictor
 # from sam2.build_sam import build_sam2_video_predictor
+# import torch
 # from torch.cuda import empty_cache
 from PIL import Image
 import gc
@@ -32,7 +33,6 @@ from copy import deepcopy
 import datetime
 from time import perf_counter
 import py4DTomo.io_utils as io
-# import torch
 from typing import Literal
 from .worker_thread import WorkerThread_General
 from glob import glob
@@ -41,6 +41,7 @@ from matplotlib.colors import SymLogNorm
 import shutil
 from hyperspy.api import signals as hsSignals
 import pandas as pd
+from time import sleep
 path_ffmpeg = r'C:\Users\sgholam\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1-essentials_build\bin\ffmpeg.exe'
 plt.rcParams['animation.ffmpeg_path'] = path_ffmpeg  # Windows example
 #%% tab class
@@ -170,7 +171,7 @@ class Tab_SAM2(qtw.QWidget):
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
         self.box_table = qtw.QGroupBox('Features Handling')
-        self.box_table.setFixedSize(350, height_layout_top)
+        self.box_table.setFixedSize(400, height_layout_top)
         layout_top.addWidget(self.box_table)
         layout_features = qtw.QVBoxLayout()
         self.box_table.setLayout(layout_features)
@@ -216,7 +217,8 @@ class Tab_SAM2(qtw.QWidget):
         self.spinbox_stackNum.setSingleStep(25)
         
         self.label_stack = qtw.QLabel('')
-        layout_stack.addWidget(self.label_stack)
+        # layout_stack.addWidget(self.label_stack)
+        layout_features.addWidget(self.label_stack)
         self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
         
         # clip
@@ -225,7 +227,12 @@ class Tab_SAM2(qtw.QWidget):
         layout_sam_buttons.addWidget(self.button_runSeg_clip)
         self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
         self.button_runSeg_clip.setEnabled(False)
-
+        
+        self.button_stop_tr = qtw.QPushButton('Stop')
+        layout_sam_buttons.addWidget(self.button_stop_tr)
+        self.button_stop_tr.clicked.connect(self.stop_processes)
+        # self.button_stop_tr.setEnabled(False)
+        
 # =============================================================================
 #         self.button_reset_state = qtw.QPushButton('Reset State', self)
 #         self.button_reset_state.setFixedSize(button_w, button_h)
@@ -432,7 +439,8 @@ class Tab_SAM2(qtw.QWidget):
     def reset_data(self):
         for p in self.scatter_plots:
             p.remove()
-        self.scatter_plots = []
+        self.scatter_plots.clear()
+        self.tree_objects.clear()
         self.create_main_dataframe()
         self.label_stack.setText('')
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
@@ -745,13 +753,14 @@ class Tab_SAM2(qtw.QWidget):
                 frame_idx, points, labels = df.loc[idx, 
                    ['frame_idx', 'points', 'labels']]
                 frame_idx = np.array(frame_idx) - st - st_2
-                cond = np.where((frame_idx>=0) & (frame_idx<end_2))
+                cond = np.where((frame_idx>=0) & (frame_idx<self.stack_num))
                 frame_idx = frame_idx[cond]
                 points = np.array(points)[cond]
                 labels = np.array(labels)[cond]
                 self.df_toSegment.loc[i_fld] = [path_stack, idx, i_fld, frame_idx,
                                                 points, labels, None]
-                
+                fn = os.path.join(path_stack, 'seg_input.pkl')
+                self.df_toSegment.loc[i_fld][:-1].to_pickle(fn)
                 worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, 
                                            path_stack, imgs_stack)
                 self.threadpool.start(worker_make_jpg)
@@ -771,13 +780,13 @@ class Tab_SAM2(qtw.QWidget):
     def run_video_segmentation(self):
          self.running_processes_sam = {}
          self.running_processes_sam_total = len(self.df_toSegment.index)
-         idx = self.df_toSegment.index[0]
+         idx = self.df_toSegment.index.sort_values()[0]
          path = self.df_toSegment.loc[idx, 'path_jpg']
-         self.df_toSegment.loc[idx][:-1].to_pickle(os.path.join(
-            path, 'seg_input.pkl'))
          self.launch_next_video_seg(path, idx)
                 
     def launch_next_video_seg(self, path, idx):
+        print("Next project:")
+        print(idx, path)
         process_sam = QProcess(self)
         process_sam.setProgram(sys.executable)
         process_sam.setArguments(["worker_sam.py"] + ['video', path, str(idx)])
@@ -789,9 +798,9 @@ class Tab_SAM2(qtw.QWidget):
             
         process_sam.readyReadStandardError.connect(lambda: 
                             self.handle_error_sam(process_sam, idx))
-        process_sam.finished.connect(
-            lambda exit_code, exit_status: self.handle_finished_sam(
-            process_sam, idx, exit_code, exit_status))
+        process_sam.finished.connect(lambda exit_code, exit_status: 
+                     self.handle_finished_sam(
+                     process_sam, idx, exit_code, exit_status))
         
         process_sam.errorOccurred.connect(lambda error: self.process_failed_sam(error, idx))
 
@@ -824,6 +833,9 @@ class Tab_SAM2(qtw.QWidget):
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
         print('text:', text)
+        process.kill()
+        _ = gc.collect()
+        sleep(3)
         try:
             result = json.loads(text.strip())
             fn_output = result["path"]
@@ -832,32 +844,37 @@ class Tab_SAM2(qtw.QWidget):
             with np.load(fn_output) as f:
                 mask_stack = f['masks']
             self.df_toSegment.at[idx, 'mask'] = mask_stack
+            # launch next segmentation
             if len(self.running_processes_sam) != self.running_processes_sam_total:
-                for idx in self.df_toSegment.index:
+                for idx in self.df_toSegment.index.sort_values():
                     if idx not in self.running_processes_sam:
-                        # print('columns', self.df_toSegment.columns)
                         path = self.df_toSegment.loc[idx, 'path_jpg']
-                        self.df_toSegment.loc[idx].to_pickle(os.path.join(
-                           path, 'seg_input.pkl'))
                         self.launch_next_video_seg(path, idx)
+                        break
+                    break
             else: # finished
-                for ref in np.unique(self.df_toSegment.idx_ref):
-                    df = self.df_toSegment[self.df_toSegment.idx_ref==ref]
+                for i_ref in np.unique(self.df_toSegment.idx_ref):
+                    df = self.df_toSegment[self.df_toSegment.idx_ref==i_ref]
                     for idx in df.index:
                         i_c = df.loc[idx, 'stack_num']
-                        self.df_obj.at[ref, 'mask'][
+                        self.df_obj.at[i_ref, 'mask'][
                             (i_c)*self.stack_num : (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
                     # toggling tracking icons
-                    row_index = self.df_obj.index.get_loc(ref)
+                    row_index = self.df_obj.index.get_loc(i_ref)
                     self.toggle_tree_icon(row_index, 'trk', True)
 
                 del self.df_toSegment
-                _ = gc.collect()
                 self.activate_3ded_widgets(True)
                 self.update_canvas()
         except json.JSONDecodeError:
             print("Could not decode result:", text)
         self.button_runSeg_clip.setEnabled(True)
+    
+    def stop_processes(self):
+        if hasattr(self, 'running_processes_sam'):
+            while len(self.running_processes_sam) > 0:
+                idx, pr = self.running_processes_sam.popitem()
+                pr.kill()
 #%% image segmentation    
     def initiate_image_segmentation(self):
         pass
