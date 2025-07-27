@@ -408,7 +408,7 @@ class Tab_SAM2(qtw.QWidget):
     
     def load_navSignal(self):
         self.reset_data()
-
+        
         self.fn_navSignal = self.lineEdit_dir_navSignal.text()
         s = hs.load(self.fn_navSignal)
         self.imgs = s.data
@@ -436,6 +436,8 @@ class Tab_SAM2(qtw.QWidget):
                                           'points': object, 'labels': object, 
                                           'end': int, 'single_mask': object, 
                                           'dp': object,'mask':object, 'rois':object})
+        self.initiate_adding_points()
+        
     def reset_data(self):
         for p in self.scatter_plots:
             p.remove()
@@ -445,7 +447,18 @@ class Tab_SAM2(qtw.QWidget):
         self.label_stack.setText('')
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.update_canvas()
-        # self.button_runSeg_clip.setEnabled(False)    
+        # self.button_runSeg_clip.setEnabled(False)
+    
+    def initiate_adding_points(self):
+        cols = ['new', 'idx', 'point', 'frame']
+        self.df_added_points = pd.DataFrame(data=[], columns=cols)
+        self.df_added_points = self.df_added_points.astype({'point': object})
+    
+    def delete_tree_item(self, col:str):
+        for i in reversed(range(self.tree_objects.topLevelItemCount())):
+            item = self.tree_objects.topLevelItem(i)
+            if item.text(1) == col:
+                self.tree_objects.takeTopLevelItem(i)
 #%% object tree and funcs
     def add_item_tree(self, idx, fr_idx=[0], end=None):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
@@ -524,21 +537,25 @@ class Tab_SAM2(qtw.QWidget):
     
     def on_spinboxEnd_changed(self, idx, value):
         self.df_obj.at[idx, 'end'] = value
-
+#%% canvas
     def on_click(self, event):
+        if event.button == 2: # middle click:
+            self.delete_last_point()
+            return
         if (event.inaxes != self.ax_nav) or (event.button not in [1,3]):
             return
+        
         
         imgNo = self.slider_imgNo.value()
         p = [event.xdata, event.ydata]
         # left click is positive and right click negative
         # click = 'pos' if event.button() == Qt.LeftButton else 'neg' # if event.button == 3 else False
-        new_roi = not ('shift' in event.modifiers) # if shift is held, it is NOT a new object
+        new_item = not ('shift' in event.modifiers) # if shift is held, it is NOT a new object
         if event.button == 1:
             label = 1
         elif event.button == 3:
             label = 0
-        if new_roi:
+        if new_item:
             idx = 1
             while idx in self.df_obj.index:
                 idx += 1
@@ -546,7 +563,6 @@ class Tab_SAM2(qtw.QWidget):
             self.df_obj.loc[idx] = [1, idx, fr_idx, [p], [label], len(self.imgs), 
                                     None, None, None, None]
             self.add_item_tree(idx, fr_idx)
-        
         else:
             selected_items = self.tree_objects.selectedItems()
             if selected_items:
@@ -560,8 +576,31 @@ class Tab_SAM2(qtw.QWidget):
             self.df_obj.at[idx, 'labels'].append(label)
             item.setText(2, str(self.df_obj.at[idx, 'frame_idx']))
         # print(self.df_obj.loc[:,['idx', 'frame_idx', 'points', 'labels', 'end']])
+        added_point = [new_item, idx, p, imgNo]
+        i_ap = self.df_added_points.index.max()
+        i_ap = 1 if pd.isna(i_ap) else i_ap+1
+        self.df_added_points.loc[i_ap] = added_point
         self.update_canvas(imgNo) # TODO fix
-#%% canvas
+    
+    def delete_last_point(self):
+        try:
+            i = self.df_added_points.index[-1]
+        except IndexError: # no point to delete
+            return
+        if self.df_added_points.loc[i, 'new']:
+            self.delete_tree_item(str(self.df_added_points.loc[i, 'idx']))
+            self.df_obj = self.df_obj.drop(self.df_added_points.loc[i, 'idx'])
+        else:
+            idx = self.df_added_points.loc[i, 'idx']
+            _ = self.df_obj.at[idx, 'frame_idx'].pop()
+            _ = self.df_obj.at[idx, 'points'].pop()
+            _ = self.df_obj.at[idx, 'labels'].pop()
+            count = self.tree_objects.topLevelItemCount()
+            item = self.tree_objects.topLevelItem(count - 1) # last one
+            item.setText(2, str(self.df_obj.at[idx, 'frame_idx']))
+        self.df_added_points = self.df_added_points.drop(i)
+        self.update_canvas()
+    
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
         self.slider_imgNo.setValue(num)
@@ -575,7 +614,7 @@ class Tab_SAM2(qtw.QWidget):
                 obj_id = int(item_selected.text(1))
             except:
                 obj_id = None
-                
+        self.remove_plotted_points()     
         self.img_display['nav'].set_data(self.imgs[imgNo])
         self.ax_nav.set(title=f'Nav. Image No: {imgNo}')
     
@@ -644,9 +683,8 @@ class Tab_SAM2(qtw.QWidget):
         # mask = mask.astype(np.uint8)
         mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
         self.img_display['seg_mask'].set_data(mask_image)
-
-    def plot_points(self, imgNo, obj_id):
-        # remove previous points
+    
+    def remove_plotted_points(self):
         for p in self.scatter_plots:
             try:
                 p.remove()
@@ -654,6 +692,7 @@ class Tab_SAM2(qtw.QWidget):
                 pass
         self.scatter_plots.clear()
         
+    def plot_points(self, imgNo, obj_id):
         if imgNo not in self.df_obj.loc[obj_id, 'frame_idx']: # no point for this image and object id
             return
         frames = np.array(self.df_obj.loc[obj_id, 'frame_idx'])
@@ -733,6 +772,7 @@ class Tab_SAM2(qtw.QWidget):
             'mask': object})
         
         self.worker_count_jpg = 0
+        i_c = 0
         for idx in df.index:
             st = min(df.loc[idx, 'frame_idx'])
             end = df.loc[idx, 'end']
@@ -740,9 +780,13 @@ class Tab_SAM2(qtw.QWidget):
             arr_stack = np.arange(0, len(imgs), self.stack_num)
             arr_stack = np.append(arr_stack, len(imgs))
             self.df_obj.at[idx, 'mask'] = np.zeros(imgs.shape, dtype=bool)
+            path_obj = os.path.join(self.path_jpg, f'{idx}')
+            if os.path.isdir(path_obj):
+                shutil.rmtree(path_obj)
+            os.mkdir(path_obj)
             
             for i_fld, _ in enumerate(arr_stack[:-1]):
-                path_stack = os.path.join(self.path_jpg, f'{i_fld}')
+                path_stack = os.path.join(path_obj, f'{i_fld}')
                 if os.path.isdir(path_stack):
                     shutil.rmtree(path_stack)
                 os.mkdir(path_stack)
@@ -757,10 +801,11 @@ class Tab_SAM2(qtw.QWidget):
                 frame_idx = frame_idx[cond]
                 points = np.array(points)[cond]
                 labels = np.array(labels)[cond]
-                self.df_toSegment.loc[i_fld] = [path_stack, idx, i_fld, frame_idx,
+                self.df_toSegment.loc[i_c] = [path_stack, idx, i_fld, frame_idx,
                                                 points, labels, None]
                 fn = os.path.join(path_stack, 'seg_input.pkl')
-                self.df_toSegment.loc[i_fld][:-1].to_pickle(fn)
+                self.df_toSegment.loc[i_c][:-1].to_pickle(fn)
+                i_c += 1
                 worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, 
                                            path_stack, imgs_stack)
                 self.threadpool.start(worker_make_jpg)
@@ -833,9 +878,8 @@ class Tab_SAM2(qtw.QWidget):
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
         print('text:', text)
-        process.kill()
-        _ = gc.collect()
-        sleep(3)
+        # process.kill()
+        # sleep(3)
         try:
             result = json.loads(text.strip())
             fn_output = result["path"]
@@ -847,11 +891,11 @@ class Tab_SAM2(qtw.QWidget):
             # launch next segmentation
             if len(self.running_processes_sam) != self.running_processes_sam_total:
                 for idx in self.df_toSegment.index.sort_values():
+                    #TODO already put the masks in df_obj
                     if idx not in self.running_processes_sam:
                         path = self.df_toSegment.loc[idx, 'path_jpg']
                         self.launch_next_video_seg(path, idx)
                         break
-                    break
             else: # finished
                 for i_ref in np.unique(self.df_toSegment.idx_ref):
                     df = self.df_toSegment[self.df_toSegment.idx_ref==i_ref]
@@ -863,6 +907,7 @@ class Tab_SAM2(qtw.QWidget):
                     row_index = self.df_obj.index.get_loc(i_ref)
                     self.toggle_tree_icon(row_index, 'trk', True)
 
+                _ = gc.collect()
                 del self.df_toSegment
                 self.activate_3ded_widgets(True)
                 self.update_canvas()

@@ -157,6 +157,6 @@ if __name__ == "__main__":
         
         result = {'path': fn_save+'.npz',
                   'idx': idx}
-        delete_model([predictor, build_sam2, build_sam2_video_predictor, SAM2ImagePredictor,
-                     out_mask_logits, video_segments, torch])
+        # delete_model([predictor, build_sam2, build_sam2_video_predictor, SAM2ImagePredictor,
+        #              out_mask_logits, video_segments, torch])
         print(json.dumps(result))
