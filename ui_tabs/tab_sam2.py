@@ -5,7 +5,6 @@ Created on Thu Oct  3 17:43:00 2024
 @author: SGholam
 """
 
-p = 'E:\OneDrive - Universiteit Antwerpen\GitHub\5DED\sam2_hiera_large.pt'
 import json
 import sys
 import hyperspy.api as hs
@@ -22,11 +21,6 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import numpy as np
 import os
 import re
-# from sam2.build_sam import build_sam2
-# from sam2.sam2_image_predictor import SAM2ImagePredictor
-# from sam2.build_sam import build_sam2_video_predictor
-# import torch
-# from torch.cuda import empty_cache
 from PIL import Image
 import gc
 from copy import deepcopy
@@ -67,23 +61,24 @@ class Tab_SAM2(qtw.QWidget):
         self.setWindowTitle("SAM2 Segmentation")
         
         self.central_widget = qtw.QWidget(self)
-        self.layout = qtw.QVBoxLayout(self)
+        self.layout = qtw.QHBoxLayout(self)
         
         button_w = 95
         button_h_sml = 30
         button_h_lrg = 50
-        height_layout_top = 200
+        # height_layout_top = 200
+        width_userInput = 300
         
         # layout top
-        layout_top = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_top)
+        layout_userInput = qtw.QVBoxLayout()
+        self.layout.addLayout(layout_userInput)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedSize(350, height_layout_top)
-        # self.box_dir.setFixedWidth()
+        self.box_dir.setFixedSize(width_userInput, 200)
+        # self.box_dir.setFixedWidth(width_userInput)
         layout_dir = qtw.QVBoxLayout(self)
         # self.layout.addLayout(layout_dir)
-        layout_top.addWidget(self.box_dir)
+        layout_userInput.addWidget(self.box_dir)
         self.box_dir.setLayout(layout_dir)
         
         # nav signal dir
@@ -164,15 +159,18 @@ class Tab_SAM2(qtw.QWidget):
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
         
-        
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignRight)
-        self.button_loadNavigation.setFixedSize(110, 50)
+        # self.button_loadNavigation.setMaximumHeight(button_h_lrg)
+        self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        layout_loadSignal.addWidget(self.button_loadNavigation)
+        # layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignRight)
+        # self.button_loadNavigation.setFixedSize(110, 50)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
         self.box_table = qtw.QGroupBox('Features Handling')
-        self.box_table.setFixedSize(400, height_layout_top)
-        layout_top.addWidget(self.box_table)
+        # self.box_table.setFixedSize(400, height_layout_top)
+        self.box_table.setFixedWidth(width_userInput)
+        layout_userInput.addWidget(self.box_table)
         layout_features = qtw.QVBoxLayout()
         self.box_table.setLayout(layout_features)
         
@@ -187,26 +185,35 @@ class Tab_SAM2(qtw.QWidget):
             self.tree_objects.setColumnWidth(i, 20)
         self.tree_objects.setColumnWidth(2, 50)
         self.tree_objects.setColumnWidth(3, 50)
-        self.box_table.setFixedSize(self.tree_objects.width(), height_layout_top)
-        # self.box_table.setFixedSize(280, height_layout_top)
+        # self.box_table.setFixedSize(self.tree_objects.width(), height_layout_top)
+        self.box_table.setFixedWidth(width_userInput)
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
+        
+        header = self.tree_objects.header()
+        # Prevent the last column from auto-stretching
+        header.setStretchLastSection(False)
+        # Let all columns resize to contents
+        header.setSectionResizeMode(qtw.QHeaderView.ResizeToContents)
         #%% run sam2
-        layout_sam_buttons = qtw.QHBoxLayout(self)
-        layout_features.addLayout(layout_sam_buttons)
+        layout_sam_buttons_1 = qtw.QHBoxLayout(self)
+        layout_features.addLayout(layout_sam_buttons_1)
+        layout_sam_buttons_2 = qtw.QHBoxLayout(self)
+        layout_features.addLayout(layout_sam_buttons_2)
         
         # image
-        self.button_runSeg_img = qtw.QPushButton('Segment Image(s)', self)
+        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
         # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons.addWidget(self.button_runSeg_img)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_img)
         # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
         self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
+        self.button_runSeg_img.setDisabled(True)
         
-        layout_sam_buttons.addItem(spacer)
+        # layout_sam_buttons.addItem(spacer)
         
         # num
         layout_stack = qtw.QVBoxLayout()
-        layout_sam_buttons.addLayout(layout_stack)
+        layout_sam_buttons_2.addLayout(layout_stack)
         layout_stack_top = qtw.QHBoxLayout()
         layout_stack.addLayout(layout_stack_top)
         
@@ -222,14 +229,14 @@ class Tab_SAM2(qtw.QWidget):
         self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
         
         # clip
-        self.button_runSeg_clip = qtw.QPushButton('Track Segment(s)', self)
+        self.button_runSeg_clip = qtw.QPushButton('Track', self)
         # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons.addWidget(self.button_runSeg_clip)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
         self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
         self.button_runSeg_clip.setEnabled(False)
         
         self.button_stop_tr = qtw.QPushButton('Stop')
-        layout_sam_buttons.addWidget(self.button_stop_tr)
+        layout_sam_buttons_2.addWidget(self.button_stop_tr)
         self.button_stop_tr.clicked.connect(self.stop_processes)
         # self.button_stop_tr.setEnabled(False)
         
@@ -240,15 +247,18 @@ class Tab_SAM2(qtw.QWidget):
 #         self.button_reset_state.clicked.connect(self.reset_state)
 # =============================================================================
         
-        for wid in layout_sam_buttons.findChildren(qtw.QWidget):
+        for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
+            wid.setDisabled(True)
+        for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
             wid.setDisabled(True)
         #%% extract 3DED
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
         layout_box_3ded = qtw.QVBoxLayout()
         # self.box_3ded.setFixedWidth(350)
-        self.box_3ded.setFixedSize(250, height_layout_top)
+        # self.box_3ded.setFixedSize(250, height_layout_top)
+        self.box_3ded.setFixedWidth(width_userInput)
         self.box_3ded.setLayout(layout_box_3ded)
-        layout_top.addWidget(self.box_3ded)
+        layout_userInput.addWidget(self.box_3ded)
         
         layout_threadNum = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_threadNum)
@@ -282,9 +292,10 @@ class Tab_SAM2(qtw.QWidget):
         self.button_save_results.clicked.connect(self.save_results)
         
         self.disable_3ded_widgets(True)
-        # layout_top.addItem(spacer)
+        # layout_userInput.addItem(spacer)
         #%% canvas
-        layout_canvas = qtw.QHBoxLayout()
+        # layout_
+        layout_canvas = qtw.QVBoxLayout()
         self.layout.addLayout(layout_canvas)
         
         self.figure = Figure(constrained_layout=True)
@@ -311,7 +322,7 @@ class Tab_SAM2(qtw.QWidget):
         # self.figure.tight_layout()
         layout_canvas.addWidget(self.canvas)
         self.ax_nav.set_xlabel('Left Click => Positive Point\nRight Click => Negative Point\n' + 
-                               'Hold "shift" for adding points to an existing object', fontsize=8.5)
+                               'Hold "shift" for Adding Points to an Existing Object\nMiddle Click => Delete Last Point', fontsize=8.5)
         self.ax_nav.xaxis.label.set_visible(True)
         self.canvas.mpl_connect("button_press_event", self.on_click)
         # self.masks_plotted = []
@@ -320,7 +331,7 @@ class Tab_SAM2(qtw.QWidget):
         self.scatter_plots = []
         #%% slider
         layout_slider = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_slider)
+        layout_canvas.addLayout(layout_slider)
         
         layout_slider.addWidget(NavigationToolbar(self.canvas, self))
         
@@ -350,7 +361,7 @@ class Tab_SAM2(qtw.QWidget):
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_progress_bar)
+        layout_canvas.addLayout(layout_progress_bar)
         
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
@@ -469,6 +480,7 @@ class Tab_SAM2(qtw.QWidget):
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['fr_idx'], f"{fr_idx}")
         # set as selected item
+        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
         self.tree_objects.addTopLevelItem(item)
         
         # end frame
@@ -537,6 +549,15 @@ class Tab_SAM2(qtw.QWidget):
     
     def on_spinboxEnd_changed(self, idx, value):
         self.df_obj.at[idx, 'end'] = value
+    
+    def on_item_check_changed(self, item, column):
+        use_col = self.cols_tree.index('use')  # or `cols['use']` if accessible
+        idx_col = self.cols_tree.index('idx')
+        idx = int(item.text(idx_col))
+        if item.checkState(use_col) == Qt.Checked:
+            self.df_rois.at[idx, 'use'] = 1
+        else:
+            self.df_rois.at[idx, 'use'] = 0
 #%% canvas
     def on_click(self, event):
         if event.button == 2: # middle click:
@@ -982,7 +1003,6 @@ class Tab_SAM2(qtw.QWidget):
         df = self.df_obj[self.df_obj.use == 1]
         self.tomo_counter = 0
         
-        self.tomo_ds = {}
         lengths = df.end - [min(df.frame_idx[idx]) for idx in df.index]
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
@@ -1187,7 +1207,6 @@ class Tab_SAM2(qtw.QWidget):
     
     def closeEvent(self,event):
         # empty_cache()
-        self.clear_model()
         gc.collect()
         event.accept()
         # app.exit()

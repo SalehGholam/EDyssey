@@ -915,6 +915,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         item.setCheckState(cols['use'], Qt.Checked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['init'], f"{init}")
+        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
         
         self.tree_objects.addTopLevelItem(item)
 
@@ -969,6 +970,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
         container.setLayout(layout)
 
         self.tree_objects.setItemWidget(item, cols['del'], container)
+    
+    def on_item_check_changed(self, item, column):
+        use_col = self.cols_tree.index('use')  # or `cols['use']` if accessible
+        idx_col = self.cols_tree.index('idx')
+        idx = int(item.text(idx_col))
+        if item.checkState(use_col) == Qt.Checked:
+            self.df_rois.at[idx, 'use'] = 1
+        else:
+            self.df_rois.at[idx, 'use'] = 0
+            
     
     def on_spinboxEnd_changed(self, idx, value):
         self.df_rois.at[idx, 'end'] = value
