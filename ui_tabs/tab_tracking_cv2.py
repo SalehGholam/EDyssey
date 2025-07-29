@@ -201,7 +201,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
-        self.patches_tracked = []
         self.patches_axNav = []
         self.patches_axTrack = []
         self.empty_main_dataframe()
@@ -457,15 +456,42 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if hasattr(self, 'rois_tracked'):
             self.reset_rois()
             self.disable_3ded_widgets(True)
-                    
+        
+        self.reset_data()
         fn = self.lineEdit_dir_navSignal.text()
         # self.s = load(fn)
         worker = WorkerThread_General(get_signal, 0, fn)
         worker.signals.results.connect(self.initiate_processing)
         self.threadpool.start(worker)
-
-    def initiate_processing(self, result, index):
+    
+    def reset_data(self):
+        for p in self.ax_nav.patches:
+            try:
+                p.remove()
+            except: pass
+        for p in self.ax_track.patches:
+            try:
+                p.remove()
+            except: pass
+        for p in self.patches_axNav:
+            try:
+                p.remove()
+            except: pass
+        for p in self.patches_axTrack:
+            try:
+                p.remove()
+            except: pass
         self.empty_main_dataframe()
+
+        self.img_display['track'].set_data(self.img_zero)
+        self.img_display['mask'].set_data(self.img_zero)
+        self.img_display['img_mask'].set_data(self.img_zero)
+        self.img_display['dp'].set_data(self.img_zero)
+        self.img_display['nav'].set_data(self.img_zero)
+        self.tree_objects.clear()
+        
+    
+    def initiate_processing(self, result, index):
         self.s = result
         self.s_8bit = io.convert_to_8bit(self.s)
         self.nav_imgs_raw = self.s.data
@@ -511,7 +537,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.patches_axTrack.clear()
         self.patches_axNav.clear()
-        self.patches_tracked.clear()
 
     def blur_navImages(self):
         kernelSize = int(self.combo_blur_track.currentText())
@@ -536,7 +561,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             
         img = self.nav_imgs[imgNo]
         
-        self.update_ax(img, 'nav', self.ax_nav, f'Nav Image No. {imgNo+1:d}')
+        self.update_ax(img, 'nav', self.ax_nav, f'Nav Image No. {imgNo:d}')
         self.draw_rois_in(imgNo)
         
         selected_items = self.tree_objects.selectedItems()
@@ -545,15 +570,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
             idx = int(item.text(1))
             # track
             if not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])):
-                self.update_ax(img, 'track', self.ax_track, f'Nav Image No. {imgNo+1:d}')
+                self.update_ax(img, 'track', self.ax_track, f'Nav Image No. {imgNo:d}')
                 self.draw_rois_out(imgNo)
 
                 # mask
-                img_mask, img_roi = self.threshold_img(
-                    img, self.df_rois.loc[idx, 'out_rois'][imgNo], 
-                    self.combo_thresh_method.currentText(),
-                    self.slider_thresh.value())
-                self.update_ax_mask(img_roi, img_mask)
+                roi = self.df_rois.loc[idx, 'out_rois'][imgNo]
+                if roi.any():
+                    img_mask, img_roi = self.threshold_img(
+                        img, self.df_rois.loc[idx, 'out_rois'][imgNo], 
+                        self.combo_thresh_method.currentText(),
+                        self.slider_thresh.value())
+                    self.update_ax_mask(img_roi, img_mask)
+                else:
+                    self.update_ax(self.img_zero, 'track', self.ax_track)
+                    self.update_ax_mask(self.img_zero, self.img_zero)
             else:
                 self.update_ax(self.img_zero, 'track', self.ax_track)
                 self.update_ax_mask(self.img_zero, self.img_zero)
@@ -1052,12 +1082,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         self.tracking_counter_end = len(df.index)
         for ind in df.index:
-            init = df.loc[ind, 'init']
+            init = np.array(df.loc[ind, 'init'])
             beg = min(init)
             end = df.loc[ind, 'end']
             imgs = self.nav_imgs[beg:end]
             
-            rois_in = df.loc[ind, 'in_rois']
+            rois_in = np.array(df.loc[ind, 'in_rois'])
+            # shift frame number to the start
+            rois_in -= beg
+            init -= beg
             try:
                 ref = int(df.loc[ind, 'ref'])
                 try:
@@ -1079,7 +1112,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.df_rois.at[index, 'out_rois'] = np.zeros((len(self.nav_imgs), 4), dtype=np.int16)
         st = min(self.df_rois.loc[index, 'init'])
         end = self.df_rois.loc[index, 'end']
-        print(st, end, len(result))
+        # arr_rois = np.zeros(len())
         self.df_rois.at[index, 'out_rois'][st:end] = result
         self.toggle_tree_icon(self.df_rois.index.get_loc(index), 'trk', True)
         self.update_progress_bar(self.tracking_counter, self.tracking_counter_end)
@@ -1139,10 +1172,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
         for ind in self.df_rois[self.df_rois.use == 1].index:
-            beg = min(self.df_rois.loc[ind, 'init'])
-            end = self.df_rois.loc[ind, 'end']
             self.df_rois.at[ind, 'mask'] = tr.create_masks(
-                self.nav_imgs[beg:end], self.df_rois.loc[ind, 'out_rois'],
+                self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
                 thresh_method, thresh_offset, blur_kernel)
             
 
@@ -1164,15 +1195,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
         for idx in df.index:
-            self.df_rois.at[idx, 'dp'] = np.zeros((lengths.loc[idx], shape_d_x, 
+            self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x, 
                                                    shape_d_y), dtype='uint32')
             beg = min(df.loc[idx].init)
             end = df.loc[idx].end
-            for i_fr, fn in enumerate(fns_4d[beg:end]):
-                i_fr += beg
-                self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
-                                   os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
-                                   dtype, scanSize, (idx, i_fr)])
+            out_rois = self.df_rois.loc[idx, 'out_rois']
+            for i_fr, fn in enumerate(fns_4d):
+                if out_rois[i_fr].any():
+                    self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
+                                       os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
+                                       dtype, scanSize, (idx, i_fr)])
 
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
