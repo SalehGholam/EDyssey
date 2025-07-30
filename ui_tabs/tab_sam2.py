@@ -177,7 +177,6 @@ class Tab_SAM2(qtw.QWidget):
         # tree
         self.tree_objects = qtw.QTreeWidget()
         layout_features.addWidget(self.tree_objects)
-        self.tree_objects.setMaximumWidth(400)
         self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "del"]
         self.tree_objects.setColumnCount(len(self.cols_tree))
         self.tree_objects.setHeaderLabels(self.cols_tree)
@@ -190,11 +189,13 @@ class Tab_SAM2(qtw.QWidget):
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
-        header = self.tree_objects.header()
-        # Prevent the last column from auto-stretching
-        header.setStretchLastSection(False)
-        # Let all columns resize to contents
-        header.setSectionResizeMode(qtw.QHeaderView.ResizeToContents)
+# =============================================================================
+#         header = self.tree_objects.header()
+#         # Prevent the last column from auto-stretching
+#         header.setStretchLastSection(False)
+#         # Let all columns resize to contents
+#         header.setSectionResizeMode(qtw.QHeaderView.ResizeToContents)
+# =============================================================================
         #%% run sam2
         layout_sam_buttons_1 = qtw.QHBoxLayout(self)
         layout_features.addLayout(layout_sam_buttons_1)
@@ -294,7 +295,6 @@ class Tab_SAM2(qtw.QWidget):
         self.disable_3ded_widgets(True)
         # layout_userInput.addItem(spacer)
         #%% canvas
-        # layout_
         layout_canvas = qtw.QVBoxLayout()
         self.layout.addLayout(layout_canvas)
         
@@ -555,9 +555,9 @@ class Tab_SAM2(qtw.QWidget):
         idx_col = self.cols_tree.index('idx')
         idx = int(item.text(idx_col))
         if item.checkState(use_col) == Qt.Checked:
-            self.df_rois.at[idx, 'use'] = 1
+            self.df_obj.at[idx, 'use'] = 1
         else:
-            self.df_rois.at[idx, 'use'] = 0
+            self.df_obj.at[idx, 'use'] = 0
 #%% canvas
     def on_click(self, event):
         if event.button == 2: # middle click:
@@ -646,7 +646,10 @@ class Tab_SAM2(qtw.QWidget):
                 self.img_display['seg'].set_data(self.imgs[imgNo])
                 self.img_display['seg'].set_clim(vmin=self.imgs[imgNo].min(), vmax=self.imgs[imgNo].max())
                 
-                self.show_mask(self.df_obj.loc[obj_id, 'mask'][imgNo], obj_id)
+                try:
+                    self.show_mask(self.df_obj.loc[obj_id, 'mask'][imgNo], obj_id)
+                except:
+                    self.show_mask(self.img_zero)
             
             # plot segmentation masks for single images
             else:
@@ -660,7 +663,11 @@ class Tab_SAM2(qtw.QWidget):
             
             # diffraction pattern
             if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'dp']))):
-                self.plot_dp(obj_id=obj_id, imgNo=imgNo)
+                try:
+                    self.plot_dp(obj_id=obj_id, imgNo=imgNo)
+                except:
+                    self.img_display['dp'].set_data(self.img_zero)
+                    
         shape_x, shape_y = self.imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
         self.canvas.draw() 
@@ -730,15 +737,14 @@ class Tab_SAM2(qtw.QWidget):
             self.scatter_plots.append(scatter_p)
     
     def plot_dp(self, obj_id=None, imgNo=None):
-        if hasattr(self, 'tomo_ds'):
-            if not imgNo:
-                imgNo = self.slider_imgNo.value()
-            img = self.df_obj.loc[obj_id, 'dp'][imgNo]
-            self.img_display['dp'].set_data(img)
-            self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
-            # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
-            shape_x, shape_y = img.shape
-            self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+        if not imgNo:
+            imgNo = self.slider_imgNo.value()
+        img = self.df_obj.loc[obj_id, 'dp'][imgNo]
+        self.img_display['dp'].set_data(img)
+        self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
+        # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
+        shape_x, shape_y = img.shape
+        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
 #%% SAM2 video segmentation
     def update_stack_guide(self):
         try:

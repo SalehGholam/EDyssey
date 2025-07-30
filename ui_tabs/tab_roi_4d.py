@@ -34,17 +34,17 @@ class Tab_ROI_on_4D(qtw.QWidget):
     def init_widget(self):
         self.central_widget = qtw.QWidget(self)
         # self.setCentralWidget(self.central_widget)
-        self.layout = qtw.QVBoxLayout(self)
+        self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
         
-        height_layout_top = 125
+        width_userInput = 300
         
-        layout_top = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_top)
+        layout_userInput = qtw.QVBoxLayout()
+        self.layout.addLayout(layout_userInput)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directory')
-        self.box_dir.setFixedSize(350, height_layout_top)
-        layout_top.addWidget(self.box_dir)
+        self.box_dir.setFixedWidth(width_userInput)
+        layout_userInput.addWidget(self.box_dir)
         layout_dir = qtw.QVBoxLayout(self)
         self.box_dir.setLayout(layout_dir)
         
@@ -62,17 +62,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_dir_navSignal = qtw.QPushButton('...')
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
-        
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        self.button_loadNavigation.setFixedSize(110, 50)
-        layout_dir.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
-        self.button_loadNavigation.clicked.connect(self.get_nav_image)
         #%% input layout, box scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
-        self.box_scanSize.setFixedSize(350, height_layout_top)
+        self.box_scanSize.setFixedWidth(width_userInput)
         layout_box_scanSize = qtw.QHBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
-        layout_top.addWidget(self.box_scanSize)
+        layout_userInput.addWidget(self.box_scanSize)
         
         # label_scanSize = qtw.QLabel('Scan Size')
         # layout_box_scanSize.addWidget(label_scanSize)
@@ -109,11 +104,11 @@ class Tab_ROI_on_4D(qtw.QWidget):
         layout_box_scanSize.addStretch(1)
         #%% box for scales
         self.box_scale = qtw.QGroupBox('Scale bars')
-        self.box_scale.setFixedSize(250, height_layout_top)
+        self.box_scale.setFixedWidth(width_userInput)
         layout_box_scale = qtw.QHBoxLayout()
         # self.box_scale.setFixedWidth(150)
         self.box_scale.setLayout(layout_box_scale)
-        layout_top.addWidget(self.box_scale)
+        layout_userInput.addWidget(self.box_scale)
         
         # real space
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
@@ -136,15 +131,20 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
         self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
         
-        layout_top.addStretch(1)
+        #%% load button
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
+        self.button_loadNavigation.setFixedSize(110, 50)
+        layout_userInput.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        self.button_loadNavigation.clicked.connect(self.get_nav_image)
+        layout_userInput.addStretch(1)
         #%% canvas layout
-        layout_canvas = qtw.QHBoxLayout()
+        layout_canvas = qtw.QVBoxLayout()
         self.layout.addLayout(layout_canvas)
         
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(self.canvas)
+        layout_canvas.addWidget(self.canvas)
         
         self.ax_nav = self.figure.add_subplot(131)
         self.ax_nav_roi = self.figure.add_subplot(132)
@@ -171,10 +171,10 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         #%% slider layout
-        self.layout.addWidget(NavigationToolbar(self.canvas, self))
+        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
         
         layout_slider = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_slider)
+        layout_canvas.addLayout(layout_slider)
         
         self.label_vmin = qtw.QLabel('vmin')
         layout_slider.addWidget(self.label_vmin)

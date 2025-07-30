@@ -42,20 +42,20 @@ class Tab_Create_NavSignal(qtw.QWidget):
     def init_widget(self):
         self.central_widget = qtw.QWidget(self)
         # self.setCentralWidget(self.central_widget)
-        self.layout = qtw.QVBoxLayout(self)
+        self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
         
-        height_layout_top = 250
+        width_userInput = 300
         
         # layout top
-        layout_top = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_top)
+        layout_userInput = qtw.QVBoxLayout()
+        self.layout.addLayout(layout_userInput)
         #%% directory
         layout_dir_scanSize = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_dir_scanSize)
+        layout_userInput.addLayout(layout_dir_scanSize)
         
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedSize(350, height_layout_top//3*2)
+        self.box_dir.setFixedWidth(width_userInput)
         # self.box_dir.setFixedWidth()
         layout_dir = qtw.QVBoxLayout(self)
         # self.layout.addLayout(layout_dir)
@@ -107,7 +107,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         layout_scale.addStretch(1)
         #%% scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
-        self.box_scanSize.setFixedSize(350, height_layout_top//3)
+        self.box_scanSize.setFixedWidth(width_userInput)
         layout_dir_scanSize.addWidget(self.box_scanSize)
         layout_scanSize = qtw.QHBoxLayout()
         self.box_scanSize.setLayout(layout_scanSize)
@@ -140,10 +140,10 @@ class Tab_Create_NavSignal(qtw.QWidget):
             layout_scanSize.addWidget(wid)
         #%% list of files
         layout_fileList = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_fileList)
+        layout_userInput.addLayout(layout_fileList)
         
         self.box_dtype = qtw.QGroupBox('Data Type')
-        self.box_dtype.setFixedHeight(height_layout_top//5)
+        self.box_dtype.setFixedWidth(width_userInput)
         layout_fileList.addWidget(self.box_dtype)
         layout_dtype = qtw.QHBoxLayout()
         self.box_dtype.setLayout(layout_dtype)
@@ -159,16 +159,11 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.combo_dtype.setDisabled(True)
         self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
         
-        self.file_list_widget = qtw.QListWidget()
-        layout_fileList.addWidget(self.file_list_widget)
-        self.file_list_widget.setFixedSize(400, height_layout_top//5*4)
-        # self.file_list_widget.setSelectionMode(qtw.QListWidget.MultiSelection)  # Allow multiple selections
-        self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
         #%% calculate button
         # layout_calculate_buttons = qtw.QHBoxLayout()
         # self.layout.addLayout(layout_calculate_buttons)
-        layout_calculate_buttons = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_calculate_buttons)
+        layout_calculate_buttons = qtw.QHBoxLayout()
+        layout_userInput.addLayout(layout_calculate_buttons)
         
         self.button_calculate = qtw.QPushButton('Calculate')
         self.button_calculate.setFixedSize(100, 50)
@@ -182,20 +177,16 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.button_stop.setDisabled(True)
         self.button_stop.clicked.connect(self.stop_worker)
         
-        layout_top.addStretch(1)
-        #%% progress bar/status bar
-# =============================================================================
-#         #status bar        
-#         self.statusBar = qtw.QStatusBar(self)
-#         self.layout.addWidget(self.statusBar)
-# =============================================================================
-        layout_progress_bar = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_progress_bar)
-        
-        self.progress_bar = qtw.QProgressBar()
-        layout_progress_bar.addWidget(self.progress_bar)
-        self.progress_bar.setRange(0, 100)
+        # layout_userInput.addStretch(1)
+        #%% list of files
+        self.file_list_widget = qtw.QListWidget()
+        layout_userInput.addWidget(self.file_list_widget)
+        self.file_list_widget.setFixedWidth(width_userInput)
+        # self.file_list_widget.setSelectionMode(qtw.QListWidget.MultiSelection)  # Allow multiple selections
+        self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
         #%% canvas
+        layout_canvas = qtw.QVBoxLayout()
+        self.layout.addLayout(layout_canvas)
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
@@ -203,10 +194,10 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.img_display = self.ax.imshow(np.zeros((512,512), dtype='int16'), cmap='viridis')
         self.ax.set_axis_off()
         # self.figure.tight_layout()
-        self.layout.addWidget(self.canvas)
+        layout_canvas.addWidget(self.canvas)
         #%% slider layout
         layout_slider = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_slider)
+        layout_canvas.addLayout(layout_slider)
         
         layout_slider.addWidget(NavigationToolbar(self.canvas, self))
         
@@ -225,6 +216,18 @@ class Tab_Create_NavSignal(qtw.QWidget):
         
         # self.update_canvas(0)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
+        #%% progress bar/status bar
+# =============================================================================
+#         #status bar        
+#         self.statusBar = qtw.QStatusBar(self)
+#         self.layout.addWidget(self.statusBar)
+# =============================================================================
+        layout_progress_bar = qtw.QHBoxLayout()
+        layout_canvas.addLayout(layout_progress_bar)
+        
+        self.progress_bar = qtw.QProgressBar()
+        layout_progress_bar.addWidget(self.progress_bar)
+        self.progress_bar.setRange(0, 100)
     #%% functions
     def show_dialog(self, f):
         sender = self.sender()

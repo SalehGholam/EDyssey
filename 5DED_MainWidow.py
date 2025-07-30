@@ -4,11 +4,8 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 6:
-    1. Updating SAM2 widget
-        - Split a dataset for SAM2
-        - Load SAM2 in a parallel process
-        - Update feature handling to a tree
+version 7:
+    1. Transporting user input layouts to the left part
     
 """
 

@@ -62,28 +62,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
         button_w = 110
         button_h_sml = 30
         button_h_lrg = 50
-        height_layout_top = 200
+        height_userInput = 200
+        width_userInput = 300
         # self.central_widget = qtw.QWidget(self)
         # self.setCentralWidget(self.central_widget)
-        self.layout = qtw.QVBoxLayout(self)
+        self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
         
         # layout top
-        layout_top = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_top)
+        layout_userInput = qtw.QVBoxLayout()
+        self.layout.addLayout(layout_userInput)
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         #%% directory
-        # layout_top.addItem(spacer)
         self.box_dir = qtw.QGroupBox('Directories', self)
-        # self.box_dir.setFixedSize(500, 200)
-        self.box_dir.setFixedWidth(350)
-        self.box_dir.setFixedHeight(height_layout_top)
-        # self.box_dir.setMaximumHeight(250)
+        self.box_dir.setFixedWidth(width_userInput)
+        self.box_dir.setFixedHeight(height_userInput)
         
-        # self.box_dir.setFixedWidth()
         layout_dir = qtw.QVBoxLayout(self)
-        # self.layout.addLayout(layout_dir)
-        layout_top.addWidget(self.box_dir)
+        layout_userInput.addWidget(self.box_dir)
         self.box_dir.setLayout(layout_dir)
         
         # nav signal dir
@@ -133,7 +129,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_loadSignal = qtw.QHBoxLayout()
         self.box_scale = qtw.QGroupBox('Scale bars')
         layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setFixedWidth(150)
+        self.box_scale.setFixedWidth(width_userInput//2)
         self.box_scale.setLayout(layout_box_scale)
         # layout_3ded.addWidget(self.box_scale)
         layout_loadSignal.addWidget(self.box_scale)
@@ -161,22 +157,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_scalebar('reciprocal'))
         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
         
-        layout_loadSignal.addItem(spacer)
+        # layout_loadSignal.addItem(spacer)
         
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
         layout_dir.addLayout(layout_loadSignal)
         layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
-        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
+        # self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
+        self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
-        layout_top_2 = qtw.QVBoxLayout()
+        layout_userInput_2 = qtw.QVBoxLayout()
         self.box_buttons = qtw.QGroupBox('Feature Handling')
-        layout_top.addWidget(self.box_buttons)
-        self.box_buttons.setLayout(layout_top_2)
+        layout_userInput.addWidget(self.box_buttons)
+        self.box_buttons.setLayout(layout_userInput_2)
+        self.box_buttons.setFixedWidth(width_userInput)
         
         # top
         layout_featureTop = qtw.QHBoxLayout()
-        layout_top_2.addLayout(layout_featureTop)
+        layout_userInput_2.addLayout(layout_featureTop)
         self.button_autoDetection = qtw.QPushButton('Auto Detector')
         layout_featureTop.addWidget(self.button_autoDetection)
         self.button_autoDetection.clicked.connect(self.launch_auto_detector)
@@ -187,8 +185,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # tree
         self.tree_objects = qtw.QTreeWidget()
-        layout_top_2.addWidget(self.tree_objects)
-        self.tree_objects.setMaximumWidth(400)
+        layout_userInput_2.addWidget(self.tree_objects)
+        self.tree_objects.setMaximumWidth(width_userInput)
         self.tree_objects.setColumnCount(6)
         self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "del"]
         self.tree_objects.setHeaderLabels(self.cols_tree)
@@ -196,8 +194,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.tree_objects.setColumnWidth(i, 20)
         self.tree_objects.setColumnWidth(2, 50)
         self.tree_objects.setColumnWidth(3, 50)
-        self.box_buttons.setFixedSize(self.tree_objects.width()-10, height_layout_top)
-        # self.box_buttons.setFixedSize(280, height_layout_top)
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
@@ -207,7 +203,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # bottom 
         layout_featureBottom = qtw.QHBoxLayout()
-        layout_top_2.addLayout(layout_featureBottom)
+        layout_userInput_2.addLayout(layout_featureBottom)
         
         # self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
         # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
@@ -221,7 +217,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.combo_blur_track.currentIndexChanged.connect(self.blur_navImages)
 
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        layout_featureBottom.addItem(spacer)
+        # layout_featureBottom.addItem(spacer)
 
         label_track = qtw.QLabel('Tracker')
         layout_featureBottom.addWidget(label_track)
@@ -235,16 +231,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_track.setDisabled(True)
         #%% box thresh and 3DED
         layout_3ded = qtw.QVBoxLayout()
-        layout_top.addLayout(layout_3ded)
-        layout_top.addItem(spacer)
+        layout_userInput.addLayout(layout_3ded)
         
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
         layout_box_3ded = qtw.QVBoxLayout()
         self.box_3ded.setLayout(layout_box_3ded)
         layout_3ded.addWidget(self.box_3ded)
-        # self.box_3ded.setFixedWidth(350)
-        self.box_3ded.setFixedSize(350, height_layout_top)
-        # self.box_3ded.setMaximumSize(300, 400)
+        self.box_3ded.setFixedWidth(width_userInput)
         
         layout_thresh_method = qtw.QHBoxLayout()
         layout_thresh_method.addItem(spacer)
@@ -255,7 +248,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.combo_thresh_method = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_thresh_method)
-        # self.combo_thresh_method.setFixedWidth(100)
         self.combo_thresh_method.addItems(['li', 'otsu', 'yen', 'mean'])
         self.combo_thresh_method.currentIndexChanged.connect(lambda: self.update_canvas()) #TODO change to update mask
         
@@ -276,7 +268,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.slider_thresh = qtw.QSlider(1)
         layout_deviation.addWidget(self.slider_thresh)
         self.slider_thresh.setDisabled(True)
-        # self.slider_thresh.setFixedWidth(100)
         self.slider_thresh.valueChanged.connect(lambda: self.update_canvas()) # TODO plot only mask ax
         self.slider_thresh.setRange(0, 200)
         
@@ -317,16 +308,17 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.disable_3ded_widgets(True)
         #%% canvas
-        layout_canvas = qtw.QHBoxLayout()
+        layout_canvas = qtw.QVBoxLayout()
         self.layout.addLayout(layout_canvas)
         
         # self.figure = Figure(figsize=(8,4))
         self.figure = Figure(constrained_layout=True)
+        # self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
-        self.ax_nav = self.figure.add_subplot(141)
-        self.ax_track = self.figure.add_subplot(142)
-        self.ax_mask = self.figure.add_subplot(143)
-        self.ax_dp = self.figure.add_subplot(144)
+        self.ax_nav = self.figure.add_subplot(221)
+        self.ax_track = self.figure.add_subplot(222)
+        self.ax_mask = self.figure.add_subplot(223)
+        self.ax_dp = self.figure.add_subplot(224)
 # =============================================================================
 #         self.ax_nav = self.figure.add_subplot(221)
 #         self.ax_track = self.figure.add_subplot(222)
@@ -366,7 +358,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
         # self.figure.tight_layout()
-        # self.layout.addWidget(self.canvas)
         layout_canvas.addWidget(self.canvas)
         
         
@@ -390,7 +381,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         #%% slider img num
         layout_slider = qtw.QHBoxLayout(self)
-        self.layout.addLayout(layout_slider)
+        layout_canvas.addLayout(layout_slider)
 
         layout_slider.addWidget(NavigationToolbar(self.canvas, self))
         
@@ -418,7 +409,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
-        self.layout.addLayout(layout_progress_bar)
+        layout_canvas.addLayout(layout_progress_bar)
         
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
