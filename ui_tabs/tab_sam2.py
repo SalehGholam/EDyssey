@@ -124,7 +124,6 @@ class Tab_SAM2(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
-        
         #%% box for scales
         layout_loadSignal = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_loadSignal)

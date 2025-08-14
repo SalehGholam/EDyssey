@@ -161,7 +161,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
         layout_dir.addLayout(layout_loadSignal)
-        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        layout_loadSignal.addWidget(self.button_loadNavigation) # , alignment=Qt.AlignCenter
         # self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
         self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
