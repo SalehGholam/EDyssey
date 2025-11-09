@@ -86,12 +86,13 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=50, **kwargs):
     roi.set_roi(x=x, y=y, width=w, height=h)
     roi.set_dwell_time(dwellTime*1000)
     roi.run()
+    mask = mask[x:x+w, y:y+h]
     # ROI_scan_image = np.asarray(roi.Roi_scan_image)
     # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
     s = np.asarray(roi.get_4D())
-    s = s.reshape(-1, *s[-2:])
+    s = s.reshape(-1, *s.shape[-2:])
     dp = s[np.where(mask.flatten() == 1)[0]].sum(axis=0)
-    dp = dp.compute()
+    # dp = dp.compute()
     return dp
 
 def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8,512,512,512), **kwargs):
