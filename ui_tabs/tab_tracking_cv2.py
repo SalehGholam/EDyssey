@@ -327,10 +327,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
 # =============================================================================
         
         # titles for axes
-        self.ax_nav.set_title('Nav. Signal')
-        self.ax_track.set_title('Tracking Results')
-        self.ax_mask.set_title('Roi with Threshold')
-        self.ax_dp.set_title('DP')
+        self.ax_nav.set_title('(1) Nav. Signal')
+        self.ax_track.set_title('(2) Tracking Results')
+        self.ax_mask.set_title('(3) Roi with Threshold')
+        self.ax_dp.set_title('(4) DP')
         self.img_display = {}
         self.img_zero = np.zeros((512,512), dtype='uint16')
 # =============================================================================
@@ -347,7 +347,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
 
-        self.ax_track.set_xlabel('Draw ROIinROI on this plot', fontsize=7)
+        self.ax_track.set_xlabel('Select the reference ROI and\nDraw ROIinROI on this plot', fontsize=7)
         self.ax_nav.set_xlabel('Use Left Click to add new ROI and\nRight Click to add init to an existing ROI', fontsize=7)
         self.ax_nav.xaxis.label.set_visible(True)
         self.ax_track.xaxis.label.set_visible(True)

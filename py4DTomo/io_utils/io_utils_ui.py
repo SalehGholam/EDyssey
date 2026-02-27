@@ -144,6 +144,7 @@ def load_hdf5(fn, roi=None, scanSize=None, chunks=(8,512,512,512), lazy=False,
     
     else:
         s = hs.signals.Signal2D(s)
+        s = s.as_lazy()
         # cp.get_default_memory_pool().free_all_blocks()
         return s, f
     

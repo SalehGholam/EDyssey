@@ -769,7 +769,7 @@ class Tab_SAM2(qtw.QWidget):
             shutil.rmtree(self.path_jpg)
             # os.rmdir(self.path_jpg)
         os.mkdir(self.path_jpg)
-
+        
         df = self.df_obj[self.df_obj.use == 1]
         self.stack_num = self.spinbox_stackNum.value()
         if self.stack_num == 0:
@@ -927,8 +927,9 @@ class Tab_SAM2(qtw.QWidget):
                     df = self.df_toSegment[self.df_toSegment.idx_ref==i_ref]
                     for idx in df.index:
                         i_c = df.loc[idx, 'stack_num']
+                        beg = min(self.df_obj.loc[i_ref, 'frame_idx'])
                         self.df_obj.at[i_ref, 'mask'][
-                            (i_c)*self.stack_num : (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
+                            beg + (i_c)*self.stack_num : beg + (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
                     # toggling tracking icons
                     row_index = self.df_obj.index.get_loc(i_ref)
                     self.toggle_tree_icon(row_index, 'trk', True)
@@ -948,7 +949,7 @@ class Tab_SAM2(qtw.QWidget):
                 pr.kill()
 #%% image segmentation    
     def initiate_image_segmentation(self):
-        pass
+        pass # TODO NIY
 
 #%% 3DED   
     def activate_3ded_widgets(self, state):

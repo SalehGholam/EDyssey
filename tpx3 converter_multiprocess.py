@@ -56,9 +56,9 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 #%%
 if __name__ == '__main__':
-    path_in = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
-    # path_out = path_in
-    path_out = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
+    path_in = r'Z:\emattecnai\Saleh_Tecnai\25-10-21 dose calib\251021\cspbbr3Situation\2025-10-21_14-07-03'
+    path_out = path_in
+    # path_out = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files
