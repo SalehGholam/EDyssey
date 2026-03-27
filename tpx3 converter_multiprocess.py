@@ -1,7 +1,20 @@
+'''
+@author: Saleh Gholam & Arno Annys
+
+Help:
+    1. Set the parameters for the detector and 4D-STEM data inside "process_file" function
+    2. Set "path_in" => the directory where tpx3 files are
+    3. Set "path_out" => the directory where converted files will be written
+    4. Set  "N_processes" => the number of processors (depends on your PC specs.
+                                                       better to first test with on a small dataset)
+'''
+
 import sys
-sys.path.append(r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\py4DTomo\io_utils') # path to the pyLiveProcessing.pyd
-# import pyLiveProcessing as pyLP
-import eventem as pyLP
+import os
+file_path = os.path.abspath(__file__)
+fld_path = os.path.dirname(file_path)
+sys.path.append(os.path.join(fld_path, 'py4DTomo', 'io_utils')) # path to the evetem
+import eventem
 from multiprocessing import Pool
 from glob import glob
 import os
@@ -9,25 +22,28 @@ from time import perf_counter, sleep
 
 def process_file(in_file,out_file):
     sleep(0.1)
-    tic = perf_counter()
-    det_size = 128
+    # tic = perf_counter()
+    
+    #### SET PARAMETERS #####
+    det_size = 512
     det_bin = 1
     scan_bin = 1
     scan_size = 512
-    dwellTime = 10 # usec
-    dwellTime *= 1000
+    dwellTime = 50 # usec
     chunksize = 8
-    compression_factor =  4 #1 is least compression, 9 is most compression
+    compression_factor =  4 # 1 is least compression, 9 is most compression
     bitdepth = 8
+    ##########################
 
+    dwellTime *= 1000
     print(f"RAM requirement of 4D chunk: {(scan_size//scan_bin)*(chunksize//scan_bin) * (det_size//det_bin)**2 * (bitdepth/8) * 2 /1000000000} GB per process") #also ram used by raw data that is processed
 
     if bitdepth == 8:
-        FourD = pyLP.FourD8
+        FourD = eventem.FourD8
     elif bitdepth == 16:
-        FourD = pyLP.FourD16
+        FourD = eventem.FourD16
     elif bitdepth == 32:
-        FourD = pyLP.FourD32
+        FourD = eventem.FourD32
     fourD = FourD(output_filename = out_file,repetitions = 1, bitdepth=bitdepth, compression_factor=compression_factor) # create a new instance of the FourD class with the output file name
     fourD.set_file(in_file) # set the input file
     fourD.detector_size = det_size
@@ -40,7 +56,7 @@ def process_file(in_file,out_file):
     fourD.set_dwell_time(dwellTime)
     fourD.run() # run the processing
     fourD.save_dose_image() # save the dose image
-    toc = perf_counter()
+    # toc = perf_counter()
     # print(f'Duration: {(toc-tic)/60:0.2f} min')
 
 def delete_existing(fns_tpx3, path_hdf5):
@@ -56,9 +72,8 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 #%%
 if __name__ == '__main__':
-    path_in = r'Z:\emattecnai\Saleh_Tecnai\25-10-21 dose calib\251021\cspbbr3Situation\2025-10-21_14-07-03'
-    path_out = path_in
-    # path_out = r'Z:\emattecnai\Saleh_Tecnai\250305_GoldCalib\cl_300_c250\2025-03-05_15-22-02'
+    path_in = r''
+    path_out = r''
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     
     #### cutting files
@@ -69,6 +84,7 @@ if __name__ == '__main__':
     tic = perf_counter()
     out_files = [os.path.split(fn)[1] for fn in in_files]
     out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
+    ##### number of processors
     N_processes = 1
     with Pool(N_processes) as p:
         p.starmap(process_file, zip(in_files,out_files))

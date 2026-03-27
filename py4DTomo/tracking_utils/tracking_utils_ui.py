@@ -458,10 +458,10 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
             img = io.convert_img_to_8bit(img)
             img = io.gaussian_blur(img, blur_kernel)
         masks[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
-        th = threshold_func(masks[i])
+        th = threshold_func(img[x:x+w, y:y+h])
         th *= thresh_offset
         
-        masks[i] = masks[i] > th
+        masks[i] = masks[i] >= th
     masks = masks.astype('bool')
     return masks
     

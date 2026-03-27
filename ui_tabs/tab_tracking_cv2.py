@@ -209,7 +209,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
         # self.checkbox_roiInRoi.setDisabled(True)
 
-        label_blur_track = qtw.QLabel('Blur')
+        label_blur_track = qtw.QLabel('Image Blur')
         layout_featureBottom.addWidget(label_blur_track)
         self.combo_blur_track = qtw.QComboBox()
         layout_featureBottom.addWidget(self.combo_blur_track)
@@ -251,7 +251,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.combo_thresh_method.addItems(['li', 'otsu', 'yen', 'mean'])
         self.combo_thresh_method.currentIndexChanged.connect(lambda: self.update_canvas()) #TODO change to update mask
         
-        label_blur = qtw.QLabel('Blurring Kernel')
+        label_blur = qtw.QLabel('ROI Blur')
         layout_thresh_method.addWidget(label_blur)
         self.combo_blur = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_blur)
@@ -570,7 +570,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                     img_mask, img_roi = self.threshold_img(
                         img, self.df_rois.loc[idx, 'out_rois'][imgNo], 
                         self.combo_thresh_method.currentText(),
-                        self.slider_thresh.value())
+                        self.slider_thresh.value()) #TODO add thresholding mode to the GUI and function here
                     self.update_ax_mask(img_roi, img_mask)
                 else:
                     self.update_ax(self.img_zero, 'track', self.ax_track)
@@ -731,7 +731,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             th = threshold_func(img_cut)
         thresh_offset = thresh_offset / 100
         thresh = thresh_offset * th
-        img_mask = img_blur > thresh
+        img_mask = img_blur >= thresh
         img_mask = img_mask[x:x+w, y:y+h]
         return img_mask, img_cut
 
@@ -1166,7 +1166,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.df_rois.at[ind, 'mask'] = tr.create_masks(
                 self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
                 thresh_method, thresh_offset, blur_kernel)
-            
 
         # set detector size for tpx3
         if dtype == '.tpx3': # TODO not good
@@ -1188,15 +1187,21 @@ class Tab_Tracking_CV2(qtw.QWidget):
         for idx in df.index:
             self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x, 
                                                    shape_d_y), dtype='uint32')
-            beg = min(df.loc[idx].init)
-            end = df.loc[idx].end
+            # beg = min(df.loc[idx].init)
+            # end = df.loc[idx].end
             out_rois = self.df_rois.loc[idx, 'out_rois']
             for i_fr, fn in enumerate(fns_4d):
                 if out_rois[i_fr].any():
                     self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
                                        os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
                                        dtype, scanSize, (idx, i_fr)])
-
+        
+        
+        # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\debug'
+        # with open(os.path.join(path_debug, 'args.txt'), 'r') as f:
+        #     f.writelines(self.tasks)
+        
+        
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
         self.process_task_map = {}
@@ -1208,7 +1213,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
         os.makedirs(temp_dir, exist_ok=True)
-        print('temp dir', temp_dir)
+        print('temp directory', temp_dir)
         return temp_dir
     
 # =============================================================================
@@ -1225,7 +1230,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         mask_path = args[2]
         idx, i_fr = args[-1]
         np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
-        
         process = QProcess()
         process.setProgram(sys.executable)
         process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
@@ -1241,6 +1245,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
     def process_failed(self, error):
         print("QProcess error occurred:", error)    
+        self.spinner.stop()
         
     def handle_error(self, process):
         error_output = process.readAllStandardError().data().decode()
@@ -1282,6 +1287,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 shutil.rmtree(self.temp_dir)
             time = self.toc - self.tic
             print(f'Data Extraction Time: {time/60:.1f} min')
+            self.update_canvas()
             self.spinner.stop()
             for idx in self.df_rois[self.df_rois.use == 1].index:
                 self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)

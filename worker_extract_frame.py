@@ -25,7 +25,7 @@ from hyperspy.api import signals, load
 # from py4DTomo.io_utils import load_signal
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
-
+#%%
 #TODO add cupy if possible
 def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
     try:
@@ -35,6 +35,7 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
         roi = [int(a) for a in str(roi)[1:-1].split()] # read as str of numpy array
         # roi = eval(roi) # read as str of list
         mask = np.load(mask_path)
+        # mask = mask_path
         
         dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize)
         # Serialize result to base64 string and print it to stdout
@@ -67,31 +68,33 @@ def load_dp(fn, **kwargs):
         result = load_mib(fn, **kwargs)
     return result
 
-def load_tpx3(fn, mask, scanSize, roi, dwellTime=50, **kwargs):
+def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
     repetitions = 1
     bitDepth=16
     if roi is None:
         x=0
         y=0 
         w=scanSize[0]
-        y=scanSize[1]
+        h=scanSize[1]
     else:
+        # y, x, h, w = roi
         x, y, w, h = roi
         
-    roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
-    roi.set_bitdepth(bitDepth)
-    roi.nx = scanSize[0]
-    roi.ny = scanSize[1]
-    roi.set_file(fn)
-    roi.set_roi(x=x, y=y, width=w, height=h)
-    roi.set_dwell_time(dwellTime*1000)
-    roi.run()
-    mask = mask[x:x+w, y:y+h]
+    s_roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
+    s_roi.set_bitdepth(bitDepth)
+    s_roi.nx = scanSize[0]
+    s_roi.ny = scanSize[1]
+    s_roi.set_file(fn)
+    s_roi.set_roi(x=x, y=y, width=w, height=h)
+    s_roi.set_dwell_time(dwellTime*1000)
+    s_roi.run()
     # ROI_scan_image = np.asarray(roi.Roi_scan_image)
     # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
-    s = np.asarray(roi.get_4D())
+    s = np.asarray(s_roi.get_4D())
+
+    mask_crop = mask[y:y+h, x:x+w]
     s = s.reshape(-1, *s.shape[-2:])
-    dp = s[np.where(mask.flatten() == 1)[0]].sum(axis=0)
+    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
     # dp = dp.compute()
     return dp
 
@@ -155,3 +158,16 @@ def get_scan_size_mib_hdr(fn_hdr):
 #%%
 if __name__ == "__main__":
     extract_3ded_mask_single_frame(*sys.argv[1:])
+    
+# =============================================================================
+#     # for debugging
+#     path_mask = r'D:\0_5ded test\Ayush\5DED Analysis\2026-03-26__17-11-25\roi No 1\output_mask.npy'
+#     mask = np.load(path_mask)[-1]
+#     args = ['D:/0_5ded test/Ayush/4d signals\\raw_0652_-37.75_000000.tpx3', 
+#              '[314 117  23  23]', 
+#              mask, 
+#              '.tpx3', 
+#              '(512, 512)', 
+#              '(1, 9)']
+#     extract_3ded_mask_single_frame(*args)
+# =============================================================================
