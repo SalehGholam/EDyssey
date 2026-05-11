@@ -17,7 +17,6 @@ import h5py
 import cv2
 from copy import deepcopy
 import dask
-# import pyLiveProcessing as pyLP
 import eventem
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors

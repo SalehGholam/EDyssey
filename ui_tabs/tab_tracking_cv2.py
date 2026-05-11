@@ -279,7 +279,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_box_3ded.addLayout(layout_threadNo)
         layout_threadNo.addItem(spacer)
         
-        label_threadNo = qtw.QLabel('Thread No')
+        label_threadNo = qtw.QLabel('CPU Cores')
         layout_threadNo.addWidget(label_threadNo)
         self.spinbox_threadNo = qtw.QSpinBox(self)
         layout_threadNo.addWidget(self.spinbox_threadNo)
@@ -674,46 +674,71 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.canvas.draw_idle()
         
     def update_scalebar(self, which):
+    
         if which == 'real':
-            scale_real = self.lineEdit_scale_real.text()
             try:
-                scale_real = float(scale_real)
+                scale_real = float(self.lineEdit_scale_real.text())
+    
                 for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
-                    self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
-                    scalebar_patch = ScaleBar(scale_real, 'nm', dimension='si-length', 
-                                              location='lower left', box_alpha=0, color='w')
-                    for artist in ax.artists:
+    
+                    # Remove previous scalebars
+                    for artist in ax.artists[:]:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
-                            ax.add_artist(scalebar_patch)
-                    self.canvas.blit(ax.bbox)
-            except:
+    
+                    scalebar_patch = ScaleBar(
+                        scale_real,
+                        'nm',
+                        dimension='si-length',
+                        location='lower left',
+                        box_alpha=0,
+                        color='w'
+                    )
+    
+                    ax.add_artist(scalebar_patch)
+    
+                self.canvas.draw_idle()
+    
+            except ValueError:
+    
                 for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
-                    self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
-                    for artist in ax.artists:
+                    for artist in ax.artists[:]:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
-                    self.canvas.blit(ax.bbox)
-
+    
+                self.canvas.draw_idle()
+    
         elif which == 'reciprocal':
-            scale_recip = self.lineEdit_scale_recip.text()
+    
             try:
-                scale_recip = float(scale_recip)
-                self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
-                scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
-                                    box_alpha=0, color='w',
-                                    scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
-                for artist in self.ax_dp.artists:
-                        if isinstance(artist, ScaleBar):
-                            artist.remove()
+                scale_recip = float(self.lineEdit_scale_recip.text())
+    
+                for artist in self.ax_dp.artists[:]:
+                    if isinstance(artist, ScaleBar):
+                        artist.remove()
+    
+                scalebar_recip = ScaleBar(
+                    scale_recip * 10,
+                    '1/nm',
+                    dimension='si-length-reciprocal',
+                    location='lower left',
+                    box_alpha=0,
+                    color='w',
+                    scale_formatter=lambda value, unit: f'{value / 10}' + r' $\AA^{-1}$',
+                    fixed_value=5
+                )
+    
                 self.ax_dp.add_artist(scalebar_recip)
-                self.canvas.blit(self.ax_dp.bbox)
-            except:
-                self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_dp.bbox))
-                for artist in self.ax_dp.artists:
-                        if isinstance(artist, ScaleBar):
-                            artist.remove()
-                self.canvas.blit(self.ax_dp.bbox)
+    
+                self.canvas.draw_idle()
+    
+            except ValueError:
+    
+                for artist in self.ax_dp.artists[:]:
+                    if isinstance(artist, ScaleBar):
+                        artist.remove()
+    
+                self.canvas.draw_idle()
 
     def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full'):
         # thresh_method = self.combo_thresh_method.currentText()

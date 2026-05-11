@@ -4,15 +4,14 @@ Created on Fri Sep 13 11:36:57 2024
 
 @author: Saleh Gholam
 
-version 7:
-    1. Transporting user input layouts to the left part
-    
 """
 
 import os
+import sys
 file_path = os.path.abspath(__file__)
-os.chdir(os.path.dirname(file_path))
-
+fld_path = os.path.dirname(file_path)
+os.chdir(fld_path)
+sys.path.append(os.path.join(fld_path, 'py4DTomo\io_utils'))
 import gc
 import PyQt5.QtWidgets as qtw
 # from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
@@ -20,6 +19,10 @@ import PyQt5.QtWidgets as qtw
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
 from PyQt5.QtGui import QIcon
+
+# import matplotlib.pyplot as plt
+# plt.style.use('dark_background')
+
 #%% window
 class MainWindow(qtw.QMainWindow):
     def __init__(self):
@@ -54,8 +57,31 @@ class MainWindow(qtw.QMainWindow):
         
 if __name__ == "__main__":
     app = qtw.QApplication([])
-    # app.setStyle("Widnows")
     # app.setWindowIcon(QIcon('Scream_logo.ico'))
+    from PyQt5.QtGui import QPalette, QColor
+    from PyQt5.QtCore import Qt
+    
+    app = qtw.QApplication([])
+    # app.setStyle("Fusion")
+    
+    # palette = QPalette()
+    
+    # palette.setColor(QPalette.Window, QColor(53, 53, 53))
+    # palette.setColor(QPalette.WindowText, Qt.white)
+    # palette.setColor(QPalette.Base, QColor(25, 25, 25))
+    # palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+    # palette.setColor(QPalette.ToolTipBase, Qt.white)
+    # palette.setColor(QPalette.ToolTipText, Qt.white)
+    # palette.setColor(QPalette.Text, Qt.white)
+    # palette.setColor(QPalette.Button, QColor(53, 53, 53))
+    # palette.setColor(QPalette.ButtonText, Qt.white)
+    # palette.setColor(QPalette.BrightText, Qt.red)
+    # palette.setColor(QPalette.Highlight, QColor(142, 45, 197).lighter())
+    # palette.setColor(QPalette.HighlightedText, Qt.black)
+    
+    # app.setPalette(palette)
+    
+    
     window = MainWindow()
     window.show()
     app.exec_()

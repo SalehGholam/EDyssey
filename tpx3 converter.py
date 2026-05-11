@@ -1,13 +1,9 @@
-'''
-@author: Saleh Gholam & Arno Annys
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May  7 16:35:44 2026
 
-Help:
-    1. Set the parameters for the detector and 4D-STEM data inside "process_file" function
-    2. Set "path_in" => the directory where tpx3 files are
-    3. Set "path_out" => the directory where converted files will be written
-    4. Set  "N_processes" => the number of processors (depends on your PC specs.
-                                                       better to first test with on a small dataset)
-'''
+@author: Saleh Gholam & Arno Annys
+"""
 
 import sys
 import os
@@ -19,16 +15,17 @@ from multiprocessing import Pool
 from glob import glob
 import os
 from time import perf_counter, sleep
+import numpy as np
 
-def process_file(in_file,out_file):
+def process_file(in_file,out_file, fn_pattern=None):
     sleep(0.1)
     # tic = perf_counter()
     
     #### SET PARAMETERS #####
-    det_size = 512
+    det_size = (512, 512)
     det_bin = 1
     scan_bin = 1
-    scan_size = (512,512)
+    scan_size = (30872,1)
     dwellTime = 200 # usec
     chunksize = 8
     compression_factor =  4 # 1 is least compression, 9 is most compression
@@ -47,8 +44,10 @@ def process_file(in_file,out_file):
     fourD = FourD(output_filename=out_file, repetitions=1, bitdepth=bitdepth, 
                   compression_factor=compression_factor) # create a new instance of the FourD class with the output file name
     fourD.set_file(in_file) # set the input file
-    fourD.detector_size = det_size
-    fourD.det_bin = det_bin 
+    if fn_pattern:
+        fourD.set_pattern_file(fn_pattern)
+    fourD.detector_size_x = det_size[0]
+    fourD.detector_size_y = det_size[1]
     fourD.chunksize = chunksize 
     fourD.nx = scan_size[0]
     fourD.ny = scan_size[1]
@@ -56,7 +55,11 @@ def process_file(in_file,out_file):
     fourD.init_4D_file() # initialize the hdf5 file writing
     fourD.set_dwell_time(dwellTime)
     fourD.run() # run the processing
-    fourD.save_dose_image() # save the dose image
+    # fourD.save_dose_image() # save the dose image
+    dose_image = np.array(fourD.Dose_image).reshape(scan_size)
+    fn_dose = os.path.join(out_file + '_nav')
+    np.save(fn_dose, dose_image)
+    
     # toc = perf_counter()
     # print(f'Duration: {(toc-tic)/60:0.2f} min')
 
@@ -72,23 +75,31 @@ def delete_existing(fns_tpx3, path_hdf5):
     # return fns_tpx3_new, fns_hdf5_new
     return fns_tpx3_new
 #%%
-if __name__ == '__main__':
-    path_in = r'D:\0_5ded test\tpx3 test\Smart scan\Convert'
-    # path_out = r''
-    path_out = path_in
-    in_files = glob(os.path.join(path_in, '*.tpx3'))
-    
-    #### cutting files
-    # in_files = in_files[2:3]
-    
-    #### delete existing files
-    # in_files = delete_existing(in_files, path_out)
-    tic = perf_counter()
-    out_files = [os.path.split(fn)[1] for fn in in_files]
-    out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
-    ##### number of processors
-    N_processes = 1
-    with Pool(N_processes) as p:
-        p.starmap(process_file, zip(in_files,out_files))
-    toc = perf_counter()
-    print(f'Duration: {(toc-tic)/60:0.2f} min')
+smartScanned = True
+path_in = r'D:\0_5ded test\tpx3 test\Smart scan'
+# path_out = r''
+path_out = path_in
+in_files = glob(os.path.join(path_in, '*.tpx3'))
+if smartScanned:
+    fns_pat = glob(os.path.join(path_in, '*.txt'))
+    fns_pat = [fn for fn in fns_pat if 'comment.txt' not in fn]
+    fns_pat.sort()
+
+
+#### cutting files
+in_files = [in_files[1]]
+
+#### delete existing files
+# in_files = delete_existing(in_files, path_out)
+tic = perf_counter()
+out_files = [os.path.split(fn)[1] for fn in in_files]
+out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
+if smartScanned:
+    for fn_in, fn_out, fn_pat in zip(in_files,out_files, fns_pat):
+        process_file(fn_in, fn_out, fn_pat)
+
+else:
+    for fn_in, fn_out in zip(in_files,out_files):
+        process_file(fn_in, fn_out)
+toc = perf_counter()
+print(f'Duration: {(toc-tic)/60:0.2f} min')
