@@ -28,6 +28,20 @@ warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
 #%%
 #TODO add cupy if possible
 def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
+    """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
+
+    Subprocess entry point called by `tab_sam2.py`. Deserialises CLI arguments, loads the
+    per-frame mask from `mask_path`, sums diffraction patterns at mask-True pixels, and
+    prints the result as a base64+pickle-encoded `(dp, i_c)` tuple.
+
+    Args:
+        fn: Path to the 4D-STEM file.
+        roi: Scan-space crop as a string representation of a numpy array, e.g. `'[x y w h]'`.
+        mask_path: Path to a `.npy` file containing the binary 2-D mask.
+        dtype: File extension string (e.g. `.tpx3`, `.hdf5`).
+        scanSize: Scan dimensions as `'(nx, ny)'` string.
+        i_c: Frame index within the extraction batch, as a string.
+    """
     try:
         # Parse input args
         scanSize = tuple(map(int, scanSize.strip("()").split(",")))
@@ -51,6 +65,15 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
         sys.exit(1)  # fail code
         
 def load_dp(fn, **kwargs):
+    """Dispatch diffraction pattern loading to the format-specific function.
+
+    Args:
+        fn: Path to the 4D-STEM file.
+        **kwargs: Passed through to the format-specific loader (roi, mask, scanSize, etc.).
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
+    """
     try:
         dtype = kwargs.get('dtype')
     except:
@@ -69,6 +92,18 @@ def load_dp(fn, **kwargs):
     return result
 
 def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
+    """Load a .tpx3 file, apply an ROI crop and mask, and return the summed diffraction pattern.
+
+    Args:
+        fn: Path to the .tpx3 file.
+        mask: 2-D boolean array matching the scan dimensions.
+        scanSize: (nx, ny) scan dimensions.
+        roi: (x, y, w, h) scan-space crop or None for the full scan.
+        dwellTime: Dwell time in microseconds.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
     repetitions = 1
     bitDepth=16
     if roi is None:
@@ -98,7 +133,19 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
     # dp = dp.compute()
     return dp
 
-def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8,512,512,512), **kwargs):
+def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
+    """Load an .hdf5 file and sum diffraction patterns at mask-True scan pixels.
+
+    Args:
+        fn: Path to the .hdf5 file.
+        roi: (x, y, w, h) scan-space crop (currently unused in this loader).
+        mask: 2-D boolean array matching the full scan dimensions.
+        scanSize: (nx, ny) scan dimensions for reshaping flat storage.
+        chunks: Dask chunk shape.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
     with h5py.File(fn, 'r') as f:
         shape = tuple(f['shape'][:])
         if len(f['4D'].shape) == 4:
@@ -111,7 +158,18 @@ def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8,512,512,512), **kwargs):
         dp = s[mask_idx].sum(axis=0).compute()
     return dp
     
-def load_hs(fn, roi, mask, chunks=(16,16,64,64), **kwargs):
+def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), **kwargs):
+    """Load a .hspy/.zspy file and sum diffraction patterns at mask-True scan pixels.
+
+    Args:
+        fn: Path to the HyperSpy signal file.
+        roi: (y, x, h, w) scan-space crop (applied to the mask transpose).
+        mask: 2-D boolean array.
+        chunks: Dask rechunk shape.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
     s = load(fn, lazy=True)
     try:
         s.rechunk(chunks)
@@ -126,7 +184,19 @@ def load_hs(fn, roi, mask, chunks=(16,16,64,64), **kwargs):
     dp = dp.compute()
     return dp   
 
-def load_mib(fn, roi, mask, scanSize=None, chunks=(16,16,64,64), **kwargs):
+def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), **kwargs):
+    """Load a .mib file and sum diffraction patterns at mask-True scan pixels.
+
+    Args:
+        fn: Path to the .mib file.
+        roi: (x, y, w, h) scan-space crop applied via HyperSpy `inav`.
+        mask: 2-D boolean array.
+        scanSize: (nx, ny) scan dimensions. Reads from `default.hdr` if None.
+        chunks: Dask rechunk shape.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
     s = load(fn, lazy=True)
     if len(s.data.shape) == 3:
         if scanSize is None:
@@ -144,6 +214,14 @@ def load_mib(fn, roi, mask, scanSize=None, chunks=(16,16,64,64), **kwargs):
     return dp
 
 def get_scan_size_mib_hdr(fn_hdr):
+    """Parse scan dimensions from a Merlin .hdr header file.
+
+    Args:
+        fn_hdr: Path to the `.hdr` file (typically `default.hdr` in the .mib folder).
+
+    Returns:
+        Tuple (nx, ny) where nx = frames per trigger and ny = total frames / nx.
+    """
     with open(fn_hdr, 'r') as file:
         hdr = file.readlines()
     fpt = [line for line in hdr if 'Frames per Trigger' in line][0]

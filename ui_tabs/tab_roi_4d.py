@@ -33,19 +33,20 @@ class Tab_ROI_on_4D(qtw.QWidget):
         
     def init_widget(self):
         self.central_widget = qtw.QWidget(self)
-        # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
-        
+        self._splitter = qtw.QSplitter(Qt.Horizontal)
+        self.layout.addWidget(self._splitter)
+        self._left_widget = qtw.QWidget()
+        self._splitter.addWidget(self._left_widget)
+
         width_userInput = 300
-        
-        layout_userInput = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_userInput)
+
+        layout_userInput = qtw.QVBoxLayout(self._left_widget)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directory')
-        self.box_dir.setFixedWidth(width_userInput)
         layout_userInput.addWidget(self.box_dir)
-        layout_dir = qtw.QVBoxLayout(self)
+        layout_dir = qtw.QVBoxLayout()
         self.box_dir.setLayout(layout_dir)
         
         # nav signal dir
@@ -64,7 +65,6 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
         #%% input layout, box scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
-        self.box_scanSize.setFixedWidth(width_userInput)
         layout_box_scanSize = qtw.QHBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
@@ -104,7 +104,6 @@ class Tab_ROI_on_4D(qtw.QWidget):
         layout_box_scanSize.addStretch(1)
         #%% box for scales
         self.box_scale = qtw.QGroupBox('Scale bars')
-        self.box_scale.setFixedWidth(width_userInput)
         layout_box_scale = qtw.QHBoxLayout()
         # self.box_scale.setFixedWidth(150)
         self.box_scale.setLayout(layout_box_scale)
@@ -138,8 +137,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_loadNavigation.clicked.connect(self.get_nav_image)
         layout_userInput.addStretch(1)
         #%% canvas layout
-        layout_canvas = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_canvas)
+        self._right_widget = qtw.QWidget()
+        self._splitter.addWidget(self._right_widget)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([300, 900])
+        layout_canvas = qtw.QVBoxLayout(self._right_widget)
         
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure()
@@ -171,9 +174,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         #%% slider layout
-        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
-        
-        layout_slider = qtw.QHBoxLayout(self)
+        layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
         
         self.label_vmin = qtw.QLabel('vmin')
@@ -198,6 +199,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_reset_slider = qtw.QPushButton('Reset Sliders')
         layout_slider.addWidget(self.button_reset_slider)
         self.button_reset_slider.clicked.connect(self.reset_sliders)
+        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():

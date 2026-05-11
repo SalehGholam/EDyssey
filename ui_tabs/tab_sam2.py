@@ -16,7 +16,8 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool, QProcess
 import pickle
 import base64
-from PyQt5.QtGui import QDoubleValidator, QIntValidator
+from PyQt5.QtGui import QDoubleValidator, QIntValidator, QKeySequence
+from PyQt5.QtWidgets import QShortcut
 from matplotlib_scalebar.scalebar import ScaleBar
 import numpy as np
 import os
@@ -33,11 +34,14 @@ from glob import glob
 from matplotlib.colors import SymLogNorm
 # import py4DTomo.tracking_utils as tr
 import shutil
+import threading
+from collections import deque
 from hyperspy.api import signals as hsSignals
 import pandas as pd
-from time import sleep
-path_ffmpeg = r'C:\Users\sgholam\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-7.1-essentials_build\bin\ffmpeg.exe'
-plt.rcParams['animation.ffmpeg_path'] = path_ffmpeg  # Windows example
+from .loading_label import LoadingSpinner
+_ffmpeg = shutil.which('ffmpeg')
+if _ffmpeg:
+    plt.rcParams['animation.ffmpeg_path'] = _ffmpeg
 #%% tab class
 class Tab_SAM2(qtw.QWidget):
     def __init__(self):
@@ -62,21 +66,24 @@ class Tab_SAM2(qtw.QWidget):
         
         self.central_widget = qtw.QWidget(self)
         self.layout = qtw.QHBoxLayout(self)
-        
+        self._splitter = qtw.QSplitter(Qt.Horizontal)
+        self.layout.addWidget(self._splitter)
+        self._left_widget = qtw.QWidget()
+        self._splitter.addWidget(self._left_widget)
+
         button_w = 95
         button_h_sml = 30
         button_h_lrg = 50
         # height_layout_top = 200
         width_userInput = 300
-        
+
         # layout top
-        layout_userInput = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_userInput)
+        layout_userInput = qtw.QVBoxLayout(self._left_widget)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedSize(width_userInput, 200)
+        self.box_dir.setFixedHeight(200)
         # self.box_dir.setFixedWidth(width_userInput)
-        layout_dir = qtw.QVBoxLayout(self)
+        layout_dir = qtw.QVBoxLayout()
         # self.layout.addLayout(layout_dir)
         layout_userInput.addWidget(self.box_dir)
         self.box_dir.setLayout(layout_dir)
@@ -96,7 +103,7 @@ class Tab_SAM2(qtw.QWidget):
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
         # 4d dir
-        layout_dir_4dSignals = qtw.QHBoxLayout(self)
+        layout_dir_4dSignals = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_dir_4dSignals)
         
         label_dir_4d = qtw.QLabel('4D Signals')
@@ -167,8 +174,6 @@ class Tab_SAM2(qtw.QWidget):
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
         #%% feature handling
         self.box_table = qtw.QGroupBox('Features Handling')
-        # self.box_table.setFixedSize(400, height_layout_top)
-        self.box_table.setFixedWidth(width_userInput)
         layout_userInput.addWidget(self.box_table)
         layout_features = qtw.QVBoxLayout()
         self.box_table.setLayout(layout_features)
@@ -178,13 +183,12 @@ class Tab_SAM2(qtw.QWidget):
         layout_features.addWidget(self.tree_objects)
         self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "del"]
         self.tree_objects.setColumnCount(len(self.cols_tree))
-        self.tree_objects.setHeaderLabels(self.cols_tree)
+        self.tree_objects.setHeaderLabels(["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Delete"])
         for i, _ in enumerate(self.cols_tree):
             self.tree_objects.setColumnWidth(i, 20)
         self.tree_objects.setColumnWidth(2, 50)
         self.tree_objects.setColumnWidth(3, 50)
-        # self.box_table.setFixedSize(self.tree_objects.width(), height_layout_top)
-        self.box_table.setFixedWidth(width_userInput)
+        self.tree_objects.setMinimumWidth(200)
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
@@ -196,9 +200,9 @@ class Tab_SAM2(qtw.QWidget):
 #         header.setSectionResizeMode(qtw.QHeaderView.ResizeToContents)
 # =============================================================================
         #%% run sam2
-        layout_sam_buttons_1 = qtw.QHBoxLayout(self)
+        layout_sam_buttons_1 = qtw.QHBoxLayout()
         layout_features.addLayout(layout_sam_buttons_1)
-        layout_sam_buttons_2 = qtw.QHBoxLayout(self)
+        layout_sam_buttons_2 = qtw.QHBoxLayout()
         layout_features.addLayout(layout_sam_buttons_2)
         
         # image
@@ -218,8 +222,10 @@ class Tab_SAM2(qtw.QWidget):
         layout_stack.addLayout(layout_stack_top)
         
         label_stackNum = qtw.QLabel('Stack Num')
+        label_stackNum.setToolTip('Number of frames per SAM2 processing stack.\nLower values use less GPU memory but run more sequential processes.')
         layout_stack_top.addWidget(label_stackNum)
         self.spinbox_stackNum = qtw.QSpinBox()
+        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack (e.g. 25 = process 25 frames at a time)')
         layout_stack_top.addWidget(self.spinbox_stackNum)
         self.spinbox_stackNum.setSingleStep(25)
         
@@ -254,9 +260,6 @@ class Tab_SAM2(qtw.QWidget):
         #%% extract 3DED
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
         layout_box_3ded = qtw.QVBoxLayout()
-        # self.box_3ded.setFixedWidth(350)
-        # self.box_3ded.setFixedSize(250, height_layout_top)
-        self.box_3ded.setFixedWidth(width_userInput)
         self.box_3ded.setLayout(layout_box_3ded)
         layout_userInput.addWidget(self.box_3ded)
         
@@ -265,16 +268,24 @@ class Tab_SAM2(qtw.QWidget):
         
         # layout_threadNum.addItem(spacer)
         
-        label_threadNo = qtw.QLabel('Thread No')
+        label_threadNo = qtw.QLabel('CPU Cores')
         layout_threadNum.addWidget(label_threadNo)
         self.spinbox_threadNum = qtw.QSpinBox(self)
         layout_threadNum.addWidget(self.spinbox_threadNum)
-        self.spinbox_threadNum.setRange(1,os.cpu_count()-1)
-        self.spinbox_threadNum.setValue(3)
+        self.spinbox_threadNum.setRange(1, os.cpu_count() or 1)
+        self.spinbox_threadNum.setValue(max(1, (os.cpu_count() or 2) - 2))
         self.spinbox_threadNum.valueChanged.connect(self.set_threadNo)
         
+        label_fps = qtw.QLabel('FPS')
+        layout_threadNum.addWidget(label_fps)
+        self.spinbox_fps = qtw.QSpinBox(self)
+        layout_threadNum.addWidget(self.spinbox_fps)
+        self.spinbox_fps.setRange(1, 60)
+        self.spinbox_fps.setValue(5)
+        self.spinbox_fps.setToolTip('Frames per second for saved video clips')
+
         layout_threadNum.addSpacerItem(spacer)
-        
+
         self.checkbox_autosave = qtw.QCheckBox('Autosave')
         layout_threadNum.addWidget(self.checkbox_autosave)
         
@@ -294,8 +305,12 @@ class Tab_SAM2(qtw.QWidget):
         self.disable_3ded_widgets(True)
         # layout_userInput.addItem(spacer)
         #%% canvas
-        layout_canvas = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_canvas)
+        self._right_widget = qtw.QWidget()
+        self._splitter.addWidget(self._right_widget)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([300, 900])
+        layout_canvas = qtw.QVBoxLayout(self._right_widget)
         
         self.figure = Figure(constrained_layout=True)
         # self.figure = Figure(figsize=(16,8)) # with figsize
@@ -332,13 +347,6 @@ class Tab_SAM2(qtw.QWidget):
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
         
-        layout_slider.addWidget(NavigationToolbar(self.canvas, self))
-        
-        vline = qtw.QFrame()
-        vline.setFrameShape(qtw.QFrame.VLine)
-        vline.setFrameShadow(qtw.QFrame.Sunken)
-        layout_slider.addWidget(vline)
-        
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
         
@@ -358,6 +366,32 @@ class Tab_SAM2(qtw.QWidget):
         
         # self.update_canvas(0)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
+        #%% stack navigation buttons
+        layout_stacks = qtw.QHBoxLayout()
+        layout_canvas.addLayout(layout_stacks)
+
+        label_stacks_nav = qtw.QLabel('Stacks:')
+        label_stacks_nav.setFixedWidth(45)
+        label_stacks_nav.setToolTip('Click a button to jump to the first frame of that stack.\n'
+                                    'You must provide at least one point per stack.')
+        layout_stacks.addWidget(label_stacks_nav)
+
+        self._stack_scroll = qtw.QScrollArea()
+        self._stack_scroll.setWidgetResizable(True)
+        self._stack_scroll.setFixedHeight(36)
+        self._stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._stack_scroll.setFrameShape(qtw.QFrame.NoFrame)
+        layout_stacks.addWidget(self._stack_scroll)
+
+        self._stack_buttons_widget = qtw.QWidget()
+        self._stack_buttons_layout = qtw.QHBoxLayout(self._stack_buttons_widget)
+        self._stack_buttons_layout.setContentsMargins(2, 2, 2, 2)
+        self._stack_buttons_layout.setSpacing(3)
+        self._stack_scroll.setWidget(self._stack_buttons_widget)
+
+        self.tree_objects.itemSelectionChanged.connect(self.update_stack_guide)
+        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -365,6 +399,19 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
+        # tooltips
+        self.button_loadNavigation.setToolTip('Load navigation signal (.hspy or .zspy)  [Ctrl+O]')
+        self.button_runSeg_clip.setToolTip('Track objects across all frames using SAM2  [Ctrl+T]')
+        self.button_3ded.setToolTip('Extract 3D electron diffraction patterns  [Ctrl+E]')
+        self.button_save_results.setToolTip('Save segmentation and 3DED results to disk  [Ctrl+S]')
+        self.spinbox_threadNum.setToolTip('Number of CPU cores used for parallel 4D extraction')
+        self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
+
+        # keyboard shortcuts
+        QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+T'), self, self.button_runSeg_clip.click)
+        QShortcut(QKeySequence('Ctrl+E'), self, self.button_3ded.click)
+        QShortcut(QKeySequence('Ctrl+S'), self, self.button_save_results.click)
 #%% load data
     def show_dialog(self, f):
         sender = self.sender()
@@ -416,24 +463,49 @@ class Tab_SAM2(qtw.QWidget):
 #         return device
 # =============================================================================
     
+    def _load_spinner(self):
+        self.spinner = LoadingSpinner(parent=self)
+        self.spinner.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.spinner.setWindowFlags(Qt.SubWindow)
+        x = (self.width() - self.spinner.width()) // 2
+        y = (self.height() - self.spinner.height()) // 2
+        self.spinner.move(x, y)
+        self.spinner.raise_()
+        self.spinner.start()
+
     def load_navSignal(self):
+        fn = self.lineEdit_dir_navSignal.text()
+        if not os.path.isfile(fn):
+            qtw.QMessageBox.critical(self, 'File Not Found',
+                f'Cannot find navigation signal at:\n{fn}')
+            return
         self.reset_data()
-        
+        self._load_spinner()
+
+        def _load(fn):
+            s = hs.load(fn)
+            return s, s.data.copy(), io.convert_to_8bit(s).data
+
+        worker = WorkerThread_General(_load, 0, fn)
+        worker.signals.results.connect(self._on_navSignal_loaded)
+        self.threadpool.start(worker)
+
+    def _on_navSignal_loaded(self, result, index):
+        s, imgs, imgs_8bit = result
+        self.spinner.stop()
         self.fn_navSignal = self.lineEdit_dir_navSignal.text()
-        s = hs.load(self.fn_navSignal)
-        self.imgs = s.data
-        self.imgs_8bit = io.convert_to_8bit(s).data
+        self.imgs = imgs
+        self.imgs_8bit = imgs_8bit
         self.create_main_dataframe()
 
         self.spinbox_stackNum.setMaximum(len(s))
-        # set size and limit of the navigation data
         shape_x, shape_y = self.imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['nav'].set_clim(vmin=self.imgs.min(), vmax=self.imgs.max())
         self.img_display['seg'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['seg_mask'].set_extent([0, shape_y, shape_x, 0])
         self.update_canvas(0)
-        self.slider_imgNo.setRange(0, len(self.imgs)-1)
+        self.slider_imgNo.setRange(0, len(self.imgs) - 1)
         self.button_runSeg_clip.setEnabled(True)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
@@ -746,14 +818,47 @@ class Tab_SAM2(qtw.QWidget):
         self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
 #%% SAM2 video segmentation
     def update_stack_guide(self):
+        """Rebuild the stack-navigation button strip for the currently selected object.
+
+        Each button is labelled with the stack index and, when clicked, moves the slider
+        to the global frame number where that stack begins.  The start of each stack is
+        shifted by the object's earliest frame_idx so objects that don't start at frame 0
+        are handled correctly.
+        """
+        # Clear previous buttons
+        while self._stack_buttons_layout.count():
+            item = self._stack_buttons_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self.label_stack.setText('')
+
         try:
             stack = self.spinbox_stackNum.value()
-            item = self.tree_objects.selectedItems()[0]
-            idx = int(item.text(1))
+            if stack <= 0:
+                return
+            items = self.tree_objects.selectedItems()
+            if not items or not hasattr(self, 'imgs_8bit'):
+                return
+            idx = int(items[0].text(1))
             beg = min(self.df_obj.loc[idx, 'frame_idx'])
-            arr = np.arange(beg, len(self.imgs_8bit), stack)[1:]
-            self.label_stack.setText(f'Img num guide: {arr.tolist()}')
-        except:
+            end = int(self.df_obj.loc[idx, 'end'])
+            end = min(end, len(self.imgs_8bit))
+
+            # Global frame index at the start of each stack for this object
+            arr = np.arange(beg, end, stack)
+
+            self.label_stack.setText(f'{len(arr)} stack(s)')
+
+            for i, frame_no in enumerate(arr):
+                frame_no = int(frame_no)
+                btn = qtw.QPushButton(str(i + 1))
+                btn.setFixedSize(26, 26)
+                btn.setToolTip(f'Stack {i + 1} — jump to frame {frame_no}')
+                btn.clicked.connect(lambda checked, f=frame_no: self.slider_imgNo.setValue(f))
+                self._stack_buttons_layout.addWidget(btn)
+            self._stack_buttons_layout.addStretch(1)
+        except Exception:
             self.label_stack.setText('')
 
     def initiate_video_segmentation(self):
@@ -940,6 +1045,9 @@ class Tab_SAM2(qtw.QWidget):
                 self.update_canvas()
         except json.JSONDecodeError:
             print("Could not decode result:", text)
+            qtw.QMessageBox.warning(self, 'SAM2 Error',
+                f'Could not decode SAM2 output. Check console for details.\n'
+                f'Raw output (first 200 chars): {text[:200]}')
         self.button_runSeg_clip.setEnabled(True)
     
     def stop_processes(self):
@@ -1014,7 +1122,7 @@ class Tab_SAM2(qtw.QWidget):
         self.update_progress_bar(0, self.tomo_counter_total)
         self.tic = perf_counter()
         
-        self.tasks = []
+        self.tasks = deque()
         self.temp_dir = self.get_temp_dir()
         for idx in df.index:
             self.df_obj.at[idx, 'dp'] = np.zeros((len(self.imgs), shape_d_x, 
@@ -1064,7 +1172,7 @@ class Tab_SAM2(qtw.QWidget):
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
     
-        args = self.tasks.pop(0)
+        args = self.tasks.popleft()
         *_, (idx,i_fr) = args
         _ = self.save_mask_to_temp(self.temp_dir, 
                            self.df_obj.loc[idx, 'mask'][i_fr], idx, i_fr)
@@ -1083,11 +1191,19 @@ class Tab_SAM2(qtw.QWidget):
         process.start()
         
     def process_failed_3ded(self, error):
-        print("QProcess error occurred:", error)    
-        
+        print("QProcess error occurred:", error)
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
+        qtw.QMessageBox.critical(self, 'Process Error',
+            f'A worker process failed to start (error code {error}).\n'
+            'Check that Python is on PATH and worker_extract_frame.py exists.')
+
     def handle_error_3ded(self, process):
-        error_output = process.readAllStandardError().data().decode()
-        print("Worker ERROR:", error_output)    
+        error_output = process.readAllStandardError().data().decode().strip()
+        if error_output:
+            print("Worker ERROR:", error_output)
+            qtw.QMessageBox.warning(self, 'Worker Error',
+                f'A worker process reported an error:\n{error_output[:500]}')
     
     def handle_output_3ded(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
@@ -1141,9 +1257,9 @@ class Tab_SAM2(qtw.QWidget):
                 wid.setDisabled(state)
     
     def update_progress_bar(self, value, total):
-        value = value / total * 100
-        value = int(value)
+        self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(value)
+        self.progress_bar.setFormat(f'%v / {total}')
     
 #%% Save Data
     def save_results(self):
@@ -1191,24 +1307,25 @@ class Tab_SAM2(qtw.QWidget):
                     scale_recip = None
                 fn_clip_dp = os.path.join(path_save_objID, 'tomo clip')
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
-                                self.df_obj.loc[idx, 'dp'], scale_recip)
+                                self.df_obj.loc[idx, 'dp'], scale_recip,
+                                fps=self.spinbox_fps.value())
                 self.threadpool.start(worker_clip_dp)
-            
+
             # clip tracking
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'mask']))):
-                np.save(os.path.join(path_save_objID, f'segmentation masks_ obj ID {idx}.npy'), 
+                np.save(os.path.join(path_save_objID, f'segmentation masks_ obj ID {idx}.npy'),
                         self.df_obj.loc[idx, 'mask'])
                 scale_real = self.lineEdit_scale_real.text()
                 try:
                     scale_real = float(scale_real)
                 except:
                     scale_real = None
-                fn_clip_tracking = os.path.join(os.path.join(path_save_objID, 'tracking clip'))
+                fn_clip_tracking = os.path.join(path_save_objID, 'tracking clip')
                 worker_tracking = WorkerThread_General(
-                    io.create_clip_tracking_with_mask, 0, 
-                    fn_clip_tracking, self.imgs, 
-                    self.df_obj.loc[idx, 'mask'], idx, scale_real, 
-                    300, None,  'Grays_r')
+                    io.create_clip_tracking_with_mask, 0,
+                    fn_clip_tracking, self.imgs,
+                    self.df_obj.loc[idx, 'mask'], idx, scale_real,
+                    fps=self.spinbox_fps.value(), cmap='Grays_r')
                 self.threadpool.start(worker_tracking)
     
     def closeEvent(self,event):

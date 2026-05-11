@@ -23,12 +23,18 @@ from dask import config
 # import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 import dask.array as da
-import time
-config.set(scheduler='single-threaded')
 # from dask import config as da_config
 # da_config.set(scheduler='processes')
 #%%
 def select_roi(img):
+    """Open an interactive OpenCV window for the user to draw a single ROI.
+
+    Args:
+        img: 2-D numpy array displayed as a VIRIDIS colourmap.
+
+    Returns:
+        Tuple (x, y, w, h) of the selected bounding box in pixel coordinates.
+    """
     # cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.namedWindow('ROI Selection', cv2.WINDOW_KEEPRATIO)
     cv2.resizeWindow('ROI Selection', img.shape[1]*4, img.shape[0]*4)
@@ -41,6 +47,17 @@ def select_roi(img):
     return box
 
 def select_rois(img):
+    """Open an interactive OpenCV window for the user to draw multiple ROIs on one image.
+
+    Press Enter/Space after each ROI to confirm; draw a zero-size ROI (just press Esc or
+    Enter without dragging) to finish.
+
+    Args:
+        img: 2-D numpy array displayed as a VIRIDIS colourmap.
+
+    Returns:
+        List of (x, y, w, h) tuples, one per selected ROI.
+    """
     rois = []
     img = deepcopy(img)
     img = cv2.applyColorMap(img, cv2.COLORMAP_VIRIDIS)
@@ -81,6 +98,19 @@ def select_rois(img):
     return rois
 
 def select_rois_manual(s):
+    """Manually select ROIs frame-by-frame for a HyperSpy signal stack.
+
+    Opens an OpenCV window for each frame in `s` and lets the user draw one or more ROIs
+    per frame. Useful when particles move too fast for automatic tracking initialisation.
+
+    Args:
+        s: HyperSpy Signal2D of shape (N, H, W).
+
+    Returns:
+        Tuple (rois, tracked_imgs) where:
+            - rois is a numpy array of shape (n_rois, N, 4) with (x, y, w, h) per frame.
+            - tracked_imgs is a HyperSpy Signal2D of shape (N, H, W) with drawn boxes.
+    """
     imgs = s.data
     rois = []
     tracked_imgs = []
@@ -137,6 +167,23 @@ def select_rois_manual(s):
 
 
 def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
+    """Track one ROI across a sequence of images using an OpenCV tracker.
+
+    Supports multiple initialisation frames: `init` and `rois` define pairs of
+    (start_frame, initial_box). Between consecutive init frames the tracker runs
+    forward; a new tracker is created at each init point.
+
+    Args:
+        imgs: numpy.ndarray of shape (N, H, W) with uint8 frames.
+        rois: List/array of (x, y, w, h) initial boxes, one per entry in `init`.
+        init: List of frame indices where each box in `rois` is used to (re-)initialise
+              the tracker. Default is `[0]` (single init at frame 0).
+        tracking_method: OpenCV tracker name — `'csrt'`, `'mil'`, `'nano'`, or
+                         `'dasiamrpn'`.
+
+    Returns:
+        numpy.ndarray of shape (N, 4) with (x, y, w, h) per frame.
+    """
     path_origin = os.getcwd()
     path_file = os.path.abspath(__file__)
     path_file = os.path.split(path_file)[0]
@@ -184,6 +231,7 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
             tracked_rois.append(roi)
             for img in imgs_temp[1:]:
                 if flag_3ch_cvt:
+                    img = img.copy()
                     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
                 (success, box) = tracker.update(img)
                 if success:
@@ -209,7 +257,15 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     return np.array(tracked_rois)
 
 def convert_roi_to_int(roi):
-    x,y,w,h = roi
+    """Cast an (x, y, w, h) ROI tuple to integer components.
+
+    Args:
+        roi: Tuple or array of four numeric values (x, y, w, h).
+
+    Returns:
+        Tuple (x, y, w, h) with all values converted to int.
+    """
+    x, y, w, h = roi
     x = int(x)
     y = int(y)
     w = int(w)
@@ -217,6 +273,22 @@ def convert_roi_to_int(roi):
     return (x,y,w,h)
 
 def track_roi(box, imgs, label=None, method='csrt'):
+    """Track a single ROI across all frames using an OpenCV tracker, returning images and boxes.
+
+    Unlike `track_roi_cv2`, this function also returns annotated images and handles the
+    label overlay for display purposes.
+
+    Args:
+        box: Initial (x, y, w, h) bounding box on the first frame.
+        imgs: numpy.ndarray of shape (N, H, W) with uint8 frames.
+        label: Text label drawn next to the ROI rectangle on each frame.
+        method: OpenCV tracker name — `'csrt'`, `'mil'`, `'nano'`, or `'dasiamrpn'`.
+
+    Returns:
+        Tuple (tracked_rois, tracked_imgs) where:
+            - tracked_rois is a numpy.ndarray of shape (N, 4).
+            - tracked_imgs is a HyperSpy Signal2D of shape (N, H, W) with boxes drawn.
+    """
     if method == 'csrt':
         tracker = cv2.TrackerCSRT_create()
     elif method == 'mil':
@@ -233,8 +305,8 @@ def track_roi(box, imgs, label=None, method='csrt'):
     font_thickness = 1
     font_color = (255, 255, 255)  # BGR color format (blue, green, red)
     
-    img = deepcopy(imgs[0])
-    img_0 = deepcopy(img)
+    img = imgs[0].copy()
+    img_0 = imgs[0].copy()
     tracked_imgs = []
     tracked_rois = []
     x,y,w,h = box
@@ -279,6 +351,16 @@ def track_roi(box, imgs, label=None, method='csrt'):
     return tracked_rois, tracked_imgs
 #%% funcs for extracting 3DED
 def subtract_image_background(img, sub_method, sub_scale=1):
+    """Threshold an image to produce a binary mask using the selected method.
+
+    Args:
+        img: 2-D numpy array.
+        sub_method: Thresholding algorithm — `'otsu'`, `'yen'`, `'li'`, or `'mean'`.
+        sub_scale: Multiplicative scale applied to the computed threshold. Default is 1.
+
+    Returns:
+        Boolean numpy.ndarray with True where the image exceeds the scaled threshold.
+    """
     if sub_method == 'otsu':
         thresh = threshold_otsu(img)
     elif sub_method == 'yen':
@@ -295,6 +377,30 @@ def subtract_image_background(img, sub_method, sub_scale=1):
 
 def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ext_method='sum',
                  sub_method=None, sub_scale=1, sub_center_mask=False, centeringRep=False, init_roi=False):
+    """Extract a 3D electron diffraction (3DED) pattern stack from a series of 4D-STEM files.
+
+    For each file in `fns_4d`, loads the ROI-cropped signal and accumulates diffraction
+    patterns using the chosen extraction method.
+
+    Args:
+        nav_signal: HyperSpy Signal2D navigation image stack (one frame per file).
+        fns_4d: List of 4D-STEM file paths in acquisition order.
+        rois: Array of shape (N, 4) with per-frame (x, y, w, h) ROI coordinates.
+        i_roi: Index of this ROI (used only for tqdm label).
+        dtype: File extension string (e.g. `.hdf5`).
+        sig_shape: Detector size in pixels (square assumed).
+        scanSize: (nx, ny) scan dimensions.
+        ext_method: `'sum'` to sum all ROI pixels; `'brightest'` to use the brightest pixel.
+        sub_method: Background subtraction threshold method (`'otsu'`, `'yen'`, etc.) or None.
+        sub_scale: Scale factor for the subtraction threshold.
+        sub_center_mask: Mask for direct-beam centering. `'auto'` to detect automatically.
+        centeringRep: If True, apply a second centering pass at the detector centre.
+        init_roi: Optional outer ROI array for roi-in-roi extraction.
+
+    Returns:
+        If `sub_method` is set: (s_3ded, sub_imgs, i_roi).
+        Otherwise: (s_3ded, i_roi), where s_3ded is a HyperSpy Signal2D of shape (N, det, det).
+    """
     s_3ded = np.zeros((len(fns_4d), sig_shape, sig_shape), dtype=np.uint32)
     if sub_method:
         sub_imgs = []
@@ -396,9 +502,22 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
 #     return s_3ded
 # =============================================================================
 
-def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, 
-                                   roi=None):
-    time.sleep(0.1)
+def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None):
+    """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
+
+    Loads the file lazily, flattens the scan dimensions, selects pixels where `mask == 1`,
+    and sums those diffraction patterns.
+
+    Args:
+        fn: Path to the 4D-STEM file.
+        mask: 2-D boolean array matching the scan dimensions; True pixels are summed.
+        dtype: File extension. Inferred from `fn` if None.
+        scanSize: (nx, ny) scan dimensions used for reshaping flat .hdf5 data.
+        roi: Optional (x, y, w, h) crop applied to both the signal and the mask.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
+    """
     if roi is not None:
         x,y,w,h = roi
         # mask = mask[x:x+w, y:y+h]
@@ -429,6 +548,16 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None,
     return dp
 
 def check_threshold(img, dev=0.1, step=0.05):
+    """Display a grid comparing three thresholding methods at multiple scale factors.
+
+    Creates a matplotlib figure with rows for otsu/yen/mean and columns sweeping the
+    threshold scale in the range [1-dev, 1+dev]. Useful for picking `thresh_offset`.
+
+    Args:
+        img: 2-D numpy array to threshold.
+        dev: Half-range around scale=1 to sweep. Default is 0.1.
+        step: Step size between scale values. Default is 0.05.
+    """
     rng = np.arange(1-dev, 1+dev, step)
     fig, ax = plt.subplots(3, len(rng))
     threshes = [t(img) for t in [threshold_otsu, threshold_yen, threshold_mean]]
@@ -444,6 +573,21 @@ def check_threshold(img, dev=0.1, step=0.05):
         ax[i_t,0].set_ylabel(lbls[i_t])
 
 def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kernel=1):
+    """Create per-frame binary segmentation masks from navigation images and ROIs.
+
+    For each frame, crops the image to the ROI, optionally blurs it, applies a threshold,
+    and returns a boolean mask over the full navigation image.
+
+    Args:
+        navImgs: numpy.ndarray of shape (N, H, W) with navigation images.
+        rois: Array of shape (N, 4) with per-frame (y, x, h, w) ROI coordinates.
+        thresh_method: Thresholding algorithm — `'otsu'`, `'li'`, `'yen'`, or `'mean'`.
+        thresh_offset: Multiplicative scale applied to the computed threshold.
+        blur_kernel: Gaussian blur kernel size. 1 means no blur.
+
+    Returns:
+        Boolean numpy.ndarray of shape (N, H, W).
+    """
     threshold_methods = {
     'otsu': threshold_otsu,
     'li': threshold_li,
@@ -466,6 +610,15 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
     return masks
     
 def cut_imgs_by_roi(imgs, rois):
+    """Crop each image in a stack to its corresponding ROI and pad to a common size.
+
+    Args:
+        imgs: numpy.ndarray of shape (N, H, W).
+        rois: Array of shape (N, 4) with per-frame (y, x, h, w) ROI coordinates.
+
+    Returns:
+        numpy.ndarray of shape (N, H_max, W_max) with edge-padded crops.
+    """
     imgs_cut = []
     for i_r, r in enumerate(rois):
         y,x,h,w = r
@@ -476,8 +629,22 @@ def cut_imgs_by_roi(imgs, rois):
     return imgs_cut
 
 def translate_roiInRoi(rois_1, rois_2, fwd=True):
+    """Convert inner ROI coordinates between global scan space and outer-ROI-relative space.
+
+    Forward (`fwd=True`): subtracts the outer ROI origin, giving coordinates relative to
+    the top-left corner of the outer crop. Reverse (`fwd=False`): adds the outer origin
+    back to convert back to global coordinates.
+
+    Args:
+        rois_1: Array of shape (N, 4) — inner ROI coordinates (x, y, w, h) to translate.
+        rois_2: Array of shape (N, 4) — outer ROI coordinates (x0, y0, w0, h0).
+        fwd: If True, go from global → relative. If False, go from relative → global.
+
+    Returns:
+        List of (x, y, w, h) tuples in the target coordinate system.
+    """
     rois_new = []
-    for i, roi in rois_1:
+    for i, roi in enumerate(rois_1):
         x,y,w,h = roi
         x0,y0,w0,h0 = rois_2[i]
         if fwd:
@@ -491,6 +658,17 @@ def translate_roiInRoi(rois_1, rois_2, fwd=True):
     return rois_new
 
 def make_tracking_signal(imgs, rois, border_value=65000):
+    """Draw ROI border lines on every frame of an image stack.
+
+    Args:
+        imgs: numpy.ndarray of shape (N, H, W).
+        rois: Array of shape (N, 4) with per-frame (x, y, w, h) bounding boxes.
+        border_value: Pixel intensity used for the drawn border. Default is 65000.
+
+    Returns:
+        Tuple (s_tr, tracking_images) where s_tr is a HyperSpy Signal2D and
+        tracking_images is a numpy.ndarray of shape (N, H, W) with borders drawn.
+    """
     tracking_images = np.zeros(imgs.shape, dtype=imgs.dtype)
     for i, img in enumerate(imgs):
         tracking_images[i] = make_tracking_image(img, rois[i], border_value)
@@ -498,7 +676,17 @@ def make_tracking_signal(imgs, rois, border_value=65000):
     return s_tr, tracking_images
         
 def make_tracking_image(img, roi, border_value=65000):
-    x,y,w,h = roi
+    """Draw a rectangular border on a single 2-D image in-place.
+
+    Args:
+        img: 2-D numpy array to modify.
+        roi: (x, y, w, h) bounding box in pixel coordinates.
+        border_value: Pixel intensity for the four border edges. Default is 65000.
+
+    Returns:
+        The modified `img` array (same object, mutated in place).
+    """
+    x, y, w, h = roi
     img[y, x:x+w] = border_value
     # Bottom edge
     img[y+h-1, x:x+w] = border_value

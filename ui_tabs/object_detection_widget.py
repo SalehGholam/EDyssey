@@ -8,7 +8,7 @@ Created on Fri Feb 14 15:40:48 2025
 import sys
 import os
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -23,7 +23,10 @@ class Object_Detector_Widget(qtw.QWidget):
     def __init__(self, img, parent=None):
         super().__init__(parent)
         self.img = img
-        # self.threadpool = QThreadPool()
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(200)
+        self._debounce_timer.timeout.connect(self._do_update_mask)
         self.init_widget()
         
     def init_widget(self):
@@ -347,6 +350,9 @@ class Object_Detector_Widget(qtw.QWidget):
         return cv2.dilate(mask, kernel, iterations=1)
     
     def update_mask(self):
+        self._debounce_timer.start()
+
+    def _do_update_mask(self):
         self.img_8bit = self.normalize_image(self.img)
         if self.checkbox_convert.isChecked():
             self.img_8bit = 255 - self.img_8bit

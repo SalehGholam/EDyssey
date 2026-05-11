@@ -30,7 +30,11 @@ from time import perf_counter
 # from dask.distributed import Client, LocalCluster, as_completed
 import base64
 import pickle
+import threading
+from collections import deque
 from PyQt5.QtCore import QProcess
+from PyQt5.QtWidgets import QShortcut
+from PyQt5.QtGui import QKeySequence
 import shutil
 from .loading_label import LoadingSpinner
 from .object_detection_widget import Object_Detector_Widget
@@ -49,14 +53,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # threadpool to use in the entire tab
         self.threadpool = QThreadPool()
-        # self.threadpool = QThreadPool.globalInstance()
-        logical_processors = os.cpu_count()
-        
-# =============================================================================
-#         if logical_processors > 2:
-#             self.threadpool.setMaxThreadCount(logical_processors - 2)
-# =============================================================================
-        self.threadpool.setMaxThreadCount(3)
+        self.threadpool.setMaxThreadCount(max(1, os.cpu_count() - 2))
+        self._tracking_lock = threading.Lock()
 
     def init_widget(self):
         button_w = 110
@@ -68,17 +66,19 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # self.setCentralWidget(self.central_widget)
         self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
-        
+        self._splitter = qtw.QSplitter(Qt.Horizontal)
+        self.layout.addWidget(self._splitter)
+        self._left_widget = qtw.QWidget()
+        self._splitter.addWidget(self._left_widget)
+
         # layout top
-        layout_userInput = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_userInput)
+        layout_userInput = qtw.QVBoxLayout(self._left_widget)
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedWidth(width_userInput)
         self.box_dir.setFixedHeight(height_userInput)
         
-        layout_dir = qtw.QVBoxLayout(self)
+        layout_dir = qtw.QVBoxLayout()
         layout_userInput.addWidget(self.box_dir)
         self.box_dir.setLayout(layout_dir)
         
@@ -97,7 +97,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
         # 4d dir
-        layout_dir_4dSignals = qtw.QHBoxLayout(self)
+        layout_dir_4dSignals = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_dir_4dSignals)
         
         label_dir_4d = qtw.QLabel('4D Signals')
@@ -129,7 +129,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_loadSignal = qtw.QHBoxLayout()
         self.box_scale = qtw.QGroupBox('Scale bars')
         layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setFixedWidth(width_userInput//2)
         self.box_scale.setLayout(layout_box_scale)
         # layout_3ded.addWidget(self.box_scale)
         layout_loadSignal.addWidget(self.box_scale)
@@ -170,7 +169,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.box_buttons = qtw.QGroupBox('Feature Handling')
         layout_userInput.addWidget(self.box_buttons)
         self.box_buttons.setLayout(layout_userInput_2)
-        self.box_buttons.setFixedWidth(width_userInput)
         
         # top
         layout_featureTop = qtw.QHBoxLayout()
@@ -186,10 +184,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # tree
         self.tree_objects = qtw.QTreeWidget()
         layout_userInput_2.addWidget(self.tree_objects)
-        self.tree_objects.setMaximumWidth(width_userInput)
+        self.tree_objects.setMinimumWidth(200)
         self.tree_objects.setColumnCount(6)
         self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "del"]
-        self.tree_objects.setHeaderLabels(self.cols_tree)
+        self.tree_objects.setHeaderLabels(["Use", "Idx", "Start", "End", "Ref", "Tracked", "Extracted", "Delete"])
         for i, _ in enumerate(self.cols_tree):
             self.tree_objects.setColumnWidth(i, 20)
         self.tree_objects.setColumnWidth(2, 50)
@@ -237,7 +235,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_box_3ded = qtw.QVBoxLayout()
         self.box_3ded.setLayout(layout_box_3ded)
         layout_3ded.addWidget(self.box_3ded)
-        self.box_3ded.setFixedWidth(width_userInput)
         
         layout_thresh_method = qtw.QHBoxLayout()
         layout_thresh_method.addItem(spacer)
@@ -283,14 +280,22 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_threadNo.addWidget(label_threadNo)
         self.spinbox_threadNo = qtw.QSpinBox(self)
         layout_threadNo.addWidget(self.spinbox_threadNo)
-        self.spinbox_threadNo.setRange(1,os.cpu_count()-1)
-        self.spinbox_threadNo.setValue(3)
+        self.spinbox_threadNo.setRange(1, os.cpu_count() or 1)
+        self.spinbox_threadNo.setValue(max(1, (os.cpu_count() or 2) - 2))
         self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
         
         
+        label_fps = qtw.QLabel('FPS')
+        layout_threadNo.addWidget(label_fps)
+        self.spinbox_fps = qtw.QSpinBox(self)
+        layout_threadNo.addWidget(self.spinbox_fps)
+        self.spinbox_fps.setRange(1, 60)
+        self.spinbox_fps.setValue(5)
+        self.spinbox_fps.setToolTip('Frames per second for saved video clips')
+
         self.checkbox_autosave = qtw.QCheckBox('Autosave')
         layout_threadNo.addWidget(self.checkbox_autosave)
-        
+
         layout_threadNo.addItem(spacer)
         
         layout_extract = qtw.QHBoxLayout()
@@ -308,8 +313,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.disable_3ded_widgets(True)
         #%% canvas
-        layout_canvas = qtw.QVBoxLayout()
-        self.layout.addLayout(layout_canvas)
+        self._right_widget = qtw.QWidget()
+        self._splitter.addWidget(self._right_widget)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setSizes([300, 900])
+        layout_canvas = qtw.QVBoxLayout(self._right_widget)
         
         # self.figure = Figure(figsize=(8,4))
         self.figure = Figure(constrained_layout=True)
@@ -370,43 +379,31 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         
-        self.canvas.mpl_connect('button_press_event', self.on_press)
-        self.canvas.mpl_connect('button_release_event', self.on_release)
-        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
-        
         self.axes = [self.ax_nav, self.ax_track, self.ax_dp, self.ax_mask]
         self.backgrounds = {}
         for i, ax in enumerate(self.axes):
             self.backgrounds[axes[i]] = self.canvas.copy_from_bbox(ax.bbox)
         
         #%% slider img num
-        layout_slider = qtw.QHBoxLayout(self)
+        layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
 
-        layout_slider.addWidget(NavigationToolbar(self.canvas, self))
-        
-        vline = qtw.QFrame()
-        vline.setFrameShape(qtw.QFrame.VLine)
-        vline.setFrameShadow(qtw.QFrame.Sunken)
-        layout_slider.addWidget(vline)
-        
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
-        
+
         self.lineEdit_imgNo = qtw.QLineEdit()
         layout_slider.addWidget(self.lineEdit_imgNo)
         self.lineEdit_imgNo.setFixedWidth(35)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
         self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
 
-        
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
         layout_slider.addWidget(self.slider_imgNo)
-        
-        # self.update_canvas(0)
+
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
+        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -414,6 +411,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
+
+        # tooltips
+        self.button_loadNavigation.setToolTip('Load navigation signal (Ctrl+O)')
+        self.button_track.setToolTip('Track all enabled ROIs across frames (Ctrl+T)')
+        self.button_3ded.setToolTip('Extract 3D electron diffraction patterns (Ctrl+E)')
+        self.button_save_results.setToolTip('Save tracking and 3DED results to disk (Ctrl+S)')
+        self.combo_trackMethod.setToolTip('OpenCV tracking algorithm — CSRT is most accurate')
+        self.combo_blur_track.setToolTip('Gaussian blur kernel applied before tracking (higher = more smoothing)')
+        self.combo_thresh_method.setToolTip('Thresholding algorithm used to create the binary mask')
+        self.combo_blur.setToolTip('Gaussian blur kernel applied before thresholding')
+        self.spinbox_threadNo.setToolTip('Number of CPU cores used for parallel 4D extraction')
+        self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
+
+        # keyboard shortcuts
+        QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+T'), self, self.button_track.click)
+        QShortcut(QKeySequence('Ctrl+E'), self, self.button_3ded.click)
+        QShortcut(QKeySequence('Ctrl+S'), self, self.button_save_results.click)
     #%% load data
     def show_dialog(self, f):
         sender = self.sender()
@@ -1124,15 +1139,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.threadpool.start(worker)
             
     def get_tracking_results(self, result, index):
-        self.tracking_counter += 1
+        with self._tracking_lock:
+            self.tracking_counter += 1
+            counter_now = self.tracking_counter
         self.df_rois.at[index, 'out_rois'] = np.zeros((len(self.nav_imgs), 4), dtype=np.int16)
         st = min(self.df_rois.loc[index, 'init'])
         end = self.df_rois.loc[index, 'end']
-        # arr_rois = np.zeros(len())
         self.df_rois.at[index, 'out_rois'][st:end] = result
         self.toggle_tree_icon(self.df_rois.index.get_loc(index), 'trk', True)
-        self.update_progress_bar(self.tracking_counter, self.tracking_counter_end)
-        if self.tracking_counter == self.tracking_counter_end:
+        self.update_progress_bar(counter_now, self.tracking_counter_end)
+        if counter_now == self.tracking_counter_end:
             self.tracking_finished = True
         
         if self.tracking_finished:
@@ -1165,15 +1181,18 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         path_4d = self.lineEdit_dir_4d.text()
         if path_4d == '': # no entry in 4D signals path
-            self.spinner.stop()   
-            qtw.QMessageBox.critical(self, 'No Entry', 'Enter the path for 4D signals before the extraction!')
+            self.spinner.stop()
+            qtw.QMessageBox.critical(self, 'No Entry',
+                'Enter the path to the folder containing 4D signal files '
+                '(.hdf5, .tpx3, .zspy, etc.) before extraction.')
             return
-        
+
         # check if no of files matches with no of images
         fns_4d = glob(os.path.join(path_4d, '*'))
         if len(fns_4d) == 0:
-            self.spinner.stop()   
-            qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
+            self.spinner.stop()
+            qtw.QMessageBox.critical(self, 'Wrong Path',
+                f'No files found in:\n{path_4d}\n\nVerify the path and try again.')
             return
         if len(self.nav_imgs) != len(fns_4d):
             reply = qtw.QMessageBox.question(self, 'Mismatch',
@@ -1204,7 +1223,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.tic = perf_counter()
         
         self.tomo_counter = 0
-        self.tasks = []
+        self.tasks = deque()
         self.temp_dir = self.get_temp_dir()
         lengths = df.end - [min(df.init[idx]) for idx in df.index]
         self.tomo_counter_total = np.sum(lengths)
@@ -1251,7 +1270,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
     
-        args = self.tasks.pop(0)
+        args = self.tasks.popleft()
         mask_path = args[2]
         idx, i_fr = args[-1]
         np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
@@ -1269,13 +1288,20 @@ class Tab_Tracking_CV2(qtw.QWidget):
         process.start()
         
     def process_failed(self, error):
-        print("QProcess error occurred:", error)    
+        print("QProcess error occurred:", error)
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            shutil.rmtree(self.temp_dir)
         self.spinner.stop()
-        
+        qtw.QMessageBox.critical(self, 'Process Error',
+            f'A worker process failed to start (error code {error}).\n'
+            'Check that Python is on PATH and worker_extract_frame.py exists.')
+
     def handle_error(self, process):
-        error_output = process.readAllStandardError().data().decode()
-        print("Worker ERROR:", error_output)
-        self.spinner.stop()
+        error_output = process.readAllStandardError().data().decode().strip()
+        if error_output:
+            print("Worker ERROR:", error_output)
+            qtw.QMessageBox.warning(self, 'Worker Error',
+                f'A worker process reported an error:\n{error_output[:500]}')
     
     def handle_output(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
@@ -1323,10 +1349,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.launch_next_task()  # trigger next task if any left
         
     def update_progress_bar(self, value, total):
-        value = value / total * 100
-        value = int(value)
+        self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(value)
-    
+        self.progress_bar.setFormat(f'%v / {total}')
+
     def reset_thresh(self):
         self.slider_thresh.setValue(100)
         self.update_canvas()
@@ -1354,34 +1380,35 @@ class Tab_Tracking_CV2(qtw.QWidget):
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
             
-            # write frames
-            np.save(os.path.join(path_save_roi, '3DED.npy'), self.df_rois.loc[idx, 'dp'])
-            fld_frames = os.path.join(path_save_roi, 'frames')
-            worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, self.df_rois.loc[idx, 'dp'])
-            self.threadpool.start(worker_frames)
-            
-            # clip for dp
-            scale_recip = self.lineEdit_scale_recip.text()
-            try:
-                scale_recip = float(scale_recip)
-            except:
-                scale_recip = None
-            fn_dp = os.path.join(path_save_roi, 'tomo clip')
-            worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_dp, 
-                                                  self.df_rois.loc[idx, 'dp'], scale_recip)
-            self.threadpool.start(worker_clip_dp)
-            
+            # write frames (only if extraction was run for this roi)
+            dp = self.df_rois.loc[idx, 'dp'] if 'dp' in self.df_rois.columns else None
+            if isinstance(dp, np.ndarray):
+                np.save(os.path.join(path_save_roi, '3DED.npy'), dp)
+                fld_frames = os.path.join(path_save_roi, 'frames')
+                worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp)
+                self.threadpool.start(worker_frames)
+                scale_recip = self.lineEdit_scale_recip.text()
+                try:
+                    scale_recip = float(scale_recip)
+                except:
+                    scale_recip = None
+                fn_dp = os.path.join(path_save_roi, 'tomo clip')
+                worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_dp, dp,
+                                                      scale_recip, fps=self.spinbox_fps.value())
+                self.threadpool.start(worker_clip_dp)
+
             # clip for tracking
             scale_real = self.lineEdit_scale_real.text()
             try:
                 scale_real = float(scale_real)
             except:
                 scale_real = None
-            
+
             fn = os.path.join(path_save_roi, 'tracking clip')
             worker_clip_tr_ref = WorkerThread_General(
-                io.create_clip_tracking, 0, fn, self.nav_imgs, 
-                self.df_rois.loc[idx, 'out_rois'], scale_real)
+                io.create_clip_tracking, 0, fn, self.nav_imgs,
+                self.df_rois.loc[idx, 'out_rois'], scale_real,
+                fps=self.spinbox_fps.value())
             self.threadpool.start(worker_clip_tr_ref)
             
     def kill_running_process(self):
