@@ -6,7 +6,6 @@ Created on Fri Mar 15 16:58:43 2024
 """
 
 import numpy as np
-import pyxem as px
 import cv2
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -474,6 +473,11 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
     s_3ded = hs.signals.Signal2D(s_3ded)
     if 'sub_imgs' in locals():
         try:
+            # Imported here rather than at module level: pyxem pulls in a
+            # large, slow (~5s) dependency chain (orix, diffsims, sympy)
+            # that would otherwise be paid on every app startup even though
+            # this is the only place it's used, guarded by a fallback below.
+            import pyxem as px
             sub_imgs = px.signals.ElectronDiffraction2D(sub_imgs) # wont work for rois with different shapes
         except:
             sub_imgs = create_array_from_dissimilar_imgs(sub_imgs)

@@ -30,6 +30,7 @@ from time import perf_counter
 import py4DTomo.io_utils as io
 from typing import Literal
 from .worker_thread import WorkerThread_General
+from .logging_utils import get_tab_logger
 from glob import glob
 from matplotlib.colors import SymLogNorm
 # import py4DTomo.tracking_utils as tr
@@ -46,7 +47,15 @@ if _ffmpeg:
 class Tab_SAM2(qtw.QWidget):
     def __init__(self):
         super().__init__()
-        
+
+        self.logger = get_tab_logger('Tab_SAM2')
+
+        # Recomputing constrained_layout's spacing solve on every redraw
+        # (canvas.draw()'s default behavior) is one of the most expensive
+        # parts of a redraw; update_canvas() freezes it after the first
+        # real draw, once subplot spacing has settled.
+        self._layout_frozen = False
+
         # threadpool to use in the entire tab
         self.threadpool = QThreadPool()
         # self.threadpool = QThreadPool.globalInstance()
@@ -165,13 +174,18 @@ class Tab_SAM2(qtw.QWidget):
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
         
+        layout_load_buttons = qtw.QVBoxLayout()
+        layout_loadSignal.addLayout(layout_load_buttons)
+
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        # self.button_loadNavigation.setMaximumHeight(button_h_lrg)
         self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        layout_loadSignal.addWidget(self.button_loadNavigation)
-        # layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignRight)
-        # self.button_loadNavigation.setFixedSize(110, 50)
+        layout_load_buttons.addWidget(self.button_loadNavigation)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
+
+        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved Analysis')
+        self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        layout_load_buttons.addWidget(self.button_loadSavedAnalysis)
+        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
         #%% feature handling
         self.box_table = qtw.QGroupBox('Features Handling')
         layout_userInput.addWidget(self.box_table)
@@ -276,7 +290,7 @@ class Tab_SAM2(qtw.QWidget):
         self.spinbox_threadNum.setValue(max(1, (os.cpu_count() or 2) - 2))
         self.spinbox_threadNum.valueChanged.connect(self.set_threadNo)
         
-        label_fps = qtw.QLabel('FPS')
+        label_fps = qtw.QLabel('Clip FPS')
         layout_threadNum.addWidget(label_fps)
         self.spinbox_fps = qtw.QSpinBox(self)
         layout_threadNum.addWidget(self.spinbox_fps)
@@ -335,10 +349,15 @@ class Tab_SAM2(qtw.QWidget):
 
         # self.figure.tight_layout()
         layout_canvas.addWidget(self.canvas)
-        self.ax_nav.set_xlabel('Left Click => Positive Point\nRight Click => Negative Point\n' + 
-                               'Hold "shift" for Adding Points to an Existing Object\nMiddle Click => Delete Last Point', fontsize=8.5)
+        self.ax_nav.set_xlabel(
+            'Hold "ctrl" + Left Click => Positive Point\n'
+            'Hold "ctrl" + Right Click => Negative Point\n'
+            'Add "shift" to add Points to an Existing Object\n'
+            'Middle Click => Delete Last Point\n'
+            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=8.5)
         self.ax_nav.xaxis.label.set_visible(True)
         self.canvas.mpl_connect("button_press_event", self.on_click)
+        self.canvas.mpl_connect("scroll_event", self.on_scroll)
         # self.masks_plotted = []
         self.create_main_dataframe()
         self.imgs = deepcopy([self.img_zero])
@@ -391,7 +410,8 @@ class Tab_SAM2(qtw.QWidget):
         self._stack_scroll.setWidget(self._stack_buttons_widget)
 
         self.tree_objects.itemSelectionChanged.connect(self.update_stack_guide)
-        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        layout_canvas.addWidget(self.toolbar)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -401,7 +421,13 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar.setRange(0, 100)
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (.hspy or .zspy)  [Ctrl+O]')
+        self.button_loadSavedAnalysis.setToolTip(
+            'Load a previously saved analysis folder: navigation signal, '
+            'tracked objects, and extracted diffraction patterns  [Ctrl+Shift+O]')
         self.button_runSeg_clip.setToolTip('Track objects across all frames using SAM2  [Ctrl+T]')
+        self.button_runSeg_img.setToolTip(
+            "Segment the selected object on the current frame only, using its "
+            "points on this frame (no tracking across other frames)")
         self.button_3ded.setToolTip('Extract 3D electron diffraction patterns  [Ctrl+E]')
         self.button_save_results.setToolTip('Save segmentation and 3DED results to disk  [Ctrl+S]')
         self.spinbox_threadNum.setToolTip('Number of CPU cores used for parallel 4D extraction')
@@ -409,6 +435,7 @@ class Tab_SAM2(qtw.QWidget):
 
         # keyboard shortcuts
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+Shift+O'), self, self.button_loadSavedAnalysis.click)
         QShortcut(QKeySequence('Ctrl+T'), self, self.button_runSeg_clip.click)
         QShortcut(QKeySequence('Ctrl+E'), self, self.button_3ded.click)
         QShortcut(QKeySequence('Ctrl+S'), self, self.button_save_results.click)
@@ -476,9 +503,11 @@ class Tab_SAM2(qtw.QWidget):
     def load_navSignal(self):
         fn = self.lineEdit_dir_navSignal.text()
         if not os.path.isfile(fn):
+            self.logger.error('Cannot find navigation signal at: %s', fn)
             qtw.QMessageBox.critical(self, 'File Not Found',
                 f'Cannot find navigation signal at:\n{fn}')
             return
+        self.logger.info('Loading navigation signal from %s...', fn)
         self.reset_data()
         self._load_spinner()
 
@@ -494,9 +523,18 @@ class Tab_SAM2(qtw.QWidget):
         s, imgs, imgs_8bit = result
         self.spinner.stop()
         self.fn_navSignal = self.lineEdit_dir_navSignal.text()
+        self.create_main_dataframe()
+        self._apply_loaded_nav_signal(s, imgs, imgs_8bit)
+        self.logger.info('Navigation signal loaded: %d frame(s), %d x %d px.',
+                          len(self.imgs), self.imgs[0].shape[0], self.imgs[0].shape[1])
+
+    def _apply_loaded_nav_signal(self, s, imgs, imgs_8bit):
+        """Wire up a freshly-loaded (or restored) navigation signal: store it
+        and its derived arrays, and reset the canvas/widgets to match. Shared
+        by both load_navSignal (fresh load) and load_saved_analysis (restore)."""
+        self.s_navSignal = s
         self.imgs = imgs
         self.imgs_8bit = imgs_8bit
-        self.create_main_dataframe()
 
         self.spinbox_stackNum.setMaximum(len(s))
         shape_x, shape_y = self.imgs[0].shape
@@ -504,13 +542,111 @@ class Tab_SAM2(qtw.QWidget):
         self.img_display['nav'].set_clim(vmin=self.imgs.min(), vmax=self.imgs.max())
         self.img_display['seg'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['seg_mask'].set_extent([0, shape_y, shape_x, 0])
+        # Reset the view to the newly loaded data's full extent (in case the
+        # user had already zoomed in on a previous signal, which disables
+        # autoscale), then re-seed the toolbar's view stack so its "Home"
+        # button resets to *this* view instead of doing nothing (it does
+        # nothing until something pushes at least one view onto its stack,
+        # which our own scroll-wheel zoom deliberately bypasses).
+        for ax in (self.ax_nav, self.ax_seg):
+            ax.set_xlim(0, shape_y)
+            ax.set_ylim(shape_x, 0)
+        self.toolbar.update()
+        self.toolbar.push_current()
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.imgs) - 1)
         self.button_runSeg_clip.setEnabled(True)
+        self.button_runSeg_img.setEnabled(True)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
-    
-    def create_main_dataframe(self):    
+
+    def load_saved_analysis(self):
+        """Restore a previously saved analysis folder (produced by
+        save_results): the navigation signal, per-object tracking (points/
+        labels/rois/masks), and any extracted diffraction patterns."""
+        path = qtw.QFileDialog.getExistingDirectory(
+            self, "Select Saved Analysis Folder", self.lineEdit_dir_save.text())
+        if not path:
+            return
+        fn_nav = os.path.join(path, 'navigation_signal.hspy')
+        if not os.path.isfile(fn_nav):
+            self.logger.error('Cannot find navigation_signal.hspy in: %s', path)
+            qtw.QMessageBox.critical(self, 'Navigation Signal Not Found',
+                f'Cannot find navigation_signal.hspy in:\n{path}\n\n'
+                'This folder does not look like a saved analysis (or it was '
+                'saved before this feature was added).')
+            return
+
+        self.logger.info('Loading saved analysis from %s...', path)
+        self.reset_data()
+        self._load_spinner()
+
+        worker = WorkerThread_General(self._load_saved_analysis_worker, 0, path, fn_nav)
+        worker.signals.results.connect(self._on_saved_analysis_loaded)
+        self.threadpool.start(worker)
+
+    def _load_saved_analysis_worker(self, path, fn_nav):
+        s = hs.load(fn_nav)
+        imgs = s.data.copy()
+        imgs_8bit = io.convert_to_8bit(s).data
+
+        objects = []
+        for name in sorted(os.listdir(path)):
+            obj_dir = os.path.join(path, name)
+            if not (os.path.isdir(obj_dir) and name.startswith('roi No ')):
+                continue
+            fn_json = os.path.join(obj_dir, f'{name}.json')
+            if not os.path.isfile(fn_json):
+                continue
+            idx = int(name[len('roi No '):])
+            with open(fn_json) as f:
+                row = json.load(f)
+
+            fn_rois = os.path.join(obj_dir, 'rois.npy')
+            rois = np.load(fn_rois) if os.path.isfile(fn_rois) else None
+
+            fn_mask = os.path.join(obj_dir, f'segmentation masks_ obj ID {idx}.npy')
+            mask = np.load(fn_mask) if os.path.isfile(fn_mask) else None
+
+            dp = None
+            fn_dp_hspy = os.path.join(obj_dir, '3DED.hspy')
+            fn_dp_npy = os.path.join(obj_dir, '3DED.npy')
+            if os.path.isfile(fn_dp_hspy):
+                dp = hs.load(fn_dp_hspy).data
+            elif os.path.isfile(fn_dp_npy):
+                dp = np.load(fn_dp_npy)
+
+            objects.append({
+                'idx': idx, 'use': row['use'], 'frame_idx': row['frame_idx'],
+                'points': row['points'], 'labels': row['labels'], 'end': row['end'],
+                'rois': rois, 'mask': mask, 'dp': dp,
+            })
+        return s, imgs, imgs_8bit, objects, path
+
+    def _on_saved_analysis_loaded(self, result, index):
+        s, imgs, imgs_8bit, objects, path = result
+        self.spinner.stop()
+        self.fn_navSignal = os.path.join(path, 'navigation_signal.hspy')
+        self.create_main_dataframe()
+        self._apply_loaded_nav_signal(s, imgs, imgs_8bit)
+
+        for obj in objects:
+            idx = obj['idx']
+            self.df_obj.loc[idx] = [obj['use'], idx, obj['frame_idx'], obj['points'],
+                                     obj['labels'], obj['end'], None, obj['mask'],
+                                     obj['rois'], obj['dp']]
+            self.add_item_tree(idx, obj['frame_idx'], obj['end'], obj['use'])
+            row_index = self.df_obj.index.get_loc(idx)
+            if obj['mask'] is not None:
+                self.toggle_tree_icon(row_index, 'trk', True)
+            if obj['dp'] is not None:
+                self.toggle_tree_icon(row_index, 'ext', True)
+
+        self.activate_3ded_widgets(True)
+        self.update_canvas(0)
+        self.logger.info('Loaded saved analysis from %s (%d object(s)).', path, len(objects))
+
+    def create_main_dataframe(self):
         self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end', 
                         'single_mask', 'mask', 'rois', 'dp']
         self.df_obj = pd.DataFrame([], columns=self.cols_df)
@@ -542,22 +678,21 @@ class Tab_SAM2(qtw.QWidget):
             if item.text(1) == col:
                 self.tree_objects.takeTopLevelItem(i)
 #%% object tree and funcs
-    def add_item_tree(self, idx, fr_idx=[0], end=None):
+    def add_item_tree(self, idx, fr_idx=[0], end=None, use=1):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
         item = qtw.QTreeWidgetItem()
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        # item.setCheckState(cols['use'], Qt.Unchecked)
-        item.setCheckState(cols['use'], Qt.Checked)
+        item.setCheckState(cols['use'], Qt.Checked if use else Qt.Unchecked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['fr_idx'], f"{fr_idx}")
         # set as selected item
         self.tree_objects.itemChanged.connect(self.on_item_check_changed)
         self.tree_objects.addTopLevelItem(item)
-        
+
         # end frame
         spinbox = qtw.QSpinBox()
         spinbox.setRange(0, len(self.imgs))
-        spinbox.setValue(len(self.imgs))
+        spinbox.setValue(end if end is not None else len(self.imgs))
         self.tree_objects.setItemWidget(item, cols['end'], spinbox)
         spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
         # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
@@ -581,7 +716,7 @@ class Tab_SAM2(qtw.QWidget):
         
         def delete_row():
             index = self.tree_objects.indexOfTopLevelItem(item)
-            # print(index)
+            self.logger.info('Deleted object %s.', self.df_obj.index[index])
             self.tree_objects.takeTopLevelItem(index)
             self.df_obj = self.df_obj.drop(self.df_obj.index[index])
             # print(self.df_obj)
@@ -636,8 +771,12 @@ class Tab_SAM2(qtw.QWidget):
             return
         if (event.inaxes != self.ax_nav) or (event.button not in [1,3]):
             return
-        
-        
+        if 'ctrl' not in event.modifiers:
+            # Plain click/drag is reserved for the navigation toolbar's
+            # Pan/Zoom tool (and the scroll-wheel zoom below) so images can
+            # be zoomed into; hold "ctrl" to add a point instead.
+            return
+
         imgNo = self.slider_imgNo.value()
         p = [event.xdata, event.ydata]
         # left click is positive and right click negative
@@ -673,7 +812,25 @@ class Tab_SAM2(qtw.QWidget):
         i_ap = 1 if pd.isna(i_ap) else i_ap+1
         self.df_added_points.loc[i_ap] = added_point
         self.update_canvas(imgNo) # TODO fix
-    
+
+    def on_scroll(self, event):
+        """Zoom the axes under the cursor in/out on the scroll wheel,
+        centered on the cursor position."""
+        ax = event.inaxes
+        if ax is None or event.xdata is None or event.ydata is None:
+            return
+        base_scale = 1.2
+        scale_factor = 1 / base_scale if event.button == 'up' else base_scale
+        cur_xlim = ax.get_xlim()
+        cur_ylim = ax.get_ylim()
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+        relx = (cur_xlim[1] - event.xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
+        ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
+        ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
+        self.canvas.draw_idle()
+
     def delete_last_point(self):
         try:
             i = self.df_added_points.index[-1]
@@ -738,11 +895,17 @@ class Tab_SAM2(qtw.QWidget):
                     self.plot_dp(obj_id=obj_id, imgNo=imgNo)
                 except:
                     self.img_display['dp'].set_data(self.img_zero)
-                    
-        shape_x, shape_y = self.imgs[0].shape
-        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.canvas.draw() 
-       
+
+        if not self._layout_frozen:
+            # Let constrained_layout solve spacing once with real content,
+            # then freeze it so later redraws (including draw_idle() below)
+            # don't repeat that expensive solve every single frame/point.
+            self.canvas.draw()
+            self.figure.set_layout_engine('none')
+            self._layout_frozen = True
+        else:
+            self.canvas.draw_idle()
+
     def add_scalebar(self):
         scale_real = self.lineEdit_scale_real.text()
         try:
@@ -864,7 +1027,9 @@ class Tab_SAM2(qtw.QWidget):
     def initiate_video_segmentation(self):
         # self.button_runSeg_img.setDisabled(True)
         self.button_runSeg_clip.setDisabled(True)
-        
+        self._track_tic = perf_counter()
+        self._track_failed = False
+
         # jpg path
         pathSave = self.lineEdit_dir_save.text()
         if not (os.path.isdir(pathSave)):
@@ -880,7 +1045,10 @@ class Tab_SAM2(qtw.QWidget):
         if self.stack_num == 0:
             self.stack_num = len(self.imgs)
             self.spinbox_stackNum.setValue(self.stack_num)
-        
+
+        self.logger.info('Starting SAM2 tracking for %d object(s) (stack size %d frames)...',
+                          len(df), self.stack_num)
+
         # count the total number of workers for creating jpg
         self.total_threads_jpg = 0
         for idx in df.index:
@@ -910,7 +1078,13 @@ class Tab_SAM2(qtw.QWidget):
             imgs = self.imgs_8bit[st:end]
             arr_stack = np.arange(0, len(imgs), self.stack_num)
             arr_stack = np.append(arr_stack, len(imgs))
-            self.df_obj.at[idx, 'mask'] = np.zeros(imgs.shape, dtype=bool)
+            # Allocate 'mask' at full dataset length (not just this object's
+            # st:end range) so every consumer that indexes it by the GLOBAL
+            # frame number (update_canvas, extract_3ded, create_clip_tracking_
+            # with_mask, ...) lines up correctly, instead of needing a local/
+            # global offset conversion that was easy to get wrong in one place
+            # and miss in another.
+            self.df_obj.at[idx, 'mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
             path_obj = os.path.join(self.path_jpg, f'{idx}')
             if os.path.isdir(path_obj):
                 shutil.rmtree(path_obj)
@@ -961,8 +1135,7 @@ class Tab_SAM2(qtw.QWidget):
          self.launch_next_video_seg(path, idx)
                 
     def launch_next_video_seg(self, path, idx):
-        print("Next project:")
-        print(idx, path)
+        self.logger.info("Next project: %s %s", idx, path)
         process_sam = QProcess(self)
         process_sam.setProgram(sys.executable)
         process_sam.setArguments(["worker_sam.py"] + ['video', path, str(idx)])
@@ -984,11 +1157,19 @@ class Tab_SAM2(qtw.QWidget):
         process_sam.start()
         
     def process_failed_sam(self, error, idx):
-        print(f"[{idx}] QProcess error occurred:", error) 
-        
+        self._track_failed = True
+        self.logger.error("[%s] QProcess error occurred: %s", idx, error)
+
     def handle_error_sam(self, process, idx):
+        # SAM2/PyTorch routinely write progress bars, warnings, and other
+        # non-fatal diagnostics to stderr even on a fully successful run,
+        # so this is just informational rather than an error — a genuine
+        # failure is already caught via the JSON-decode check in
+        # handle_finished_sam() and via process_failed_sam() below (the
+        # QProcess itself failing to launch).
         error_output = process.readAllStandardError().data().decode()
-        print("Worker ERROR:", error_output)
+        if error_output.strip():
+            self.logger.info("[%s] %s", idx, error_output)
         # self.spinner.stop()
     
 # =============================================================================
@@ -1004,11 +1185,12 @@ class Tab_SAM2(qtw.QWidget):
 # =============================================================================
 
     def handle_finished_sam(self, process, idx, exit_code, exit_status):
-        print(f"[{idx}] Process finished with exit code {exit_code}, status {exit_status}")
+        self.logger.info("[%s] Process finished with exit code %s, status %s",
+                          idx, exit_code, exit_status)
 
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
-        print('text:', text)
+        self.logger.info('text: %s', text)
         # process.kill()
         # sleep(3)
         try:
@@ -1033,18 +1215,41 @@ class Tab_SAM2(qtw.QWidget):
                     for idx in df.index:
                         i_c = df.loc[idx, 'stack_num']
                         beg = min(self.df_obj.loc[i_ref, 'frame_idx'])
+
+                        # 'mask' is now allocated at full dataset length (global
+                        # frame numbers), so each per-stack chunk is placed at
+                        # its own global offset: beg (object's start frame) +
+                        # i_c full stacks in. frame_num (rather than assuming a
+                        # full self.stack_num) makes this correct even for the
+                        # last chunk of an object, which is often shorter than
+                        # a full stack.
+                        frame_num = len(df.loc[idx, 'mask'])
+                        start = beg + i_c * self.stack_num
                         self.df_obj.at[i_ref, 'mask'][
-                            beg + (i_c)*self.stack_num : beg + (i_c+1)*self.stack_num] = df.loc[idx, 'mask']
+                            start : start + frame_num] = df.loc[idx, 'mask']
                     # toggling tracking icons
                     row_index = self.df_obj.index.get_loc(i_ref)
                     self.toggle_tree_icon(row_index, 'trk', True)
 
+                n_objects = len(np.unique(self.df_toSegment.idx_ref))
                 _ = gc.collect()
                 del self.df_toSegment
                 self.activate_3ded_widgets(True)
                 self.update_canvas()
+
+                duration = perf_counter() - self._track_tic
+                if self._track_failed:
+                    self.logger.error(
+                        'SAM2 tracking finished with errors for %d object(s) '
+                        'after %.1f s (see log above for details).',
+                        n_objects, duration)
+                else:
+                    self.logger.info(
+                        'SAM2 tracking completed successfully for %d object(s) in %.1f s.',
+                        n_objects, duration)
         except json.JSONDecodeError:
-            print("Could not decode result:", text)
+            self._track_failed = True
+            self.logger.error("Could not decode result: %s", text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',
                 f'Could not decode SAM2 output. Check console for details.\n'
                 f'Raw output (first 200 chars): {text[:200]}')
@@ -1055,11 +1260,103 @@ class Tab_SAM2(qtw.QWidget):
             while len(self.running_processes_sam) > 0:
                 idx, pr = self.running_processes_sam.popitem()
                 pr.kill()
-#%% image segmentation    
+#%% image segmentation
     def initiate_image_segmentation(self):
-        pass # TODO NIY
+        """Segment the currently-selected object on the current frame only,
+        using SAM2's single-image predictor (no cross-frame propagation) —
+        unlike Track, which runs SAM2's video predictor across every frame."""
+        try:
+            item_selected = self.tree_objects.currentItem()
+            obj_id = int(item_selected.text(1))
+        except Exception:
+            self.logger.warning('Single-image segmentation requested but no object is selected.')
+            qtw.QMessageBox.critical(self, 'No Object Selected',
+                'Select an object in the list before running single-image segmentation.')
+            return
 
-#%% 3DED   
+        imgNo = self.slider_imgNo.value()
+        frames = np.array(self.df_obj.loc[obj_id, 'frame_idx'])
+        toPlot = np.where(frames == imgNo)
+        points = np.array(self.df_obj.loc[obj_id, 'points'])[toPlot]
+        labels = np.array(self.df_obj.loc[obj_id, 'labels'])[toPlot]
+        if len(points) == 0:
+            self.logger.warning(
+                'Single-image segmentation requested for object %s but it has '
+                'no points on frame %d.', obj_id, imgNo)
+            qtw.QMessageBox.critical(self, 'No Points on This Frame',
+                f'Object {obj_id} has no annotated points on frame {imgNo}.\n'
+                'Hold Ctrl and click on the image to add at least one point '
+                'on this frame first.')
+            return
+
+        self.logger.info(
+            'Starting SAM2 single-image segmentation for object %s on frame '
+            '%d (%d point(s))...', obj_id, imgNo, len(points))
+        self.button_runSeg_img.setDisabled(True)
+
+        pathSave = self.lineEdit_dir_save.text()
+        if not os.path.isdir(pathSave):
+            os.mkdir(pathSave)
+        path_seg = os.path.join(pathSave, 'JPG Images', 'single_image_seg')
+        if os.path.isdir(path_seg):
+            shutil.rmtree(path_seg)
+        os.makedirs(path_seg)
+
+        seg_input = pd.Series({'image': self.imgs_8bit[imgNo], 'points': points, 'labels': labels})
+        seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
+
+        process_sam = QProcess(self)
+        process_sam.setProgram(sys.executable)
+        process_sam.setArguments(["worker_sam.py"] + ['image', path_seg, str(obj_id)])
+        process_sam.readyReadStandardError.connect(lambda:
+                            self.handle_error_sam(process_sam, obj_id))
+        process_sam.finished.connect(lambda exit_code, exit_status:
+                     self.handle_finished_image_sam(
+                     process_sam, obj_id, imgNo, exit_code, exit_status))
+        process_sam.errorOccurred.connect(lambda error:
+                     self.process_failed_image_sam(error, obj_id, imgNo))
+
+        if not hasattr(self, 'running_processes_sam'):
+            self.running_processes_sam = {}
+        key = f'img_{obj_id}_{imgNo}'
+        self.running_processes_sam[key] = process_sam
+        process_sam.start()
+
+    def process_failed_image_sam(self, error, obj_id, imgNo):
+        self.running_processes_sam.pop(f'img_{obj_id}_{imgNo}', None)
+        self.button_runSeg_img.setEnabled(True)
+        self.logger.error("[%s] Single-image segmentation QProcess error occurred: %s",
+                           obj_id, error)
+
+    def handle_finished_image_sam(self, process, obj_id, imgNo, exit_code, exit_status):
+        self.running_processes_sam.pop(f'img_{obj_id}_{imgNo}', None)
+        self.button_runSeg_img.setEnabled(True)
+        self.logger.info(
+            "[%s] Single-image segmentation process finished with exit code %s, status %s",
+            obj_id, exit_code, exit_status)
+
+        data = process.readAllStandardOutput()
+        text = bytes(data).decode("utf-8")
+        self.logger.info('text: %s', text)
+        try:
+            result = json.loads(text.strip())
+            fn_output = result["path"]
+            with np.load(fn_output) as f:
+                mask = f['mask']
+            if not isinstance(self.df_obj.at[obj_id, 'single_mask'], np.ndarray):
+                self.df_obj.at[obj_id, 'single_mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
+            self.df_obj.loc[obj_id, 'single_mask'][imgNo] = mask
+            self.logger.info(
+                'SAM2 single-image segmentation completed successfully for '
+                'object %s, frame %d.', obj_id, imgNo)
+            self.update_canvas(imgNo)
+        except json.JSONDecodeError:
+            self.logger.error("Could not decode SAM2 single-image segmentation result: %s", text)
+            qtw.QMessageBox.warning(self, 'SAM2 Error',
+                f'Could not decode SAM2 output. Check console for details.\n'
+                f'Raw output (first 200 chars): {text[:200]}')
+
+#%% 3DED
     def activate_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
@@ -1093,19 +1390,25 @@ class Tab_SAM2(qtw.QWidget):
         path_4d = self.lineEdit_dir_4d.text()
         # check path
         if path_4d == '': # no entry in 4D signals path
+            self.logger.error('3DED extraction cancelled: no 4D signals path entered.')
             qtw.QMessageBox.critical(self, 'No 4D path', 'Please enter a valid path for 4D signals.')
             return
-        fns_4d = glob(os.path.join(path_4d, '*')) 
+        fns_4d = glob(os.path.join(path_4d, '*'))
         if len(fns_4d) == 0:
+            self.logger.error('3DED extraction cancelled: no files found in %s', path_4d)
             qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
             return
         dtype = os.path.splitext(fns_4d[0])[1]
         
         # check if num of files with num of images
         if len(self.imgs) != len(fns_4d):
+            self.logger.warning(
+                'Number of 4D signal files (%d) does not match the number of '
+                'navigation images (%d).', len(fns_4d), len(self.imgs))
             reply = qtw.QMessageBox.question(self, 'Mismatch',
                    'No of 4D signals mismatches the number of images. Do you want to continue?',)
             if reply == qtw.QMessageBox.No:
+                self.logger.info('3DED extraction cancelled by user after mismatch warning.')
                 return
         # set detector size for tpx3
         if dtype in ['.tpx3', '.hdf5']: # TODO not good
@@ -1121,7 +1424,10 @@ class Tab_SAM2(qtw.QWidget):
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
         self.tic = perf_counter()
-        
+        self._3ded_failed = False
+        self.logger.info('Starting 3DED extraction for %d object(s), %d frame(s) total...',
+                          len(df), self.tomo_counter_total)
+
         self.tasks = deque()
         self.temp_dir = self.get_temp_dir()
         for idx in df.index:
@@ -1155,7 +1461,7 @@ class Tab_SAM2(qtw.QWidget):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
         os.makedirs(temp_dir, exist_ok=True)
-        print('temp dir', temp_dir)
+        self.logger.info('temp dir: %s', temp_dir)
         return temp_dir
 
     def save_mask_to_temp(self, temp_dir, mask_array, r_id, i_fr):
@@ -1191,7 +1497,8 @@ class Tab_SAM2(qtw.QWidget):
         process.start()
         
     def process_failed_3ded(self, error):
-        print("QProcess error occurred:", error)
+        self._3ded_failed = True
+        self.logger.error("QProcess error occurred: %s", error)
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
         qtw.QMessageBox.critical(self, 'Process Error',
@@ -1201,10 +1508,11 @@ class Tab_SAM2(qtw.QWidget):
     def handle_error_3ded(self, process):
         error_output = process.readAllStandardError().data().decode().strip()
         if error_output:
-            print("Worker ERROR:", error_output)
+            self._3ded_failed = True
+            self.logger.error("Worker ERROR: %s", error_output)
             qtw.QMessageBox.warning(self, 'Worker Error',
                 f'A worker process reported an error:\n{error_output[:500]}')
-    
+
     def handle_output_3ded(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
         try:
@@ -1213,10 +1521,10 @@ class Tab_SAM2(qtw.QWidget):
             # print(f"Failed to decode output: {e}")
             # print("Raw output was:", raw_output)
             return
-    
+
         task_info = self.process_sam_task_map.get(process, None)
         if task_info is None:
-            print("Unknown process")
+            self.logger.warning("Unknown process")
             return
     
         # *_ , (r_id, i_fr) = task_info
@@ -1238,8 +1546,15 @@ class Tab_SAM2(qtw.QWidget):
             self.toc = perf_counter()
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
-            time = self.toc - self.tic
-            print(f'Data Extraction Time: {time/60:.1f} min')
+            duration = self.toc - self.tic
+            if self._3ded_failed:
+                self.logger.error(
+                    '3DED extraction finished with errors after %.1f min '
+                    '(see log above for details).', duration / 60)
+            else:
+                self.logger.info(
+                    '3DED extraction completed successfully (%d frame(s)) in %.1f min.',
+                    self.tomo_counter_total, duration / 60)
             for idx in self.df_obj[self.df_obj.use == 1].index:
                 self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
             self.update_canvas()
@@ -1263,35 +1578,59 @@ class Tab_SAM2(qtw.QWidget):
     
 #%% Save Data
     def save_results(self):
+        tic = perf_counter()
+        try:
+            self._save_results_impl()
+        except Exception:
+            self.logger.exception('Failed to save results after %.1f s.', perf_counter() - tic)
+            return
+        self.logger.info(
+            'Results saved successfully in %.1f s (background clip/frame '
+            'generation for each object continues asynchronously).',
+            perf_counter() - tic)
+
+    def _save_results_impl(self):
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
             os.mkdir(path_save)
-        
+
         date = datetime.date.today()
         tim = datetime.datetime.now().strftime("%H-%M-%S")
-        
+
         path_save = os.path.join(path_save, f'{date}__{tim}')
         os.mkdir(path_save)
-        
+        self.logger.info('Saving results to %s...', path_save)
+
+        # Navigation signal: saved once at the top level (shared by every
+        # object) so "Load Saved Analysis" can restore it later, since it's
+        # otherwise never persisted anywhere.
+        if hasattr(self, 's_navSignal'):
+            self.s_navSignal.save(os.path.join(path_save, 'navigation_signal.hspy'),
+                                   overwrite=True)
+
         # tracking results, rois, dp
         for idx in self.df_obj.index:
             path_save_objID = os.path.join(path_save, f'roi No {idx}')
             os.mkdir(path_save_objID)
-            
+
             df = self.df_obj.loc[idx, ['use', 'idx', 'frame_idx', 'points', 'labels',
                                        'end']]
             df.to_json(os.path.join(path_save_objID, f'roi No {idx}.json'), orient='index', indent=4)
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
-                np.save(os.path.join(path_save_objID, 'rois.npy'), 
+                np.save(os.path.join(path_save_objID, 'rois.npy'),
                     self.df_obj.loc[idx, 'rois'])
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
-                np.save(os.path.join(path_save_objID, 'output_mask.npy'), 
+                np.save(os.path.join(path_save_objID, 'output_mask.npy'),
                         self.df_obj.loc[idx, 'mask'])
-            
+
             # write frames
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):
-                np.save(os.path.join(path_save_objID, '3DED.npy'), 
-                        self.df_obj.loc[idx, 'dp'])
+                dp = self.df_obj.loc[idx, 'dp']
+                np.save(os.path.join(path_save_objID, '3DED.npy'), dp)
+                # Also save as a hyperspy signal so "Load Saved Analysis" can
+                # restore the diffraction patterns via hs.load(...).
+                hs.signals.Signal2D(dp).save(
+                    os.path.join(path_save_objID, '3DED.hspy'), overwrite=True)
                 path_pets = os.path.join(path_save_objID, 'pets')
                 os.mkdir(path_pets)
                 fld_frames = os.path.join(path_pets, 'frames')
@@ -1328,8 +1667,19 @@ class Tab_SAM2(qtw.QWidget):
                     fps=self.spinbox_fps.value(), cmap='Grays_r')
                 self.threadpool.start(worker_tracking)
     
+    def cleanup(self):
+        """Release resources held by this tab. Called by MainWindow.closeEvent
+        so repeated runs of the app in the same console/kernel don't leave
+        threadpools, running subprocesses, and matplotlib figures alive."""
+        self.threadpool.clear()
+        self.stop_processes()  # kills any running_processes_sam
+        for process in getattr(self, 'running_processes', []):
+            process.kill()
+        plt.close(self.figure)
+
     def closeEvent(self,event):
         # empty_cache()
+        self.cleanup()
         gc.collect()
         event.accept()
         # app.exit()

@@ -6,14 +6,17 @@ Created on Thu Sep 19 15:55:17 2024
 """
 
 import os
+import json
 from glob import glob
 import sys
 from PyQt5.QtCore import (Qt, QThreadPool)
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.colors import SymLogNorm
+import matplotlib.pyplot as plt
 import numpy as np
 import py4DTomo.io_utils as io
+import hyperspy.api as hs
 from hyperspy.api import load
 import py4DTomo.tracking_utils as tr
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -24,6 +27,7 @@ import matplotlib.patches as patches
 import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General
+from .logging_utils import get_tab_logger
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -44,13 +48,21 @@ class Tab_Tracking_CV2(qtw.QWidget):
 # class Tab_Create_NavSignal(qtw.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
+        self.logger = get_tab_logger('Tab_Tracking_CV2')
+
+        # Recomputing constrained_layout's spacing solve on every redraw
+        # (canvas.draw()'s default behavior) is one of the most expensive
+        # parts of a redraw; update_canvas() freezes it after the first
+        # real draw, once subplot spacing has settled.
+        self._layout_frozen = False
+
         self.init_widget()
-        
-        
+
+
         # cluster = LocalCluster(n_workers=4, threads_per_worker=1, memory_limit='2GB')
         # client = Client(cluster)
-        
+
         # threadpool to use in the entire tab
         self.threadpool = QThreadPool()
         self.threadpool.setMaxThreadCount(max(1, os.cpu_count() - 2))
@@ -158,12 +170,19 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         # layout_loadSignal.addItem(spacer)
         
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
         layout_dir.addLayout(layout_loadSignal)
-        layout_loadSignal.addWidget(self.button_loadNavigation) # , alignment=Qt.AlignCenter
-        # self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
+        layout_load_buttons = qtw.QVBoxLayout()
+        layout_loadSignal.addLayout(layout_load_buttons)
+
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
         self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        layout_load_buttons.addWidget(self.button_loadNavigation)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
+
+        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved Analysis')
+        self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        layout_load_buttons.addWidget(self.button_loadSavedAnalysis)
+        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
         #%% feature handling
         layout_userInput_2 = qtw.QVBoxLayout()
         self.box_buttons = qtw.QGroupBox('Feature Handling')
@@ -285,7 +304,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
         
         
-        label_fps = qtw.QLabel('FPS')
+        label_fps = qtw.QLabel('Clip FPS')
         layout_threadNo.addWidget(label_fps)
         self.spinbox_fps = qtw.QSpinBox(self)
         layout_threadNo.addWidget(self.spinbox_fps)
@@ -356,8 +375,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
 
-        self.ax_track.set_xlabel('Select the reference ROI and\nDraw ROIinROI on this plot', fontsize=7)
-        self.ax_nav.set_xlabel('Use Left Click to add new ROI and\nRight Click to add init to an existing ROI', fontsize=7)
+        self.ax_track.set_xlabel(
+            'Select the reference ROI and Hold "ctrl" + Drag to draw ROIinROI\n'
+            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
+        self.ax_nav.set_xlabel(
+            'Hold "ctrl" + Left Click+Drag => New ROI\n'
+            'Hold "ctrl" + Right Click => Add init to existing ROI\n'
+            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
         self.ax_nav.xaxis.label.set_visible(True)
         self.ax_track.xaxis.label.set_visible(True)
         
@@ -378,6 +402,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        self.canvas.mpl_connect('scroll_event', self.on_scroll)
         
         self.axes = [self.ax_nav, self.ax_track, self.ax_dp, self.ax_mask]
         self.backgrounds = {}
@@ -403,7 +428,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_slider.addWidget(self.slider_imgNo)
 
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
-        layout_canvas.addWidget(NavigationToolbar(self.canvas, self))
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        layout_canvas.addWidget(self.toolbar)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -414,6 +440,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (Ctrl+O)')
+        self.button_loadSavedAnalysis.setToolTip(
+            'Load a previously saved analysis folder: navigation signal, '
+            'tracked ROIs, and extracted diffraction patterns (Ctrl+Shift+O)')
         self.button_track.setToolTip('Track all enabled ROIs across frames (Ctrl+T)')
         self.button_3ded.setToolTip('Extract 3D electron diffraction patterns (Ctrl+E)')
         self.button_save_results.setToolTip('Save tracking and 3DED results to disk (Ctrl+S)')
@@ -426,6 +455,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         # keyboard shortcuts
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+Shift+O'), self, self.button_loadSavedAnalysis.click)
         QShortcut(QKeySequence('Ctrl+T'), self, self.button_track.click)
         QShortcut(QKeySequence('Ctrl+E'), self, self.button_3ded.click)
         QShortcut(QKeySequence('Ctrl+S'), self, self.button_save_results.click)
@@ -455,16 +485,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def load_navSignal(self):
         def get_signal(fn):
             return load(fn)
-        
+
+        fn = self.lineEdit_dir_navSignal.text()
+        if not os.path.isfile(fn):
+            self.logger.error('Navigation signal file not found: %s', fn)
+            qtw.QMessageBox.critical(self, 'File Not Found',
+                f'Cannot find navigation signal file:\n{fn}')
+            return
+
         self.load_spinner()
         gc.collect()
         #TODO delete the previous batch
         if hasattr(self, 'rois_tracked'):
             self.reset_rois()
             self.disable_3ded_widgets(True)
-        
+
         self.reset_data()
-        fn = self.lineEdit_dir_navSignal.text()
+        self.logger.info('Loading navigation signal from %s...', fn)
         # self.s = load(fn)
         worker = WorkerThread_General(get_signal, 0, fn)
         worker.signals.results.connect(self.initiate_processing)
@@ -511,16 +548,123 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
-        
+
+        # Reset the view to the newly loaded data's full extent (in case the
+        # user had already zoomed in on a previous signal, which disables
+        # autoscale), then re-seed the toolbar's view stack so its "Home"
+        # button resets to *this* view instead of doing nothing (it does
+        # nothing until something pushes at least one view onto its stack,
+        # which our own scroll-wheel zoom deliberately bypasses).
+        # ax_mask is deliberately excluded here: unlike nav/track, it shows a
+        # per-ROI *cropped* image whose size varies with each ROI, and whose
+        # view is kept in sync with that in update_ax_mask() instead.
+        for ax in (self.ax_nav, self.ax_track):
+            ax.set_xlim(0, shape_y)
+            ax.set_ylim(shape_x, 0)
+        self.toolbar.update()
+        self.toolbar.push_current()
+
         self.update_canvas(0)
         self.canvas.draw()
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
-        print('No. of Images:', len(self.nav_imgs))
+        self.logger.info('No. of Images: %s', len(self.nav_imgs))
         
         self.button_reset_rois.setEnabled(True)
         # self.button_cur_roi.setEnabled(True)
         self.button_track.setEnabled(True)
-    
+
+    def load_saved_analysis(self):
+        """Restore a previously saved analysis folder (produced by
+        save_results): the navigation signal, per-ROI tracking (init points/
+        out_rois/mask), and any extracted diffraction patterns."""
+        path = qtw.QFileDialog.getExistingDirectory(
+            self, "Select Saved Analysis Folder", self.lineEdit_dir_save.text())
+        if not path:
+            return
+        fn_nav = os.path.join(path, 'navigation_signal.hspy')
+        if not os.path.isfile(fn_nav):
+            qtw.QMessageBox.critical(self, 'Navigation Signal Not Found',
+                f'Cannot find navigation_signal.hspy in:\n{path}\n\n'
+                'This folder does not look like a saved analysis (or it was '
+                'saved before this feature was added).')
+            return
+
+        self.load_spinner()
+        gc.collect()
+        if hasattr(self, 'rois_tracked'):
+            self.reset_rois()
+            self.disable_3ded_widgets(True)
+        self.reset_data()
+        self.logger.info('Loading saved analysis from %s...', path)
+
+        worker = WorkerThread_General(self._load_saved_analysis_worker, 0, path, fn_nav)
+        worker.signals.results.connect(self._on_saved_analysis_loaded)
+        self.threadpool.start(worker)
+
+    @staticmethod
+    def _load_npy_or_none(fn):
+        # out_rois/mask are saved unconditionally even when still None (as a
+        # pickled 0-d object array), so both "file missing" and "file holds
+        # a pickled None" need to come back as None here.
+        if not os.path.isfile(fn):
+            return None
+        arr = np.load(fn, allow_pickle=True)
+        if arr.ndim == 0 and arr.item() is None:
+            return None
+        return arr
+
+    def _load_saved_analysis_worker(self, path, fn_nav):
+        s = load(fn_nav)
+
+        rois = []
+        for name in sorted(os.listdir(path)):
+            roi_dir = os.path.join(path, name)
+            if not (os.path.isdir(roi_dir) and name.startswith('roi No ')):
+                continue
+            fn_json = os.path.join(roi_dir, f'{name}.json')
+            if not os.path.isfile(fn_json):
+                continue
+            idx = int(name[len('roi No '):])
+            with open(fn_json) as f:
+                row = json.load(f)
+
+            out_rois = self._load_npy_or_none(os.path.join(roi_dir, 'output_rois.npy'))
+            mask = self._load_npy_or_none(os.path.join(roi_dir, 'output_mask.npy'))
+
+            dp = None
+            fn_dp_hspy = os.path.join(roi_dir, '3DED.hspy')
+            fn_dp_npy = os.path.join(roi_dir, '3DED.npy')
+            if os.path.isfile(fn_dp_hspy):
+                dp = load(fn_dp_hspy).data
+            elif os.path.isfile(fn_dp_npy):
+                dp = np.load(fn_dp_npy)
+
+            rois.append({
+                'idx': idx, 'use': row['use'], 'init': row['init'],
+                'in_rois': row['in_rois'], 'end': row['end'], 'ref': row['ref'],
+                'out_rois': out_rois, 'mask': mask, 'dp': dp,
+            })
+        return s, rois, path
+
+    def _on_saved_analysis_loaded(self, result, index):
+        s, rois, path = result
+        self.initiate_processing(s, index)
+
+        for roi in rois:
+            idx = roi['idx']
+            self.df_rois.loc[idx] = [roi['use'], roi['init'], roi['in_rois'], roi['end'],
+                                      roi['ref'], roi['out_rois'], roi['mask'], roi['dp']]
+            self.add_item_tree(idx, roi['init'], roi['end'], roi['ref'], roi['use'])
+            row_index = self.df_rois.index.get_loc(idx)
+            if roi['out_rois'] is not None:
+                self.toggle_tree_icon(row_index, 'trk', True)
+            if roi['dp'] is not None:
+                self.toggle_tree_icon(row_index, 'ext', True)
+
+        self.disable_3ded_widgets(False)
+        self.update_canvas(0)
+        self.logger.info('Loaded saved analysis from %s (%d ROI(s)).', path, len(rois))
+
     def disable_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
@@ -551,11 +695,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
             new_images[i] = io.gaussian_blur(img, kernelSize)
         self.nav_imgs = new_images
         self.update_canvas()
-        
+        self.logger.info('Applied blur (kernel size %d) to navigation images.', kernelSize)
+
     def reset_rois(self):
         self.tree_objects.clear()
         self.empty_main_dataframe()
         self.update_canvas()
+        self.logger.info('Reset all ROIs.')
 #%% canvas functions    
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
@@ -603,17 +749,27 @@ class Tab_Tracking_CV2(qtw.QWidget):
                     self.update_ax(self.img_zero, 'dp', self.ax_dp)
             else:
                 self.update_ax(self.img_zero, 'dp', self.ax_dp)
-                
+
+        # A single redraw here (instead of one per update_ax/draw_rois_*/
+        # update_ax_mask call above) avoids redundantly re-rendering the
+        # whole figure up to ~4 times per frame change. constrained_layout's
+        # spacing solve is also one of the most expensive parts of a redraw
+        # and doesn't need to repeat once subplot spacing has settled.
+        if not self._layout_frozen:
+            self.canvas.draw()
+            self.figure.set_layout_engine('none')
+            self._layout_frozen = True
+        else:
+            self.canvas.draw_idle()
+
     def update_ax(self, img, img_disp, ax, title=None,):
-        # self.canvas.restore_region(self.canvas.copy_from_bbox(ax.bbox))
+        # Rendering is deferred to the single canvas.draw()/draw_idle() call
+        # at the end of update_canvas(), rather than a redraw per axis here.
         self.img_display[img_disp].set_data(img)
         ax.set_title(title)
         self.img_display[img_disp].set_clim(vmin=img.min(), vmax=img.max())
-        # self.canvas.blit(ax.bbox)
-        self.canvas.draw_idle()
-    
+
     def draw_rois_in(self, imgNo):
-        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_nav.bbox))
         if len(self.patches_axNav) > 0:
             for p in self.patches_axNav:
                 p.remove()
@@ -638,11 +794,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
                     t = self.ax_nav.text(pos[0], pos[1], str(i), horizontalalignment='center', 
                                          verticalalignment='center', color='red', fontsize=font_size)
                     self.patches_axNav.append(t)
-        self.canvas.blit(self.ax_nav.bbox)
-        # self.canvas.draw_idle()
-                
+        # Rendering is deferred to the single canvas.draw()/draw_idle() call
+        # at the end of update_canvas(), rather than a blit here.
+
     def draw_rois_out(self, imgNo):
-        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_track.bbox))
         if len(self.patches_axTrack) > 0:
             for p in self.patches_axTrack:
                 p.remove()
@@ -670,10 +825,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
                         self.patches_axTrack.append(t)
                 except:
                     pass
-        self.canvas.blit(self.ax_track.bbox)
-            
+        # Rendering is deferred to the single canvas.draw()/draw_idle() call
+        # at the end of update_canvas(), rather than a blit here.
+
     def update_ax_mask(self, img_roi, img_mask):
-        self.canvas.restore_region(self.canvas.copy_from_bbox(self.ax_mask.bbox))
         shape_x, shape_y = img_mask.shape
         self.img_display['img_mask'].set_data(img_roi)
         try:
@@ -685,7 +840,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['mask'].set_data(img_mask)
         self.img_display['mask'].set_clim(vmin=0, vmax=1)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
-        self.canvas.blit(self.ax_mask.bbox)
+        # The ROI crop's size varies between ROIs/selections, so (unlike
+        # nav/track) the view here is reset to fit it every single time,
+        # rather than only once at load — otherwise it stays at whatever
+        # size an earlier, differently-sized ROI last used.
+        self.ax_mask.set_xlim(0, shape_y)
+        self.ax_mask.set_ylim(shape_x, 0)
+        # Rendering is deferred to the single canvas.draw()/draw_idle() call
+        # at the end of update_canvas(), rather than a blit here.
         # self.canvas.draw_idle()
         
     def update_scalebar(self, which):
@@ -776,6 +938,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         return img_mask, img_cut
 
     def on_press(self, event):
+        if event.inaxes not in (self.ax_nav, self.ax_track) or 'ctrl' not in event.modifiers:
+            # Plain click/drag is reserved for the navigation toolbar's
+            # Pan/Zoom tool (and the scroll-wheel zoom) so images can be
+            # zoomed into; hold "ctrl" to draw/edit a ROI instead.
+            self.press = None
+            return
         # Mouse press event: record the starting point
         self.press = (event.xdata, event.ydata)
         if event.inaxes == self.ax_nav:
@@ -839,7 +1007,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 ind = int(item.text(1))
             except:
                 qtw.QMessageBox.critical(self, 'No Ref ROI', 'There is no reference ROI selected for ROI in ROI.')
-                print('First select a reference ROI')
+                self.logger.warning('First select a reference ROI')
                 self.press = None
                 self.rect_roiInRoi = None
                 return
@@ -967,23 +1135,40 @@ class Tab_Tracking_CV2(qtw.QWidget):
         
         self.press = None
         self.update_canvas(imgNo)
+
+    def on_scroll(self, event):
+        """Zoom the axes under the cursor in/out on the scroll wheel,
+        centered on the cursor position."""
+        ax = event.inaxes
+        if ax is None or event.xdata is None or event.ydata is None:
+            return
+        base_scale = 1.2
+        scale_factor = 1 / base_scale if event.button == 'up' else base_scale
+        cur_xlim = ax.get_xlim()
+        cur_ylim = ax.get_ylim()
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+        relx = (cur_xlim[1] - event.xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
+        ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
+        ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
+        self.canvas.draw_idle()
 #%%
-    def add_item_tree(self, idx, init=[0], end=None, ref=None):
+    def add_item_tree(self, idx, init=[0], end=None, ref=None, use=1):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
         item = qtw.QTreeWidgetItem()
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        # item.setCheckState(cols['use'], Qt.Unchecked)
-        item.setCheckState(cols['use'], Qt.Checked)
+        item.setCheckState(cols['use'], Qt.Checked if use else Qt.Unchecked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['init'], f"{init}")
         self.tree_objects.itemChanged.connect(self.on_item_check_changed)
-        
+
         self.tree_objects.addTopLevelItem(item)
 
         # end frame
         spinbox = qtw.QSpinBox()
         spinbox.setRange(0, len(self.nav_imgs))
-        spinbox.setValue(len(self.nav_imgs))
+        spinbox.setValue(end if end is not None else len(self.nav_imgs))
         self.tree_objects.setItemWidget(item, cols['end'], spinbox)
         spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
         # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
@@ -1013,10 +1198,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         def delete_row():
             index = self.tree_objects.indexOfTopLevelItem(item)
             # print(index)
+            deleted_idx = self.df_rois.index[index]
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
             # print(self.df_rois)
             self.update_canvas()
+            self.logger.info('Deleted ROI %s.', deleted_idx)
 
         delete_button.clicked.connect(delete_row)
 
@@ -1062,7 +1249,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             item = self.tree_objects.topLevelItem(i)
             if item.checkState(0) == Qt.Checked:
                 checked.append(item.text(1))
-        print("Checked Items:", checked)
+        self.logger.info("Checked Items: %s", checked)
     
     def load_spinner(self,):
         # Create spinner as a floating overlay on the main widget
@@ -1098,20 +1285,31 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
         self.canvas.draw()
+        self.logger.info('Auto-detector added %d object(s) on frame %d.',
+                          len(objects), self.imgNo_autoDet)
             
     def track_rois(self):
-        self.load_spinner()
         if len(self.df_rois) == 0:
+            self.logger.warning('Track requested but no ROIs have been drawn.')
+            qtw.QMessageBox.warning(self, 'No ROIs',
+                'Draw at least one ROI (hold Ctrl and drag on the navigation image) before tracking.')
             return
         df = self.df_rois[self.df_rois.use == 1]
         if len(df) == 0:
+            self.logger.warning('Track requested but no ROIs are enabled ("Use" checkbox).')
+            qtw.QMessageBox.warning(self, 'No ROIs Enabled',
+                'Check the "Use" box for at least one ROI before tracking.')
             return
-        
+
+        self.load_spinner()
         self.tracking_counter = 0
         self.tracking_finished = False
         tracking_method = self.combo_trackMethod.currentText()
 
         self.tracking_counter_end = len(df.index)
+        self._track_tic = perf_counter()
+        self.logger.info('Starting CV2 tracking (%s) for %d ROI(s)...',
+                          tracking_method, self.tracking_counter_end)
         for ind in df.index:
             init = np.array(df.loc[ind, 'init'])
             beg = min(init)
@@ -1175,7 +1373,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.update_canvas(0)
             self.canvas.draw()
             self.spinner.stop()
-     
+
+            duration = perf_counter() - self._track_tic
+            self.logger.info(
+                'CV2 tracking completed successfully for %d ROI(s) in %.1f s.',
+                self.tracking_counter_end, duration)
+
     def extract_3ded(self):
         self.load_spinner()
         
@@ -1195,10 +1398,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 f'No files found in:\n{path_4d}\n\nVerify the path and try again.')
             return
         if len(self.nav_imgs) != len(fns_4d):
+            self.logger.warning(
+                'No. of 4D signal files (%d) does not match no. of navigation '
+                'images (%d).', len(fns_4d), len(self.nav_imgs))
             reply = qtw.QMessageBox.question(self, 'Mismatch',
                    'No. of 4D signals mismatches the number of images. Do you want to continue?',)
             if reply == qtw.QMessageBox.No:
-                self.spinner.stop()   
+                self.spinner.stop()
+                self.logger.info('3DED extraction cancelled by user (frame-count mismatch).')
                 return
 
         dtype = os.path.splitext(fns_4d[0])[-1]
@@ -1221,13 +1428,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
         df = self.df_rois[self.df_rois['use'] == 1]
                 
         self.tic = perf_counter()
-        
+        self._3ded_failed = False
+
         self.tomo_counter = 0
         self.tasks = deque()
         self.temp_dir = self.get_temp_dir()
         lengths = df.end - [min(df.init[idx]) for idx in df.index]
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
+        self.logger.info('Starting 3DED extraction for %d ROI(s), %d frame(s) total...',
+                          len(df), self.tomo_counter_total)
         for idx in df.index:
             self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x, 
                                                    shape_d_y), dtype='uint32')
@@ -1257,7 +1467,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
         os.makedirs(temp_dir, exist_ok=True)
-        print('temp directory', temp_dir)
+        self.logger.info('temp directory: %s', temp_dir)
         return temp_dir
     
 # =============================================================================
@@ -1288,7 +1498,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         process.start()
         
     def process_failed(self, error):
-        print("QProcess error occurred:", error)
+        self._3ded_failed = True
+        self.logger.error("QProcess error occurred: %s", error)
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
         self.spinner.stop()
@@ -1299,10 +1510,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def handle_error(self, process):
         error_output = process.readAllStandardError().data().decode().strip()
         if error_output:
-            print("Worker ERROR:", error_output)
+            self._3ded_failed = True
+            self.logger.error("Worker ERROR: %s", error_output)
             qtw.QMessageBox.warning(self, 'Worker Error',
                 f'A worker process reported an error:\n{error_output[:500]}')
-    
+
     def handle_output(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
         try:
@@ -1311,10 +1523,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             # print(f"Failed to decode output: {e}")
             # print("Raw output was:", raw_output)
             return
-    
+
         task_info = self.process_task_map.get(process, None)
         if task_info is None:
-            print("Unknown process")
+            self.logger.warning("Unknown process")
             return
     
         # *_ , (r_id, i_fr) = task_info
@@ -1336,8 +1548,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.toc = perf_counter()
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
-            time = self.toc - self.tic
-            print(f'Data Extraction Time: {time/60:.1f} min')
+            duration = self.toc - self.tic
+            if self._3ded_failed:
+                self.logger.error(
+                    '3DED extraction finished with errors after %.1f min '
+                    '(see log above for details).', duration / 60)
+            else:
+                self.logger.info(
+                    '3DED extraction completed successfully (%d frame(s)) in %.1f min.',
+                    self.tomo_counter_total, duration / 60)
             self.update_canvas()
             self.spinner.stop()
             for idx in self.df_rois[self.df_rois.use == 1].index:
@@ -1358,16 +1577,35 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.update_canvas()
     
     def save_results(self):
+        tic = perf_counter()
+        try:
+            self._save_results_impl()
+        except Exception:
+            self.logger.exception('Failed to save results after %.1f s.', perf_counter() - tic)
+            return
+        self.logger.info(
+            'Results saved successfully in %.1f s (background clip/frame '
+            'generation for each ROI continues asynchronously).',
+            perf_counter() - tic)
+
+    def _save_results_impl(self):
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
             os.mkdir(path_save)
-        
+
         fld_1 = datetime.date.today()
         fld_2 = datetime.datetime.now().strftime("%H-%M-%S")
-        
+
         path_save = os.path.join(path_save, f'{fld_1}__{fld_2}')
         os.mkdir(path_save)
-        
+        self.logger.info('Saving results to %s...', path_save)
+
+        # Navigation signal: saved once at the top level (shared by every
+        # ROI) so "Load Saved Analysis" can restore it later, since it's
+        # otherwise never persisted anywhere.
+        if hasattr(self, 's'):
+            self.s.save(os.path.join(path_save, 'navigation_signal.hspy'), overwrite=True)
+
         # tracking results, rois, dp
         for idx in self.df_rois.index:
             path_save_roi = os.path.join(path_save, f'roi No {idx}')
@@ -1379,11 +1617,15 @@ class Tab_Tracking_CV2(qtw.QWidget):
             df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
-            
+
             # write frames (only if extraction was run for this roi)
             dp = self.df_rois.loc[idx, 'dp'] if 'dp' in self.df_rois.columns else None
             if isinstance(dp, np.ndarray):
                 np.save(os.path.join(path_save_roi, '3DED.npy'), dp)
+                # Also save as a hyperspy signal so "Load Saved Analysis" can
+                # restore the diffraction patterns via hs.load(...).
+                hs.signals.Signal2D(dp).save(
+                    os.path.join(path_save_roi, '3DED.hspy'), overwrite=True)
                 fld_frames = os.path.join(path_save_roi, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp)
                 self.threadpool.start(worker_frames)
@@ -1412,10 +1654,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.threadpool.start(worker_clip_tr_ref)
             
     def kill_running_process(self):
+        # self.running_processes is only created once extract_3ded() has
+        # run at least once, so this must tolerate being called (e.g. from
+        # cleanup() on window close) before that ever happened.
+        if not hasattr(self, 'running_processes'):
+            return
         for process in self.running_processes:
             process.kill()  # Forcefully terminates the subprocess
             process.deleteLater()
         self.running_processes.clear()
+
+    def cleanup(self):
+        """Release resources held by this tab. Called by MainWindow.closeEvent
+        so repeated runs of the app in the same console/kernel don't leave
+        threadpools, running subprocesses, and matplotlib figures alive."""
+        self.threadpool.clear()
+        self.kill_running_process()
+        plt.close(self.figure)
 
 # =============================================================================
 # if __name__ == "__main__":

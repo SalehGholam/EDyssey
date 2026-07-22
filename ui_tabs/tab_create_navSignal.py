@@ -7,22 +7,26 @@ Created on Fri Sep 13 13:53:46 2024
 
 import os
 import sys
+from time import perf_counter
 from collections import deque
 from PyQt5.QtCore import Qt, QProcess
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QIntValidator, QDoubleValidator
 import numpy as np
 import gc
+import matplotlib.pyplot as plt
 import py4DTomo.io_utils as io
 import hyperspy.api as hs
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from matplotlib_scalebar.scalebar import ScaleBar
+from .logging_utils import get_tab_logger
 #%% class
 class Tab_Create_NavSignal(qtw.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.logger = get_tab_logger('Tab_Create_NavSignal')
         self.init_widget()
 
     def init_widget(self):
@@ -170,7 +174,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
 
         layout_fps = qtw.QVBoxLayout()
         layout_calculate_buttons.addLayout(layout_fps)
-        label_fps = qtw.QLabel('FPS')
+        label_fps = qtw.QLabel('Clip FPS')
         label_fps.setAlignment(Qt.AlignCenter)
         self.spinbox_fps = qtw.QSpinBox()
         self.spinbox_fps.setRange(1, 60)
@@ -290,6 +294,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         dtype = np.array(dtype)
         dtype = np.unique(dtype)
         if len(dtype) != 1:
+            self.logger.warning('Mixed file types found in directory: %s', list(dtype))
             qtw.QMessageBox.warning(self, 'Mixed File Types',
                 f'Files with different extensions found in directory: {list(dtype)}\n'
                 'Select a single file type and try again.')
@@ -305,6 +310,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             except:
                 scanSize = None
         if dtype == '.tpx3' and scanSize is None:
+            self.logger.warning('Cannot start: scan size is required for .tpx3 files.')
             self.message_box_tpx3()
             return
 
@@ -319,6 +325,9 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.nav_imgs = [None] * len(fns)
         self.nav_counter = 0
         self.nav_counter_total = len(fns)
+        self._nav_tic = perf_counter()
+        self._nav_failed = False
+        self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
         self.tasks = deque()
         for i, fn in enumerate(fns):
             self.tasks.append((fn, dtype, scanSize, dwellTime, i))
@@ -354,6 +363,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
     def handle_error_nav(self, process):
         err = process.readAllStandardError().data().decode().strip()
         if err:
+            self._nav_failed = True
+            self.logger.error('Worker ERROR: %s', err)
             qtw.QMessageBox.warning(self, 'Worker Error', err[:500])
 
     def handle_finished_nav(self, process):
@@ -368,13 +379,17 @@ class Tab_Create_NavSignal(qtw.QWidget):
             nav_img, i_index = pickle.loads(base64.b64decode(raw))
             self.nav_imgs[i_index] = nav_img
         except Exception as e:
-            print(f'Failed to decode nav image for index {i_index}: {e}')
+            self.logger.error('Failed to decode nav image for index %s: %s', i_index, e)
         process.deleteLater()
         self.nav_counter += 1
         self.update_progress_bar(self.nav_counter, self.nav_counter_total)
         if self.nav_counter >= self.nav_counter_total:
+            duration = perf_counter() - self._nav_tic
             valid = [img for img in self.nav_imgs if img is not None]
             if not valid:
+                self.logger.error(
+                    'Navigation signal creation failed: all worker processes '
+                    'failed to produce output (after %.1f s).', duration)
                 qtw.QMessageBox.critical(self, 'No Results', 'All worker processes failed to produce output.')
                 self.button_stop.setDisabled(True)
                 return
@@ -382,11 +397,21 @@ class Tab_Create_NavSignal(qtw.QWidget):
             self.update_canvas(0)
             self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
             self.button_stop.setDisabled(True)
+            if self._nav_failed or len(valid) < self.nav_counter_total:
+                self.logger.error(
+                    'Navigation signal creation finished with errors: %d/%d file(s) '
+                    'succeeded in %.1f s.', len(valid), self.nav_counter_total, duration)
+            else:
+                self.logger.info(
+                    'Navigation signal creation completed successfully for %d file(s) in %.1f s.',
+                    self.nav_counter_total, duration)
             self.save_results()
         else:
             self.launch_next_nav_task()
 
     def process_failed_nav(self, error):
+        self._nav_failed = True
+        self.logger.error("QProcess error occurred: %s", error)
         self.button_stop.setDisabled(True)
         qtw.QMessageBox.critical(self, 'Process Error',
             f'A worker process failed to start (error code {error}).\n'
@@ -400,7 +425,28 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.process_task_map.clear()
         self.button_stop.setDisabled(True)
 
+    def cleanup(self):
+        """Release resources held by this tab. Called by MainWindow.closeEvent
+        so repeated runs of the app in the same console/kernel don't leave
+        running subprocesses and matplotlib figures alive."""
+        if hasattr(self, 'running_processes'):
+            for p in list(self.running_processes):
+                p.kill()
+        plt.close(self.figure)
+
     def save_results(self):
+        tic = perf_counter()
+        try:
+            self._save_results_impl()
+        except Exception:
+            self.logger.exception('Failed to save navigation signal after %.1f s.',
+                                   perf_counter() - tic)
+            return
+        self.logger.info(
+            'Navigation signal saved successfully in %.1f s (background frame/clip '
+            'generation continues asynchronously).', perf_counter() - tic)
+
+    def _save_results_impl(self):
         from .worker_thread import WorkerThread_General
         from PyQt5.QtCore import QThreadPool
         threadpool = QThreadPool.globalInstance()

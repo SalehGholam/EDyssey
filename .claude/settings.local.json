@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python -m:*)",
+      "Bash(python -c:*)",
+      "Bash(git:*)",
+      "Bash(pip:*)",
+      "Bash(echo:*)",
+      "Bash(Get-ChildItem:*)",
+      "Bash(Select-Object:*)",
+      "Bash(Sort-Object:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(Remove-Item -Recurse:*)",
+      "Bash(sudo:*)",
+      "Bash(del /s:*)"
+    ]
+  }
+}

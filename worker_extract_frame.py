@@ -208,9 +208,16 @@ def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), **kwargs):
     s.rechunk(chunks)
     x,y,w,h = roi
     s = s.inav[x:x+w, y:y+h].data
+    # `mask` covers the full scan, but `s` was just cropped to the ROI
+    # window above, so the mask must be cropped to that same window before
+    # it's used to index s - otherwise the flattened mask indices refer to
+    # scan positions outside the (smaller) cropped array, either raising an
+    # out-of-bounds error or, worse, silently selecting the wrong scan
+    # positions. Mirrors the equivalent crop in load_tpx3() above.
+    mask_crop = mask[y:y+h, x:x+w]
     s = s.reshape(-1, *s.shape[2:])
-    dp = s[np.where(mask.flatten() == 1)[0]].sum(axis=0)
-    dp = dp.compute() 
+    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+    dp = dp.compute()
     return dp
 
 def get_scan_size_mib_hdr(fn_hdr):

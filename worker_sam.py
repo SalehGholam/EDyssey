@@ -78,25 +78,41 @@ if __name__ == "__main__":
     
 
     device = check_torch_device()
-    if typ == 'image': #TODO
-        path_img, input_point, input_label = sys.argv
-        image = np.load(path_img)
+    if typ == 'image':
+        # Single-frame segmentation (no cross-frame propagation): the GUI
+        # writes the frame + its point prompts for this tab.SAM2 tab's
+        # currently-selected object/frame to seg_input.pkl, mirroring the
+        # 'video' branch's input convention below.
+        df = pd.read_pickle(os.path.join(path_seg_input, 'seg_input.pkl'))
+        image = df['image']
+        if image.ndim == 2:
+            # SAM2ImagePredictor expects an RGB image; the 'video' branch
+            # gets this for free since SAM2 loads JPEG frames as RGB, but a
+            # single grayscale nav-image frame needs converting explicitly.
+            image = np.stack([image] * 3, axis=-1)
+        point_coords = np.array(df['points'], dtype=np.float32)
+        point_labels = np.array(df['labels'], dtype=np.int32)
+
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         predictor = SAM2ImagePredictor(sam2_model)
         predictor.set_image(image)
-        
-        masks = []
-        for point, label in zip(input_point, input_label):
-            point = np.array(point)
-            label = np.array(label)
-            mask, score, logit = predictor.predict(point_coords=point,
-                                                   point_labels=label,
-                                                   multimask_output=False,)
-            masks.append(mask)
-            
-        masks = np.array(masks)
-        
-        
+        # All points/labels are passed together in a single predict() call
+        # (positive and negative jointly resolve one mask), not one call per
+        # point - multimask_output=False returns SAM2's single best-guess
+        # mask instead of the 3 ambiguity-resolving candidates.
+        masks, scores, logits = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=False,
+        )
+        mask = masks[0].astype(bool)
+
+        fn_save = os.path.join(path_seg_input, 'mask_single')
+        np.savez_compressed(fn_save, mask=mask, score=float(scores[0]))
+
+        result = {'path': fn_save + '.npz', 'idx': idx}
+        print(json.dumps(result))
+
     elif typ == 'video':
         df = pd.read_pickle(os.path.join(path_seg_input, 'seg_input.pkl'))
         predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)

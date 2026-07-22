@@ -11,20 +11,40 @@ import sys
 file_path = os.path.abspath(__file__)
 fld_path = os.path.dirname(file_path)
 os.chdir(fld_path)
-sys.path.append(os.path.join(fld_path, 'py4DTomo\io_utils'))
+_path_io_utils = os.path.join(fld_path, r'py4DTomo\io_utils')
+if _path_io_utils not in sys.path:
+    sys.path.append(_path_io_utils)
 import gc
+import html
+import logging
 import PyQt5.QtWidgets as qtw
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
+from ui_tabs.logging_utils import get_qt_log_handler, install_excepthook
 from PyQt5.QtGui import QIcon
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
+
+_LEVEL_COLORS = {
+    logging.ERROR: '#ff6b6b',
+    logging.WARNING: '#e0c341',
+}
 
 #%% window
 class MainWindow(qtw.QMainWindow):
     def __init__(self):
         super().__init__()
-    
+
+        # Deliberately NOT setting Qt.WA_DeleteOnClose here: verified by
+        # hand that it makes Tab_Tracking_CV2 (matplotlib canvas + widget
+        # tree) crash the interpreter as soon as a *second* MainWindow is
+        # constructed after the first was actually destroyed (reproduced
+        # offscreen, bisected to Qt/matplotlib teardown, independent of any
+        # of this file's own cleanup code). So a closed/abandoned window
+        # still only hides its Qt C++ object rather than destroying it —
+        # closeEvent below does the parts of cleanup that ARE safe without
+        # forcing destruction (dropping the log-signal connection, clearing
+        # thread pools, killing subprocesses).
         self.init_ui()
     
     def init_ui(self):
@@ -43,11 +63,28 @@ class MainWindow(qtw.QMainWindow):
         self.tabs.addTab(self.tab_sam2, 'SAM2 Seg.')
         
         file_path = os.path.split(os.path.abspath(__file__))[0]
-        fn_icon = os.path.join(file_path, 'ui_tabs', 
+        fn_icon = os.path.join(file_path, 'ui_tabs',
                                'logo', 'Scream_logo.ico')
         self.setWindowIcon(QIcon(fn_icon))
-        self.setCentralWidget(self.tabs)
-        self.statusBar().showMessage('Ready')
+
+        central = qtw.QWidget()
+        central_layout = qtw.QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.tabs)
+
+        self.console = qtw.QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setMaximumBlockCount(2000)
+        self.console.setFixedHeight(140)
+        self.console.setStyleSheet(
+            "background-color: #1e1e1e; color: #d0d0d0;"
+            "font-family: Consolas, monospace; font-size: 9pt;"
+            "border-top: 1px solid #555;")
+        central_layout.addWidget(self.console)
+
+        self.setCentralWidget(central)
+        get_qt_log_handler().log_emitted.connect(self.append_log)
         self.setStyleSheet("""
             QMainWindow, QWidget {
                 background-color: #2b2b2b;
@@ -113,13 +150,75 @@ class MainWindow(qtw.QMainWindow):
             QToolButton:hover { background-color: #3c3c3c; border: 1px solid #555; }
         """)
 
-    def closeEvent(self,event):
+    def append_log(self, tab_name, msg, levelno):
+        if levelno >= logging.ERROR:
+            color = _LEVEL_COLORS[logging.ERROR]
+        elif levelno >= logging.WARNING:
+            color = _LEVEL_COLORS[logging.WARNING]
+        else:
+            color = None
+        line = f'[{tab_name}] {html.escape(msg)}'
+        if color:
+            self.console.appendHtml(f'<span style="color:{color}">{line}</span>')
+        else:
+            self.console.appendPlainText(line)
+
+    def closeEvent(self, event):
+        # get_qt_log_handler() is a process-wide singleton that outlives
+        # this window (it survives repeated runs of this script in the same
+        # console). Dropping the connection here stops it from pushing new
+        # log lines into this (now closed/hidden) window's console, and
+        # from holding onto its append_log bound method.
+        try:
+            get_qt_log_handler().log_emitted.disconnect(self.append_log)
+        except TypeError:
+            pass  # already disconnected
+
+        # These are the *safe* parts of cleanup: they don't destroy any
+        # widget, only stop queued threadpool work, kill running
+        # subprocesses, and no-op-close matplotlib figures. See __init__
+        # for why we deliberately don't go further and force the window
+        # itself to be destroyed.
+        for tab in (self.tab_roi_on_4D, self.tab_create_navSignal,
+                    self.tab_tracking_cv2, self.tab_sam2):
+            try:
+                tab.cleanup()
+            except Exception:
+                logging.getLogger('py5DED.app').exception(
+                    'Error cleaning up %s on close', type(tab).__name__)
+
         gc.collect()
         event.accept()
-        
+
 if __name__ == "__main__":
-    app = qtw.QApplication([])
-    window = MainWindow()
-    window.show()
+    # Reuse an existing QApplication instead of unconditionally constructing
+    # a new one — Qt only supports one QApplication per process, and this
+    # script may be re-run in the same console/kernel (e.g. Spyder's "Run
+    # File") without the interpreter restarting.
+    app = qtw.QApplication.instance()
+    if app is None:
+        app = qtw.QApplication([])
+    install_excepthook()
+
+    # If a MainWindow from an earlier run in this console is still alive,
+    # reuse it (just bring it to the front) instead of constructing another
+    # one. This is deliberate, not an oversight: closing that old window and
+    # building a fresh MainWindow in its place was verified by hand to
+    # crash the interpreter (a separate, deeper pre-existing bug in how this
+    # app's widget tree — Tab_Tracking_CV2's matplotlib canvas in
+    # particular — tears down and gets reconstructed in the same process).
+    # Never rebuilding it at all sidesteps that crash entirely, and as a
+    # side effect also stops the resource accumulation (duplicate
+    # threadpools, matplotlib figures, hyperspy signal handles) that
+    # building a brand new MainWindow on every rerun used to cause.
+    existing_window = next(
+        (w for w in app.topLevelWidgets() if isinstance(w, MainWindow)), None)
+    if existing_window is not None:
+        existing_window.show()
+        existing_window.raise_()
+        existing_window.activateWindow()
+        window = existing_window
+    else:
+        window = MainWindow()
+        window.show()
     app.exec_()
-    
