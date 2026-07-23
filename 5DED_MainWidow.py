@@ -15,20 +15,14 @@ _path_io_utils = os.path.join(fld_path, r'py4DTomo\io_utils')
 if _path_io_utils not in sys.path:
     sys.path.append(_path_io_utils)
 import gc
-import html
 import logging
 import PyQt5.QtWidgets as qtw
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
-from ui_tabs.logging_utils import get_qt_log_handler, install_excepthook
+from ui_tabs.logging_utils import install_excepthook
 from PyQt5.QtGui import QIcon
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
-
-_LEVEL_COLORS = {
-    logging.ERROR: '#ff6b6b',
-    logging.WARNING: '#e0c341',
-}
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -73,18 +67,12 @@ class MainWindow(qtw.QMainWindow):
         central_layout.setSpacing(0)
         central_layout.addWidget(self.tabs)
 
-        self.console = qtw.QPlainTextEdit()
-        self.console.setReadOnly(True)
-        self.console.setMaximumBlockCount(2000)
-        self.console.setFixedHeight(140)
-        self.console.setStyleSheet(
-            "background-color: #1e1e1e; color: #d0d0d0;"
-            "font-family: Consolas, monospace; font-size: 9pt;"
-            "border-top: 1px solid #555;")
-        central_layout.addWidget(self.console)
-
+        # Each tab embeds its own log console below its own plot area (see
+        # LogConsole in ui_tabs/logging_utils.py) rather than one shared
+        # console living here below the whole window - that way the left
+        # parameter panel of whichever tab is active can span the full
+        # window height instead of being squeezed by a full-width log strip.
         self.setCentralWidget(central)
-        get_qt_log_handler().log_emitted.connect(self.append_log)
         self.setStyleSheet("""
             QMainWindow, QWidget {
                 background-color: #2b2b2b;
@@ -150,29 +138,11 @@ class MainWindow(qtw.QMainWindow):
             QToolButton:hover { background-color: #3c3c3c; border: 1px solid #555; }
         """)
 
-    def append_log(self, tab_name, msg, levelno):
-        if levelno >= logging.ERROR:
-            color = _LEVEL_COLORS[logging.ERROR]
-        elif levelno >= logging.WARNING:
-            color = _LEVEL_COLORS[logging.WARNING]
-        else:
-            color = None
-        line = f'[{tab_name}] {html.escape(msg)}'
-        if color:
-            self.console.appendHtml(f'<span style="color:{color}">{line}</span>')
-        else:
-            self.console.appendPlainText(line)
-
     def closeEvent(self, event):
-        # get_qt_log_handler() is a process-wide singleton that outlives
-        # this window (it survives repeated runs of this script in the same
-        # console). Dropping the connection here stops it from pushing new
-        # log lines into this (now closed/hidden) window's console, and
-        # from holding onto its append_log bound method.
-        try:
-            get_qt_log_handler().log_emitted.disconnect(self.append_log)
-        except TypeError:
-            pass  # already disconnected
+        # Each tab's own cleanup() (below) disconnects its LogConsole from
+        # the shared log signal - see LogConsole.disconnect_log() - so a
+        # closed-but-not-destroyed window (see __init__ above) doesn't keep
+        # pushing log lines into hidden widgets.
 
         # These are the *safe* parts of cleanup: they don't destroy any
         # widget, only stop queued threadpool work, kill running

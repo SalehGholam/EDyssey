@@ -25,12 +25,24 @@ class WorkerThread_General(QRunnable):
     
     def run(self):
         if self.is_running:
-            self.result = self.func(*self.args, **self.kwargs)
+            try:
+                self.result = self.func(*self.args, **self.kwargs)
+            except Exception:
+                # Without this, an exception here would silently vanish (Qt
+                # swallows it at the QRunnable/thread boundary) and
+                # `results` would simply never fire - any caller that
+                # disabled a button "until results arrive" would then stay
+                # disabled forever, with no way to retry or even see that
+                # anything went wrong.
+                import traceback
+                self.signals.error.emit(traceback.format_exc(), self.index)
+                self.signals.finished.emit()
+                return
             self.signals.results.emit(self.result, self.index)
         else:
             self.signals.stopped.emit()
         self.signals.finished.emit()
-    
+
     def stop(self):
         self.is_running = False
 #%%
@@ -41,6 +53,7 @@ class WorkerSignals(QObject):
     stopped = pyqtSignal()
     # results = pyqtSignal(object, int)  # Task returns a result
     results = pyqtSignal(object, object)  # Task returns a result
+    error = pyqtSignal(object, object)  # (formatted traceback string, index)
 
 # =============================================================================
 # class Worker(QRunnable):

@@ -30,7 +30,7 @@ from time import perf_counter
 import py4DTomo.io_utils as io
 from typing import Literal
 from .worker_thread import WorkerThread_General
-from .logging_utils import get_tab_logger
+from .logging_utils import get_tab_logger, LogConsole
 from glob import glob
 from matplotlib.colors import SymLogNorm
 # import py4DTomo.tracking_utils as tr
@@ -354,7 +354,7 @@ class Tab_SAM2(qtw.QWidget):
             'Hold "ctrl" + Right Click => Negative Point\n'
             'Add "shift" to add Points to an Existing Object\n'
             'Middle Click => Delete Last Point\n'
-            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=8.5)
+            'Ctrl+Scroll => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=8.5)
         self.ax_nav.xaxis.label.set_visible(True)
         self.canvas.mpl_connect("button_press_event", self.on_click)
         self.canvas.mpl_connect("scroll_event", self.on_scroll)
@@ -419,6 +419,12 @@ class Tab_SAM2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
+
+        # The app-wide log console lives here (below this tab's own plot
+        # column) rather than under the whole window, so the left parameter
+        # panel (a separate splitter pane) can span the full window height.
+        self.log_console = LogConsole(self)
+        layout_canvas.addWidget(self.log_console)
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (.hspy or .zspy)  [Ctrl+O]')
         self.button_loadSavedAnalysis.setToolTip(
@@ -814,10 +820,11 @@ class Tab_SAM2(qtw.QWidget):
         self.update_canvas(imgNo) # TODO fix
 
     def on_scroll(self, event):
-        """Zoom the axes under the cursor in/out on the scroll wheel,
+        """Zoom the axes under the cursor in/out on Ctrl+scroll wheel,
         centered on the cursor position."""
         ax = event.inaxes
-        if ax is None or event.xdata is None or event.ydata is None:
+        if (ax is None or event.xdata is None or event.ydata is None
+                or 'ctrl' not in event.modifiers):
             return
         base_scale = 1.2
         scale_factor = 1 / base_scale if event.button == 'up' else base_scale
@@ -921,21 +928,14 @@ class Tab_SAM2(qtw.QWidget):
             # print(e)
             pass
         
-        scale_recip = self.lineEdit_scale_recip.text()
-        try:
-            scale_recip = float(scale_recip)
-            if scale_recip != 0:
-                scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', 
-                    location='lower left', box_alpha=0.4,
-                    scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
-                for artist in self.ax_dp.artists:
-                        if isinstance(artist, ScaleBar):
-                            artist.remove()
-                self.ax_dp.add_artist(scalebar_recip)
-        except Exception as e:
-            # print(e)
-            pass
-        
+        # A conventional linear scale bar doesn't read naturally on a
+        # radially-symmetric diffraction pattern - concentric dashed rings
+        # at every 1 1/A (centered on the DP) work better.
+        shape = self.img_display['dp'].get_array().shape
+        self._dp_recip_circles = io.draw_reciprocal_scale_circles(
+            self.ax_dp, self.lineEdit_scale_recip.text(), shape,
+            old_artists=getattr(self, '_dp_recip_circles', None))
+
         self.canvas.draw()
     
     def show_mask(self, mask, cmap_idx=0):
@@ -1675,6 +1675,7 @@ class Tab_SAM2(qtw.QWidget):
         self.stop_processes()  # kills any running_processes_sam
         for process in getattr(self, 'running_processes', []):
             process.kill()
+        self.log_console.disconnect_log()
         plt.close(self.figure)
 
     def closeEvent(self,event):

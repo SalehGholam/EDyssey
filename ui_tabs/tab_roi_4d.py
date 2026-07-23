@@ -15,6 +15,7 @@ from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QThreadPool, QProc
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QIntValidator, QDoubleValidator
 from matplotlib.colors import SymLogNorm
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -25,7 +26,9 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from matplotlib_scalebar.scalebar import ScaleBar
 from dask.diagnostics import ProgressBar
-from .logging_utils import get_tab_logger
+from .logging_utils import get_tab_logger, LogConsole
+from .threshold_dialog import ThresholdDialog
+from worker_extract_frame import load_dp
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 # from skimage import exposure
@@ -153,13 +156,35 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_segment_image.clicked.connect(self.segment_image)
         self.button_segment_image.setDisabled(True)
         self.button_segment_image.setToolTip(
-            'Run SAM2 on the points added below to segment the navigation image')
+            'Run SAM2 on the points added below (Shift+Click), optionally combined '
+            'with the last-drawn ROI (Ctrl+Drag) as a box prompt')
 
         self.button_clear_points = qtw.QPushButton('Clear Points')
         layout_segmentation.addWidget(self.button_clear_points)
         self.button_clear_points.clicked.connect(self.clear_seg_points)
         self.button_clear_points.setDisabled(True)
         self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
+
+        self.button_clear_roi = qtw.QPushButton('Clear ROI/Box')
+        layout_segmentation.addWidget(self.button_clear_roi)
+        self.button_clear_roi.clicked.connect(self.clear_roi)
+        self.button_clear_roi.setToolTip(
+            'Remove the drawn ROI so it stops being used as a SAM2 box prompt '
+            '(and as the rectangle for diffraction-pattern extraction)')
+
+        #%% PACBED from threshold
+        self.box_pacbedThreshold = qtw.QGroupBox('PACBED from Threshold')
+        layout_userInput.addWidget(self.box_pacbedThreshold)
+        layout_pacbedThreshold = qtw.QHBoxLayout()
+        self.box_pacbedThreshold.setLayout(layout_pacbedThreshold)
+
+        self.button_pacbedFromThreshold = qtw.QPushButton('PACBED from Threshold...')
+        layout_pacbedThreshold.addWidget(self.button_pacbedFromThreshold)
+        self.button_pacbedFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_pacbedFromThreshold.setToolTip(
+            'Open a window to check/adjust a real-space threshold on the loaded '
+            'navigation image, then sum diffraction patterns only at the scan '
+            'positions above it, instead of a rectangular ROI')
 
         layout_userInput.addStretch(1)
         #%% canvas layout
@@ -199,7 +224,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self._setup_canvas()
 
         self.rect = None            # Currently drawn rectangle
+        self.roi = None             # (x, y, w, h) of the last-drawn ROI, or None
         self.press = None           # Mouse press coordinates
+        self.backgrounds = {}       # blit-cached canvas snapshots, keyed by axis
         # SAM2 segmentation point prompts for the currently loaded nav image
         self.seg_points = []
         self.seg_labels = []
@@ -237,6 +264,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_reset_slider.clicked.connect(self.reset_sliders)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
+
+        # The app-wide log console lives here (below this tab's own plot
+        # column) rather than under the whole window, so the left parameter
+        # panel (a separate splitter pane) can span the full window height.
+        self.log_console = LogConsole(self)
+        layout_canvas.addWidget(self.log_console)
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
@@ -297,7 +330,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_clear_points.setEnabled(True)
 
     def show_dialog(self):
-        file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.pmf);;All Files (*)"
+        file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.mib *.pmf);;All Files (*)"
         path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
         # if path and os.path.isdir(path[0]):
         if path:
@@ -344,7 +377,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1,
                                       edgecolor='r', facecolor='none')
         self.ax_nav.add_patch(self.rect)
+        # One full draw() here "bakes in" the current state (nav image, the
+        # just-added zero-size rect) into a cached background snapshot, so
+        # on_motion below can cheaply blit just the growing rectangle on top
+        # of it instead of redrawing the whole figure on every mouse-move.
         self.canvas.draw()
+        self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
 
     def on_motion(self, event):
         # Mouse motion event: update the rectangle size as the mouse moves
@@ -353,16 +391,23 @@ class Tab_ROI_on_4D(qtw.QWidget):
         x0, y0 = self.press
         width = event.xdata - x0
         height = event.ydata - y0
-        self.rect.set_width(width)
-        self.rect.set_height(height)
-        self.rect.set_xy((x0, y0))
-        self.canvas.draw()
+        try:
+            self.rect.set_width(width)
+            self.rect.set_height(height)
+            self.rect.set_xy((x0, y0))
+        except AttributeError:
+            self.press = None
+            return
+        self.canvas.restore_region(self.backgrounds['nav'])
+        self.ax_nav.draw_artist(self.rect)
+        self.canvas.blit(self.ax_nav.bbox)
 
     def on_scroll(self, event):
-        """Zoom the axes under the cursor in/out on the scroll wheel,
+        """Zoom the axes under the cursor in/out on Ctrl+scroll wheel,
         centered on the cursor position."""
         ax = event.inaxes
-        if ax is None or event.xdata is None or event.ydata is None:
+        if (ax is None or event.xdata is None or event.ydata is None
+                or 'ctrl' not in event.modifiers):
             return
         base_scale = 1.2
         scale_factor = 1 / base_scale if event.button == 'up' else base_scale
@@ -398,12 +443,15 @@ class Tab_ROI_on_4D(qtw.QWidget):
         if height==0:
             height = 1
         self.roi = (int(x0), int(y0), int(width), int(height))
-        
-        
+
+
         # Set the press attribute to None for future drawings
         self.press = None
         self.canvas.draw()
         self.logger.info('ROI: %s', self.roi)
+        # A box alone is a valid SAM2 prompt (see segment_image()), so
+        # drawing one enables Segment Image even without any points yet.
+        self.button_segment_image.setEnabled(True)
         if not hasattr(self, 'dwellTime'):
             try:
                 self.dwellTime = self.spinbox_dwellTime.value()
@@ -424,6 +472,10 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.dp, self.navImg_cut = result
         self.logger.info('max = %s', self.dp.max())
         self.ax_nav_roi.set_title(f'ROI Image: {self.roi}')
+        # A rectangle ROI was just drawn, replacing whatever the "ROI Image"
+        # axis was previously showing - clear any leftover SAM2 mask overlay
+        # so it doesn't linger on top of this unrelated crop.
+        self.img_display['seg_mask'].set_data(np.zeros((512, 512, 4)))
         self.update_slider_range()
         self.slider_vmax.setValue(self.dp.max())
         self.slider_vmin.setValue(1)
@@ -448,10 +500,12 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.img_display['dp'] = self.ax_dp.imshow(img_temp, cmap='inferno')
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
 
-        # SAM2 segmentation mask overlay, drawn on top of the nav image.
+        # SAM2 segmentation mask overlay, drawn on top of a crop of the nav
+        # image in the "ROI Image" axis (show_seg_mask() re-targets nav_roi's
+        # own image + view to that crop, then this sits on top of it).
         # Starts fully transparent (all-zero RGBA); show_seg_mask() fills in
         # color+alpha only where the mask is True.
-        self.img_display['seg_mask'] = self.ax_nav.imshow(np.zeros((512, 512, 4)))
+        self.img_display['seg_mask'] = self.ax_nav_roi.imshow(np.zeros((512, 512, 4)))
 
         self.ax_nav.set_title('Nav. Image')
         self.ax_nav_roi.set_title('ROI Image')
@@ -466,9 +520,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
             spine.set_visible(False)
         self.ax_nav.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         self.ax_nav.set_xlabel(
-            'Hold "ctrl" + Drag => New ROI\n'
+            'Hold "ctrl" + Drag => New ROI (also usable as a SAM2 box prompt)\n'
             'Hold "shift" + Click => Add SAM2 point (Left=positive, Right=negative)\n'
-            'Middle Click => Remove last SAM2 point, Scroll Wheel => Zoom\n'
+            'Middle Click => Remove last SAM2 point, Ctrl+Scroll => Zoom\n'
             'Plain Click+Drag => Pan/Zoom Tool', fontsize=6)
         self.ax_nav.xaxis.label.set_visible(True)
 
@@ -492,6 +546,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.img_display['dp'].set_data(img_temp)
         self.ax_nav_roi.set_title('ROI Image')
         self.clear_seg_points()
+        self.clear_roi()
         self.canvas.draw_idle()
 
     def update_slider_range(self):
@@ -554,20 +609,14 @@ class Tab_ROI_on_4D(qtw.QWidget):
         except Exception as e:
             # print(e)
             pass
-        scale_recip = self.lineEdit_scale_recip.text()
-        try:
-            scale_recip = float(scale_recip)
-            if scale_recip != 0:
-                scalebar_recip = ScaleBar(scale_recip*10, '1/nm', dimension='si-length-reciprocal', location='lower left',
-                                    scale_formatter=lambda value, unit:  f'{value / 10}'r' $\AA^{-1}$', fixed_value=5)
-                for artist in self.ax_dp.artists:
-                        if isinstance(artist, ScaleBar):
-                            artist.remove()
-                self.ax_dp.add_artist(scalebar_recip)
-        except Exception as e:
-            # print(e)
-            pass
-        
+        # A conventional linear scale bar doesn't read naturally on a
+        # radially-symmetric diffraction pattern - concentric dashed rings
+        # at every 1 1/A (centered on the DP) work better.
+        dp_shape = self.img_display['dp'].get_array().shape
+        self._dp_recip_circles = io.draw_reciprocal_scale_circles(
+            self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
+            old_artists=getattr(self, '_dp_recip_circles', None))
+
         self.canvas.draw()
     
     def message_box_tpx3(self):
@@ -631,13 +680,60 @@ class Tab_ROI_on_4D(qtw.QWidget):
         if had_points:
             self.logger.info('Cleared SAM2 points and segmentation mask.')
 
-    def show_seg_mask(self, mask):
-        cmap = plt.get_cmap('tab10')
-        color = np.array([*cmap(0)[:3], 0.6])
-        h, w = mask.shape[-2:]
-        mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    def clear_roi(self):
+        """Remove the drawn ROI so it stops being used as a SAM2 box prompt
+        or as the rectangle for diffraction-pattern extraction - without
+        this, a stale box from an earlier draw would keep silently feeding
+        into segment_image() even after the user no longer wants a box."""
+        had_roi = self.roi is not None
+        self.roi = None
+        if self.rect is not None:
+            try:
+                self.rect.remove()
+            except Exception:
+                pass
+            self.rect = None
+            self.canvas.draw_idle()
+        if not self.seg_points:
+            self.button_segment_image.setDisabled(True)
+        if had_roi:
+            self.logger.info('Cleared ROI/box.')
+
+    def show_seg_mask(self, mask, title='SAM2 Segmentation'):
+        """Display a mask (SAM2's or a real-space threshold's), cropped to
+        its bounding box (plus a small padding margin), on the "ROI Image"
+        axis: the crop of the nav image underneath, with the mask drawn at
+        alpha on top of it, as a guide to what's being summed. Also stores
+        the crop's (x, y, w, h) window in self.seg_roi for compute_seg_dp()."""
+        pad = 10
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        y_idx = np.where(rows)[0]
+        x_idx = np.where(cols)[0]
+        h_img, w_img = mask.shape
+        y0 = max(0, int(y_idx[0]) - pad)
+        y1 = min(h_img - 1, int(y_idx[-1]) + pad)
+        x0 = max(0, int(x_idx[0]) - pad)
+        x1 = min(w_img - 1, int(x_idx[-1]) + pad)
+        self.seg_roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+
+        img_crop = self.navImg[y0:y1+1, x0:x1+1]
+        mask_crop = mask[y0:y1+1, x0:x1+1]
+        shape_y, shape_x = img_crop.shape
+
+        self.img_display['nav_roi'].set_data(img_crop)
+        self.img_display['nav_roi'].set_clim(vmin=img_crop.min(), vmax=img_crop.max())
+        self.img_display['nav_roi'].set_extent([0, shape_x, shape_y, 0])
+        self.ax_nav_roi.set_xlim(0, shape_x)
+        self.ax_nav_roi.set_ylim(shape_y, 0)
+        self.ax_nav_roi.set_title(title)
+
+        # tab:orange stands out clearly against the viridis nav-image colormap,
+        # unlike tab10's default blue (index 0), which blends into it.
+        color = np.array([*mcolors.to_rgb('tab:orange'), 0.5])
+        mask_image = mask_crop.reshape(shape_y, shape_x, 1) * color.reshape(1, 1, -1)
         self.img_display['seg_mask'].set_data(mask_image)
-        self.img_display['seg_mask'].set_extent(self.img_display['nav'].get_extent())
+        self.img_display['seg_mask'].set_extent([0, shape_x, shape_y, 0])
         self.canvas.draw_idle()
 
     def _get_seg_temp_dir(self):
@@ -648,23 +744,34 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
     def segment_image(self):
         """Run SAM2's single-image predictor on the currently loaded nav
-        image using the point prompts added via Shift+Click, exactly like
-        the SAM2 tab's "Seg Image" feature but without object tracking."""
-        if not self.seg_points:
-            self.logger.warning('Segment Image requested but no points have been added.')
-            qtw.QMessageBox.critical(self, 'No Points Added',
+        image using the point prompts added via Shift+Click, optionally
+        combined with the last-drawn ROI (Ctrl+drag) as a box prompt - SAM2
+        accepts points and a box together, the box narrowing the region and
+        the points refining it further. Otherwise this mirrors the SAM2
+        tab's "Seg Image" feature, just without object tracking."""
+        has_roi = getattr(self, 'roi', None) is not None
+        if not self.seg_points and not has_roi:
+            self.logger.warning('Segment Image requested but no points or ROI have been added.')
+            qtw.QMessageBox.critical(self, 'No Points or ROI Added',
                 'Hold Shift and click on the image to add at least one point '
-                '(left click = positive, right click = negative) before segmenting.')
+                '(left click = positive, right click = negative), and/or hold '
+                'Ctrl and drag to draw a box, before segmenting.')
             return
 
-        self.logger.info('Starting SAM2 image segmentation (%d point(s))...', len(self.seg_points))
+        self.logger.info(
+            'Starting SAM2 image segmentation (%d point(s), %s)...',
+            len(self.seg_points), f'box={self.roi}' if has_roi else 'no box')
         self.button_segment_image.setDisabled(True)
 
         path_seg = self._get_seg_temp_dir()
         img_8bit = io.convert_img_to_8bit(self.navImg)
-        seg_input = pd.Series({'image': img_8bit,
-                               'points': np.array(self.seg_points),
-                               'labels': np.array(self.seg_labels)})
+        seg_input_dict = {'image': img_8bit,
+                          'points': np.array(self.seg_points),
+                          'labels': np.array(self.seg_labels)}
+        if has_roi:
+            x, y, w, h = self.roi
+            seg_input_dict['box'] = np.array([x, y, x + w, y + h])
+        seg_input = pd.Series(seg_input_dict)
         seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
 
         self._process_sam = QProcess(self)
@@ -697,15 +804,101 @@ class Tab_ROI_on_4D(qtw.QWidget):
             result = json.loads(text.strip())
             with np.load(result['path']) as f:
                 mask = f['mask']
-            self.seg_mask = mask
-            self.show_seg_mask(mask)
-            self.button_clear_points.setEnabled(True)
-            self.logger.info('SAM2 image segmentation completed successfully.')
         except json.JSONDecodeError:
             self.logger.error('Could not decode SAM2 segmentation result: %s', text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',
                 f'Could not decode SAM2 output. Check console for details.\n'
                 f'Raw output (first 200 chars): {text[:200]}')
+            return
+
+        if not mask.any():
+            self.logger.warning('SAM2 returned an empty mask (no pixels selected).')
+            qtw.QMessageBox.warning(self, 'Empty Mask',
+                'SAM2 did not select any pixels. Try adjusting or adding more points.')
+            return
+
+        self.seg_mask = mask
+        self.button_clear_points.setEnabled(True)
+        self.logger.info('SAM2 image segmentation completed successfully.')
+        self.show_seg_mask(mask)
+        self.compute_seg_dp(mask)
+
+    def compute_seg_dp(self, mask):
+        """Sum diffraction patterns over the SAM2 mask's scan positions and
+        display the result on the DP axis, immediately after segmentation -
+        the masked-DP equivalent of drawing a rectangle ROI."""
+        self.logger.info('Computing diffraction pattern summed over SAM2 mask...')
+        dtype = os.path.splitext(self.fn)[-1]
+        worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
+                                         self.scanSize, self.dwellTime)
+        worker.signals.result.connect(self.get_dp_from_mask)
+        self.threadpool.start(worker)
+
+    def get_dp_from_mask(self, dp):
+        self.dp = dp
+        self.ax_dp.set_title('DP (SAM2 Mask)')
+        self.update_slider_range()
+        self.slider_vmax.setValue(self.dp.max())
+        self.slider_vmin.setValue(1)
+        self.update_canvas(ax='dp')
+
+#%% PACBED from threshold
+    def open_threshold_dialog(self):
+        """Open the ThresholdDialog popup to check/adjust the real-space
+        threshold on the loaded navigation image before committing to the
+        actual (file-reading) PACBED computation - shared with the "Make
+        Nav. Sig." tab's identical feature."""
+        if not hasattr(self, 'navImg'):
+            qtw.QMessageBox.critical(self, 'No Image',
+                'Load a 4D signal first - the threshold is applied to its '
+                'navigation image.')
+            return
+        dlg = ThresholdDialog(self, self.navImg, self.fn)
+        if dlg.exec_() == qtw.QDialog.Accepted:
+            self.compute_pacbed_from_threshold(dlg.mask, dlg.combo_threshMethod.currentText())
+
+    def compute_pacbed_from_threshold(self, mask, method):
+        """Sum diffraction patterns only at the scan positions in `mask`
+        (confirmed via the ThresholdDialog popup), instead of a rectangular
+        ROI - reuses the same masked-DP worker as the SAM2 segmentation path."""
+        # Show the mask on the "ROI Image" axis right away, as a guide to
+        # what's about to be summed - not gated on the (background) DP
+        # computation finishing.
+        self.show_seg_mask(mask, title='Threshold Mask')
+
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        y_idx = np.where(rows)[0]
+        x_idx = np.where(cols)[0]
+        y0, y1 = int(y_idx[0]), int(y_idx[-1])
+        x0, x1 = int(x_idx[0]), int(x_idx[-1])
+        roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+        dtype = os.path.splitext(self.fn)[-1]
+        self.logger.info(
+            'Computing PACBED from %s-thresholded scan positions...', method)
+        self.button_pacbedFromThreshold.setDisabled(True)
+        worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize, self.dwellTime)
+        worker.signals.result.connect(self._on_pacbed_from_threshold_computed)
+        worker.signals.error.connect(self._on_pacbed_from_threshold_failed)
+        self.threadpool.start(worker)
+
+    def _on_pacbed_from_threshold_computed(self, dp):
+        self.button_pacbedFromThreshold.setEnabled(True)
+        self.dp = dp
+        self.ax_dp.set_title('PACBED (thresholded)')
+        self.update_slider_range()
+        self.slider_vmax.setValue(self.dp.max())
+        self.slider_vmin.setValue(1)
+        self.update_canvas(ax='dp')
+
+    def _on_pacbed_from_threshold_failed(self, traceback_text):
+        # Without this, a failure in the background computation would leave
+        # "PACBED from Threshold..." disabled forever, with no way to retry
+        # and no visible sign anything went wrong.
+        self.button_pacbedFromThreshold.setEnabled(True)
+        self.logger.error('Failed to compute PACBED from threshold:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'PACBED Failed',
+            'Computing the PACBED failed - see the log for details.')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
@@ -714,11 +907,13 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.threadpool.clear()
         if hasattr(self, '_process_sam'):
             self._process_sam.kill()
+        self.log_console.disconnect_log()
         plt.close(self.figure)
 
 class WorkerSignals(QObject):
     finished = pyqtSignal()  # Signal to indicate task completion
     result = pyqtSignal(object)  # Signal to emit the result of the task
+    error = pyqtSignal(object)  # Formatted traceback string, emitted on failure
 
 # Step 2: Create a WorkerThread class that runs the task in the background
 class Worker_NavImg(QRunnable):
@@ -793,6 +988,42 @@ class Worker_CalculateDP(QRunnable):
         self.logger.info('Diffraction pattern calculated successfully in %.1f s.',
                           perf_counter() - self._tic)
         # self.signals.finished.emit()
+
+class Worker_CalculateDP_Mask(QRunnable):
+    """Sum diffraction patterns at the scan positions where an arbitrary
+    (e.g. SAM2-segmented) mask is True, restricted to `roi` (the mask's
+    bounding box) for efficiency. Reuses the same per-format masked loaders
+    already used by the CV2/SAM2 tabs' 3DED extraction."""
+    def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime):
+        super().__init__()
+        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self._tic = perf_counter()
+        self.logger.info('calculating the dp from mask...')
+        self.fn = fn
+        self.roi = roi
+        self.mask = mask
+        self.dtype = dtype
+        self.scanSize = scanSize
+        self.dwellTime = dwellTime
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
+                        scanSize=self.scanSize, dwellTime=self.dwellTime)
+            if hasattr(dp, 'compute'):
+                dp = dp.compute()
+        except Exception:
+            import traceback
+            self.logger.exception(
+                'Failed to calculate mask-based diffraction pattern after %.1f s.',
+                perf_counter() - self._tic)
+            self.signals.error.emit(traceback.format_exc())
+            return
+        self.signals.result.emit(dp)
+        self.logger.info(
+            'Mask-based diffraction pattern calculated successfully in %.1f s.',
+            perf_counter() - self._tic)
 # =============================================================================
 # if __name__ == "__main__":
 #     app = qtw.QApplication(sys.argv)

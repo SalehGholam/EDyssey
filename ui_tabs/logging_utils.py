@@ -10,10 +10,12 @@ that the main window uses to show live output in its console box.
 
 import os
 import sys
+import html
 import logging
 import traceback
 from logging.handlers import RotatingFileHandler
 from PyQt5.QtCore import QObject, pyqtSignal
+import PyQt5.QtWidgets as qtw
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(os.path.dirname(_HERE), 'logs')
@@ -79,6 +81,55 @@ def get_tab_logger(tab_name):
     logger.addHandler(get_qt_log_handler())
 
     return logger
+
+
+class LogConsole(qtw.QPlainTextEdit):
+    """Read-only console showing the whole app's log output (every tab's
+    messages, not just whichever tab embeds this widget). Each tab embeds
+    its own instance below its own plot area (so the log strip only ever
+    eats space from that tab's plot column, never from its left parameter
+    panel) - all instances are driven by the same shared Qt log signal, so
+    background activity in another tab still stays visible regardless of
+    which tab is currently in front.
+    """
+    _LEVEL_COLORS = {
+        logging.ERROR: '#ff6b6b',
+        logging.WARNING: '#e0c341',
+    }
+
+    def __init__(self, parent=None, height=140):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMaximumBlockCount(2000)
+        self.setFixedHeight(height)
+        self.setStyleSheet(
+            "background-color: #1e1e1e; color: #d0d0d0;"
+            "font-family: Consolas, monospace; font-size: 9pt;"
+            "border-top: 1px solid #555;")
+        get_qt_log_handler().log_emitted.connect(self._append_log)
+
+    def _append_log(self, tab_name, msg, levelno):
+        if levelno >= logging.ERROR:
+            color = self._LEVEL_COLORS[logging.ERROR]
+        elif levelno >= logging.WARNING:
+            color = self._LEVEL_COLORS[logging.WARNING]
+        else:
+            color = None
+        line = f'[{tab_name}] {html.escape(msg)}'
+        if color:
+            self.appendHtml(f'<span style="color:{color}">{line}</span>')
+        else:
+            self.appendPlainText(line)
+
+    def disconnect_log(self):
+        """Stop receiving log signals - call from the owning tab's
+        cleanup() so a closed-but-not-destroyed window (see MainWindow's
+        reuse-across-reruns comment) doesn't keep pushing log lines into a
+        hidden widget."""
+        try:
+            get_qt_log_handler().log_emitted.disconnect(self._append_log)
+        except TypeError:
+            pass  # already disconnected
 
 
 def install_excepthook():

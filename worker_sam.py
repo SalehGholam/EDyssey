@@ -90,19 +90,29 @@ if __name__ == "__main__":
             # gets this for free since SAM2 loads JPEG frames as RGB, but a
             # single grayscale nav-image frame needs converting explicitly.
             image = np.stack([image] * 3, axis=-1)
-        point_coords = np.array(df['points'], dtype=np.float32)
-        point_labels = np.array(df['labels'], dtype=np.int32)
+        points = df['points']
+        labels = df['labels']
+        # Points and box are both optional prompts - SAM2 accepts either
+        # alone or combined (a box narrows the search region, points refine
+        # it further); pass None rather than an empty array when unused, to
+        # avoid tripping SAM2's own prompt-shape assertions.
+        point_coords = np.array(points, dtype=np.float32) if len(points) else None
+        point_labels = np.array(labels, dtype=np.int32) if len(labels) else None
+        box = df.get('box')
+        if box is not None:
+            box = np.array(box, dtype=np.float32)
 
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         predictor = SAM2ImagePredictor(sam2_model)
         predictor.set_image(image)
-        # All points/labels are passed together in a single predict() call
-        # (positive and negative jointly resolve one mask), not one call per
-        # point - multimask_output=False returns SAM2's single best-guess
-        # mask instead of the 3 ambiguity-resolving candidates.
+        # All points/labels (and the box, if any) are passed together in a
+        # single predict() call (they jointly resolve one mask), not one
+        # call per point - multimask_output=False returns SAM2's single
+        # best-guess mask instead of the 3 ambiguity-resolving candidates.
         masks, scores, logits = predictor.predict(
             point_coords=point_coords,
             point_labels=point_labels,
+            box=box,
             multimask_output=False,
         )
         mask = masks[0].astype(bool)

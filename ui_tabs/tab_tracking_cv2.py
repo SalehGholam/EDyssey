@@ -27,7 +27,7 @@ import matplotlib.patches as patches
 import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General
-from .logging_utils import get_tab_logger
+from .logging_utils import get_tab_logger, LogConsole
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -55,7 +55,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # (canvas.draw()'s default behavior) is one of the most expensive
         # parts of a redraw; update_canvas() freezes it after the first
         # real draw, once subplot spacing has settled.
-        self._layout_frozen = False
+        self._layout_frozen_nav = False
+        self._layout_frozen_extract = False
 
         self.init_widget()
 
@@ -338,22 +339,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setSizes([300, 900])
         layout_canvas = qtw.QVBoxLayout(self._right_widget)
-        
-        # self.figure = Figure(figsize=(8,4))
-        self.figure = Figure(constrained_layout=True)
-        # self.figure = Figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.ax_nav = self.figure.add_subplot(221)
-        self.ax_track = self.figure.add_subplot(222)
-        self.ax_mask = self.figure.add_subplot(223)
-        self.ax_dp = self.figure.add_subplot(224)
-# =============================================================================
-#         self.ax_nav = self.figure.add_subplot(221)
-#         self.ax_track = self.figure.add_subplot(222)
-#         self.ax_mask = self.figure.add_subplot(223)
-#         self.ax_dp = self.figure.add_subplot(224)
-# =============================================================================
-        
+
+        # Two figures (1x2 each) instead of one crowded 2x2 figure: figure
+        # "nav" holds (1) Nav. Signal + (2) Tracking Results, figure
+        # "extract" holds (3) Roi with Threshold + (4) DP. Each only has to
+        # fit 2 axes, so both can be much larger than before; they're
+        # stacked vertically in one scrollable area below, so scrolling
+        # down moves from one figure to the other.
+        self.figure_nav = Figure(constrained_layout=True)
+        self.canvas_nav = FigureCanvas(self.figure_nav)
+        self.ax_nav = self.figure_nav.add_subplot(121)
+        self.ax_track = self.figure_nav.add_subplot(122)
+
+        self.figure_extract = Figure(constrained_layout=True)
+        self.canvas_extract = FigureCanvas(self.figure_extract)
+        self.ax_mask = self.figure_extract.add_subplot(121)
+        self.ax_dp = self.figure_extract.add_subplot(122)
+
         # titles for axes
         self.ax_nav.set_title('(1) Nav. Signal')
         self.ax_track.set_title('(2) Tracking Results')
@@ -361,15 +363,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.ax_dp.set_title('(4) DP')
         self.img_display = {}
         self.img_zero = np.zeros((512,512), dtype='uint16')
-# =============================================================================
-#         axes = ['nav', 'track', 'mask', 'dp']
-#         for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_mask, self.ax_dp]):
-#             self.img_display[axes[i]] = ax.imshow(img_temp, cmap='viridis') 
-# =============================================================================
-        axes = ['nav', 'track', 'dp', 'mask']
-        
+        axes = ['nav', 'track', 'dp']
+
         for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_dp]):
-            self.img_display[axes[i]] = ax.imshow(self.img_zero, cmap='viridis') 
+            self.img_display[axes[i]] = ax.imshow(self.img_zero, cmap='viridis')
             # ax.set_axis_off()
             for spine in ax.spines.values():
                 spine.set_visible(False)
@@ -377,38 +374,59 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         self.ax_track.set_xlabel(
             'Select the reference ROI and Hold "ctrl" + Drag to draw ROIinROI\n'
-            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
+            'Ctrl+Scroll => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
         self.ax_nav.set_xlabel(
             'Hold "ctrl" + Left Click+Drag => New ROI\n'
             'Hold "ctrl" + Right Click => Add init to existing ROI\n'
-            'Scroll Wheel => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
+            'Ctrl+Scroll => Zoom, plain Click+Drag => Pan/Zoom Tool', fontsize=7)
         self.ax_nav.xaxis.label.set_visible(True)
         self.ax_track.xaxis.label.set_visible(True)
-        
+
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
         self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.1)
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
-        # self.figure.tight_layout()
-        layout_canvas.addWidget(self.canvas)
-        
-        
-        # Connect mouse events
+
+        # Each canvas can be as large as the old single 2x2 figure used to
+        # be, since it now only has to fit 2 axes instead of 4. Both
+        # canvases (each with its own toolbar) live in one vertically
+        # scrollable container, so a scrollbar appears whenever the window
+        # is smaller than their combined height, letting the user scroll
+        # from figure (1)/(2) down to figure (3)/(4).
+        self.canvas_nav.setMinimumSize(1000, 900)
+        self.canvas_extract.setMinimumSize(1000, 900)
+        self.toolbar_nav = NavigationToolbar(self.canvas_nav, self)
+        self.toolbar_extract = NavigationToolbar(self.canvas_extract, self)
+
+        self._canvas_stack_widget = qtw.QWidget()
+        layout_canvas_stack = qtw.QVBoxLayout(self._canvas_stack_widget)
+        layout_canvas_stack.addWidget(self.canvas_nav)
+        layout_canvas_stack.addWidget(self.toolbar_nav)
+        layout_canvas_stack.addWidget(self.canvas_extract)
+        layout_canvas_stack.addWidget(self.toolbar_extract)
+
+        self._canvas_scroll = qtw.QScrollArea()
+        self._canvas_scroll.setWidget(self._canvas_stack_widget)
+        self._canvas_scroll.setWidgetResizable(True)
+        layout_canvas.addWidget(self._canvas_scroll)
+
+        # Connect mouse events - only the nav/track canvas has interactive
+        # ROI drawing; the mask/dp canvas is display-only apart from zoom.
         self.rect = None            # Currently drawn rectangle
         self.rect_roiInRoi = None
         self.press = None           # Mouse press coordinates
 
-        self.canvas.mpl_connect('button_press_event', self.on_press)
-        self.canvas.mpl_connect('button_release_event', self.on_release)
-        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
-        self.canvas.mpl_connect('scroll_event', self.on_scroll)
-        
-        self.axes = [self.ax_nav, self.ax_track, self.ax_dp, self.ax_mask]
+        self.canvas_nav.mpl_connect('button_press_event', self.on_press)
+        self.canvas_nav.mpl_connect('button_release_event', self.on_release)
+        self.canvas_nav.mpl_connect('motion_notify_event', self.on_motion)
+        self.canvas_nav.mpl_connect('scroll_event', self.on_scroll)
+        self.canvas_extract.mpl_connect('scroll_event', self.on_scroll)
+
         self.backgrounds = {}
-        for i, ax in enumerate(self.axes):
-            self.backgrounds[axes[i]] = self.canvas.copy_from_bbox(ax.bbox)
-        
+        for ax_name, ax in (('nav', self.ax_nav), ('track', self.ax_track)):
+            self.backgrounds[ax_name] = self.canvas_nav.copy_from_bbox(ax.bbox)
+
         #%% slider img num
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
@@ -428,8 +446,6 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_slider.addWidget(self.slider_imgNo)
 
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        layout_canvas.addWidget(self.toolbar)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -437,6 +453,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.progress_bar = qtw.QProgressBar()
         layout_progress_bar.addWidget(self.progress_bar)
         self.progress_bar.setRange(0, 100)
+
+        # The app-wide log console lives here (below this tab's own plot
+        # column) rather than under the whole window, so the left parameter
+        # panel (a separate splitter pane) can span the full window height.
+        self.log_console = LogConsole(self)
+        layout_canvas.addWidget(self.log_console)
 
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (Ctrl+O)')
@@ -561,11 +583,12 @@ class Tab_Tracking_CV2(qtw.QWidget):
         for ax in (self.ax_nav, self.ax_track):
             ax.set_xlim(0, shape_y)
             ax.set_ylim(shape_x, 0)
-        self.toolbar.update()
-        self.toolbar.push_current()
+        self.toolbar_nav.update()
+        self.toolbar_nav.push_current()
 
         self.update_canvas(0)
-        self.canvas.draw()
+        self.canvas_nav.draw()
+        self.canvas_extract.draw()
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
         self.logger.info('No. of Images: %s', len(self.nav_imgs))
         
@@ -750,17 +773,25 @@ class Tab_Tracking_CV2(qtw.QWidget):
             else:
                 self.update_ax(self.img_zero, 'dp', self.ax_dp)
 
-        # A single redraw here (instead of one per update_ax/draw_rois_*/
-        # update_ax_mask call above) avoids redundantly re-rendering the
-        # whole figure up to ~4 times per frame change. constrained_layout's
-        # spacing solve is also one of the most expensive parts of a redraw
-        # and doesn't need to repeat once subplot spacing has settled.
-        if not self._layout_frozen:
-            self.canvas.draw()
-            self.figure.set_layout_engine('none')
-            self._layout_frozen = True
+        # A single redraw per canvas here (instead of one per update_ax/
+        # draw_rois_*/update_ax_mask call above) avoids redundantly
+        # re-rendering each figure multiple times per frame change.
+        # constrained_layout's spacing solve is also one of the most
+        # expensive parts of a redraw and doesn't need to repeat once
+        # subplot spacing has settled.
+        if not self._layout_frozen_nav:
+            self.canvas_nav.draw()
+            self.figure_nav.set_layout_engine('none')
+            self._layout_frozen_nav = True
         else:
-            self.canvas.draw_idle()
+            self.canvas_nav.draw_idle()
+
+        if not self._layout_frozen_extract:
+            self.canvas_extract.draw()
+            self.figure_extract.set_layout_engine('none')
+            self._layout_frozen_extract = True
+        else:
+            self.canvas_extract.draw_idle()
 
     def update_ax(self, img, img_disp, ax, title=None,):
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
@@ -873,49 +904,30 @@ class Tab_Tracking_CV2(qtw.QWidget):
                     )
     
                     ax.add_artist(scalebar_patch)
-    
-                self.canvas.draw_idle()
-    
+
+                # ax_nav/ax_track live on canvas_nav, ax_mask on canvas_extract.
+                self.canvas_nav.draw_idle()
+                self.canvas_extract.draw_idle()
+
             except ValueError:
-    
+
                 for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
                     for artist in ax.artists[:]:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
-    
-                self.canvas.draw_idle()
-    
+
+                self.canvas_nav.draw_idle()
+                self.canvas_extract.draw_idle()
+
         elif which == 'reciprocal':
-    
-            try:
-                scale_recip = float(self.lineEdit_scale_recip.text())
-    
-                for artist in self.ax_dp.artists[:]:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-    
-                scalebar_recip = ScaleBar(
-                    scale_recip * 10,
-                    '1/nm',
-                    dimension='si-length-reciprocal',
-                    location='lower left',
-                    box_alpha=0,
-                    color='w',
-                    scale_formatter=lambda value, unit: f'{value / 10}' + r' $\AA^{-1}$',
-                    fixed_value=5
-                )
-    
-                self.ax_dp.add_artist(scalebar_recip)
-    
-                self.canvas.draw_idle()
-    
-            except ValueError:
-    
-                for artist in self.ax_dp.artists[:]:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-    
-                self.canvas.draw_idle()
+            # A conventional linear scale bar doesn't read naturally on a
+            # radially-symmetric diffraction pattern - concentric dashed
+            # rings at every 1 1/A (centered on the DP) work better.
+            shape = self.img_display['dp'].get_array().shape
+            self._dp_recip_circles = io.draw_reciprocal_scale_circles(
+                self.ax_dp, self.lineEdit_scale_recip.text(), shape,
+                old_artists=getattr(self, '_dp_recip_circles', None))
+            self.canvas_extract.draw_idle()
 
     def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full'):
         # thresh_method = self.combo_thresh_method.currentText()
@@ -949,24 +961,24 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if event.inaxes == self.ax_nav:
             if self.rect is not None:
                 self.rect.remove()
-            self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1, 
+            self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1,
                                           edgecolor='r', facecolor='none')
             self.patches_axNav.append(self.rect)
             self.ax_nav.add_patch(self.rect)
-            self.canvas.draw()
-            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
-            
+            self.canvas_nav.draw()
+            self.backgrounds['nav'] = self.canvas_nav.copy_from_bbox(self.ax_nav.bbox)
+
         elif (event.inaxes == self.ax_track):
-            self.canvas.restore_region(self.backgrounds['track'])
+            self.canvas_nav.restore_region(self.backgrounds['track'])
             if self.rect_roiInRoi is not None:
                 self.rect_roiInRoi.remove()
-            
-            self.rect_roiInRoi = patches.Rectangle(self.press, 0, 0, linewidth=1, 
+
+            self.rect_roiInRoi = patches.Rectangle(self.press, 0, 0, linewidth=1,
                                                    edgecolor='r', facecolor='none')
             self.patches_axTrack.append(self.rect_roiInRoi)
             self.ax_track.add_patch(self.rect_roiInRoi)
-            self.canvas.draw()
-            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
+            self.canvas_nav.draw()
+            self.backgrounds['track'] = self.canvas_nav.copy_from_bbox(self.ax_track.bbox)
             
         else:
             self.press = None
@@ -988,9 +1000,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.rect.set_xy((x0, y0))
             except AttributeError:
                 self.press = None
-            self.canvas.restore_region(self.backgrounds['nav'])
+            self.canvas_nav.restore_region(self.backgrounds['nav'])
             self.ax_nav.draw_artist(self.rect)
-            self.canvas.blit(self.ax_nav.bbox)
+            self.canvas_nav.blit(self.ax_nav.bbox)
             
         elif (event.inaxes == self.ax_track):
             if event.xdata is None or event.ydata is None:
@@ -1030,9 +1042,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.press = None
                 return
         
-            self.canvas.restore_region(self.backgrounds['track'])
+            self.canvas_nav.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(self.rect_roiInRoi)
-            self.canvas.blit(self.ax_track.bbox)
+            self.canvas_nav.blit(self.ax_track.bbox)
 
 
     def on_release(self, event):
@@ -1102,13 +1114,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
         if roiInRoi:
             # self.patches_axTrack.append(t)
             # self.canvas.restore_region(self.backgrounds['track'])
-            t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center', 
+            t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center',
                                    verticalalignment='center', color='red', fontsize=6)
             self.patches_axTrack.append(t)
-            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
-            self.canvas.restore_region(self.backgrounds['track'])
+            self.backgrounds['track'] = self.canvas_nav.copy_from_bbox(self.ax_track.bbox)
+            self.canvas_nav.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(t)
-            self.canvas.blit(self.ax_track.bbox)
+            self.canvas_nav.blit(self.ax_track.bbox)
             self.rect_roiInRoi = None
             
 # =============================================================================
@@ -1137,10 +1149,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.update_canvas(imgNo)
 
     def on_scroll(self, event):
-        """Zoom the axes under the cursor in/out on the scroll wheel,
+        """Zoom the axes under the cursor in/out on Ctrl+scroll wheel,
         centered on the cursor position."""
         ax = event.inaxes
-        if ax is None or event.xdata is None or event.ydata is None:
+        if (ax is None or event.xdata is None or event.ydata is None
+                or 'ctrl' not in event.modifiers):
             return
         base_scale = 1.2
         scale_factor = 1 / base_scale if event.button == 'up' else base_scale
@@ -1152,7 +1165,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
         ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
         ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
-        self.canvas.draw_idle()
+        # on_scroll is connected to both canvas_nav and canvas_extract, so
+        # the event's own originating canvas (not a hardcoded one) must be
+        # redrawn - the axis under the cursor could be on either.
+        event.canvas.draw_idle()
 #%%
     def add_item_tree(self, idx, init=[0], end=None, ref=None, use=1):
         cols = {col: i for i,col in enumerate(self.cols_tree)}
@@ -1284,7 +1300,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
         # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
-        self.canvas.draw()
+        self.canvas_nav.draw()
         self.logger.info('Auto-detector added %d object(s) on frame %d.',
                           len(objects), self.imgNo_autoDet)
             
@@ -1371,7 +1387,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
             item = self.tree_objects.topLevelItem(0)
             item.setSelected(True)
             self.update_canvas(0)
-            self.canvas.draw()
+            self.canvas_nav.draw()
+            self.canvas_extract.draw()
             self.spinner.stop()
 
             duration = perf_counter() - self._track_tic
@@ -1670,7 +1687,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
         threadpools, running subprocesses, and matplotlib figures alive."""
         self.threadpool.clear()
         self.kill_running_process()
-        plt.close(self.figure)
+        self.log_console.disconnect_log()
+        plt.close(self.figure_nav)
+        plt.close(self.figure_extract)
 
 # =============================================================================
 # if __name__ == "__main__":

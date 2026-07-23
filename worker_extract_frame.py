@@ -106,31 +106,49 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
     """
     repetitions = 1
     bitDepth=16
-    if roi is None:
-        x=0
-        y=0 
-        w=scanSize[0]
-        h=scanSize[1]
-    else:
-        # y, x, h, w = roi
-        x, y, w, h = roi
+# =============================================================================
+#     if roi is None:
+#         x=0
+#         y=0 
+#         w=scanSize[0]
+#         h=scanSize[1]
+#     else:
+#         # y, x, h, w = roi
+#         x, y, w, h = roi
+# =============================================================================
         
-    s_roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
-    s_roi.set_bitdepth(bitDepth)
-    s_roi.nx = scanSize[0]
-    s_roi.ny = scanSize[1]
-    s_roi.set_file(fn)
-    s_roi.set_roi(x=x, y=y, width=w, height=h)
-    s_roi.set_dwell_time(dwellTime*1000)
-    s_roi.run()
-    # ROI_scan_image = np.asarray(roi.Roi_scan_image)
-    # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
-    s = np.asarray(s_roi.get_4D())
-
-    mask_crop = mask[y:y+h, x:x+w]
-    s = s.reshape(-1, *s.shape[-2:])
-    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
-    # dp = dp.compute()
+# =============================================================================
+#     s_roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
+#     s_roi.set_bitdepth(bitDepth)
+#     s_roi.nx = scanSize[0]
+#     s_roi.ny = scanSize[1]
+#     s_roi.set_file(fn)
+#     s_roi.set_roi(x=x, y=y, width=w, height=h)
+#     s_roi.set_dwell_time(dwellTime*1000)
+#     s_roi.run()
+#     # ROI_scan_image = np.asarray(roi.Roi_scan_image)
+#     # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
+#     s = np.asarray(s_roi.get_4D())
+# 
+#     mask_crop = mask[y:y+h, x:x+w]
+#     s = s.reshape(-1, *s.shape[-2:])
+#     dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+# =============================================================================
+    
+    roi = eventem.Roi(repetitions=repetitions, extract_4D=False)
+    # roi.b_cumulative = True
+    roi.set_file(fn)
+    roi.set_dwell_time(dwellTime * 1000)
+    roi.set_bitdepth(bitDepth)
+    roi.nx = scanSize[0]
+    roi.ny = scanSize[1]
+    # roi.set_roi_mask([np.where(mask.flatten())[0]])
+    # roi.set_roi_mask([np.where(mask.flatten())[0]])
+    roi.set_roi_mask([mask.flatten()])
+    roi.run()
+    dp = roi.Roi_diffraction_pattern
+    dp = np.array(dp).reshape(scanSize)
+    roi.close_socket()
     return dp
 
 def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
@@ -163,8 +181,8 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), **kwargs):
 
     Args:
         fn: Path to the HyperSpy signal file.
-        roi: (y, x, h, w) scan-space crop (applied to the mask transpose).
-        mask: 2-D boolean array.
+        roi: (x, y, w, h) scan-space crop, applied via HyperSpy `inav`.
+        mask: 2-D boolean array matching the full scan dimensions.
         chunks: Dask rechunk shape.
 
     Returns:
@@ -175,14 +193,16 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), **kwargs):
         s.rechunk(chunks)
     except:
         pass
-    y,x,h,w = roi # TODO check
-    # s = s.inav[x:x+w, y:y+h].data
-    # mask = mask[]
-    s = s.data
-    s = s.reshape(-1, *s.shape[2:])
-    dp = s[np.where(mask.T.flatten() == 1)[0]].sum(axis=0)
+    x, y, w, h = roi
+    s = s.inav[x:x+w, y:y+h].data
+    # `mask` covers the full scan, but `s` was just cropped to the ROI
+    # window above, so the mask must be cropped to that same window before
+    # it's used to index s. Mirrors the equivalent crop in load_tpx3/load_mib.
+    mask_crop = mask[y:y+h, x:x+w]
+    s = s.reshape(-1, *s.shape[-2:])
+    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
     dp = dp.compute()
-    return dp   
+    return dp
 
 def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), **kwargs):
     """Load a .mib file and sum diffraction patterns at mask-True scan pixels.
