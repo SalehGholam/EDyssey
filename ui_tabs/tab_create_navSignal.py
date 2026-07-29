@@ -7,6 +7,8 @@ Created on Fri Sep 13 13:53:46 2024
 
 import os
 import sys
+import shutil
+import tempfile
 from time import perf_counter
 from collections import deque
 from PyQt5.QtCore import Qt, QProcess, QThreadPool
@@ -23,7 +25,6 @@ import hyperspy.api as hs
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from matplotlib_scalebar.scalebar import ScaleBar
 from .logging_utils import get_tab_logger, LogConsole
 from .worker_thread import WorkerThread_General
 from .threshold_dialog import ThresholdDialog
@@ -41,10 +42,14 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.setLayout(self.layout)
         self._splitter = qtw.QSplitter(Qt.Horizontal)
         self.layout.addWidget(self._splitter)
-        self._left_widget = qtw.QWidget()
-        self._splitter.addWidget(self._left_widget)
 
-        width_userInput = 300
+        width_userInput = 320
+        button_w = 90
+        button_h_lrg = 50
+
+        self._left_widget = qtw.QWidget()
+        self._left_widget.setFixedWidth(width_userInput)
+        self._splitter.addWidget(self._left_widget)
 
         # layout top
         layout_userInput = qtw.QVBoxLayout(self._left_widget)
@@ -87,62 +92,123 @@ class Tab_Create_NavSignal(qtw.QWidget):
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
 
-        #%% scale
-        layout_scale = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_scale)
+        layout_save_name = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_save_name)
+
+        label_save_name = qtw.QLabel('Save Name')
+        label_save_name.setFixedWidth(55)
+        layout_save_name.addWidget(label_save_name)
+
+        self.lineEdit_saveName = qtw.QLineEdit('navigation_signal')
+        layout_save_name.addWidget(self.lineEdit_saveName)
+        self.lineEdit_saveName.setToolTip(
+            'Filename (without extension) for the saved navigation signal. Other tabs\' '
+            '"Load Saved Analysis" looks for the default name "navigation_signal" '
+            'specifically - rename only if you don\'t need that auto-discovery.')
+
+        #%% box for scales
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_dir.addWidget(self.box_scale)
+
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        label_scale_real = qtw.QLabel('Scale (nm)')
-        layout_scale.addWidget(label_scale_real)
+        # real space
+        layout_scale_real = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_real)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_real.addWidget(label_scale_real)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setFixedWidth(50)
+        layout_scale_real.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
             self.slider_imgNo.value()))
 
+        # reciprocal space
+        layout_scale_recip = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_recip)
         label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        layout_scale.addWidget(label_scale_recip)
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_recip.addWidget(label_scale_recip)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setFixedWidth(50)
+        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         self.lineEdit_scale_recip.setToolTip(
-            'Reciprocal-space calibration (1/A per pixel) for the PACBED preview - '
+            'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
             'drawn as concentric dashed rings every 1 1/A, centered on the found center')
         self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
-        layout_scale.addStretch(1)
         #%% scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
         layout_dir_scanSize.addWidget(self.box_scanSize)
-        layout_scanSize = qtw.QHBoxLayout()
+        layout_scanSize = qtw.QVBoxLayout()
         self.box_scanSize.setLayout(layout_scanSize)
 
+        layout_scanSize_row1 = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_row1)
+
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_scanSize.addWidget(self.checkbox_scanSize)
+        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
 
         self.lineEdit_scanSize_x = qtw.QLineEdit()
         self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_scanSize.addWidget(self.lineEdit_scanSize_x)
-        self.lineEdit_scanSize_x.setFixedWidth(50)
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
+        self.lineEdit_scanSize_x.setFixedWidth(40)
         self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
 
         label_cross = qtw.QLabel('X')
-        layout_scanSize.addWidget(label_cross)
+        layout_scanSize_row1.addWidget(label_cross)
 
         self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_scanSize.addWidget(self.lineEdit_scanSize_y)
-        self.lineEdit_scanSize_y.setFixedWidth(50)
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
+        self.lineEdit_scanSize_y.setFixedWidth(40)
         self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
-        label_dwellTime = qtw.QLabel('Dwell Time (usec)')
+        label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
+        label_dwellTime.setToolTip('Dwell time in microseconds')
         self.spinbox_dwellTime = qtw.QSpinBox()
         self.spinbox_dwellTime.setFixedWidth(60)
         self.spinbox_dwellTime.setRange(1, 99999999)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_scanSize.addWidget(wid)
+            layout_scanSize_row1.addWidget(wid)
+        layout_scanSize_row1.addStretch(1)
+
+        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
+        # size/dwell time there, alongside the .tpx3 file(s).
+        layout_scanSize_row2 = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_row2)
+
+        label_metadataCount = qtw.QLabel('Block #')
+        label_metadataCount.setToolTip(
+            'Which 0-indexed metadata block to read from comment.txt. Only '
+            'enabled when comment.txt logs more than one measurement')
+        layout_scanSize_row2.addWidget(label_metadataCount)
+        self.spinbox_metadataCount = qtw.QSpinBox()
+        self.spinbox_metadataCount.setFixedWidth(50)
+        self.spinbox_metadataCount.setRange(0, 99999)
+        self.spinbox_metadataCount.setValue(0)
+        self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
+
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size / dwell time from comment.txt in the 4D signals '
+            'folder (tpx3 acquisitions only)')
+        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip(
+            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
+        layout_scanSize_row2.addWidget(self.button_browseMetadata)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+        layout_scanSize_row2.addStretch(1)
+
+        self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
         #%% list of files
         layout_fileList = qtw.QVBoxLayout()
         layout_userInput.addLayout(layout_fileList)
@@ -157,6 +223,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.checkbox_selectAll.setChecked(True)
 
         self.combo_dtype = qtw.QComboBox()
+        self.combo_dtype.setMaximumWidth(130)
         layout_dtype.addWidget(self.combo_dtype)
         self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib'])
         self.combo_dtype.setDisabled(True)
@@ -164,51 +231,89 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
 
         #%% calculate button + CPU cores
+        # Two rows, not one wide one: 3 buttons at 100px each already equal
+        # the whole panel's default width on their own, so packing the
+        # cores/fps spinboxes into that same row too (as before) forced the
+        # panel's natural minimum width far past 300px - the underlying
+        # cause of the panel-width/line-edit-sizing complaints.
         layout_calculate_buttons = qtw.QHBoxLayout()
         layout_userInput.addLayout(layout_calculate_buttons)
-
-        self.button_calculate = qtw.QPushButton('Calculate All')
-        self.button_calculate.setFixedSize(100, 50)
-        layout_calculate_buttons.addWidget(self.button_calculate)
-        self.button_calculate.clicked.connect(self.calculate_button)
-        self.button_calculate.setToolTip('Run the full batch over every listed (or selected) file')
+        layout_calculate_buttons.setAlignment(Qt.AlignLeft)
 
         self.button_testFile = qtw.QPushButton('Test File')
-        self.button_testFile.setFixedSize(100, 50)
+        self.button_testFile.setFixedSize(button_w, button_h_lrg)
         layout_calculate_buttons.addWidget(self.button_testFile)
         self.button_testFile.clicked.connect(lambda: self.test_selected_file(None))
         self.button_testFile.setToolTip(
             'Compute/preview the navigation image for the selected (or first) '
             'file only, without running the full batch - same as double-clicking it')
 
+        self.button_calculate = qtw.QPushButton('Calculate All')
+        self.button_calculate.setFixedSize(button_w, button_h_lrg)
+        layout_calculate_buttons.addWidget(self.button_calculate)
+        self.button_calculate.clicked.connect(self.calculate_button)
+        self.button_calculate.setToolTip('Run the full batch over every listed (or selected) file')
+
+        layout_calculate_buttons2 = qtw.QHBoxLayout()
+        layout_userInput.addLayout(layout_calculate_buttons2)
+
         self.button_stop = qtw.QPushButton('Stop')
-        self.button_stop.setFixedSize(100, 50)
+        self.button_stop.setFixedSize(button_w, button_h_lrg)
         layout_calculate_buttons.addWidget(self.button_stop)
         self.button_stop.setStyleSheet("background-color: red; color: white;")
         self.button_stop.setDisabled(True)
         self.button_stop.clicked.connect(self.stop_worker)
 
-        layout_cores = qtw.QVBoxLayout()
-        layout_calculate_buttons.addLayout(layout_cores)
+
+        #%% save
+        layout_save = qtw.QHBoxLayout()
+        layout_calculate_buttons2.addLayout(layout_save)
+        
+        self.button_save_results = qtw.QPushButton('Save Results')
+        self.button_save_results.setFixedSize(button_w, button_h_lrg)
+        layout_save.addWidget(self.button_save_results)
+        self.button_save_results.clicked.connect(self.save_results)
+        self.button_save_results.setToolTip(
+            'Save the navigation signal, frames, and clip to the Save Path above')
+        self.button_save_results.setDisabled(True)
+        
+        layout_save_options = qtw.QVBoxLayout()
+        layout_save.addLayout(layout_save_options)
+        layout_save_cpu = qtw.QHBoxLayout()
+        layout_save_cpu.setAlignment(Qt.AlignLeft)
+        layout_save_options.addLayout(layout_save_cpu)
+
         label_cores = qtw.QLabel('CPU Cores')
-        label_cores.setAlignment(Qt.AlignCenter)
+        label_cores.setAlignment(Qt.AlignLeft)
+        label_cores.setFixedWidth(60)
         self.spinbox_cpuCores = qtw.QSpinBox()
+        self.spinbox_cpuCores.setFixedWidth(40)
         self.spinbox_cpuCores.setRange(1, os.cpu_count() or 1)
-        self.spinbox_cpuCores.setValue(max(1, (os.cpu_count() or 2) - 2))
+        self.spinbox_cpuCores.setValue(1)
         self.spinbox_cpuCores.setToolTip('Number of parallel worker processes for nav image computation')
         for wid in [label_cores, self.spinbox_cpuCores]:
-            layout_cores.addWidget(wid)
+            layout_save_cpu.addWidget(wid)
 
-        layout_fps = qtw.QVBoxLayout()
-        layout_calculate_buttons.addLayout(layout_fps)
+
+        layout_save_clip = qtw.QHBoxLayout()
+        layout_save_clip.setAlignment(Qt.AlignLeft)
+        layout_save_options.addLayout(layout_save_clip)
         label_fps = qtw.QLabel('Clip FPS')
-        label_fps.setAlignment(Qt.AlignCenter)
+        label_fps.setAlignment(Qt.AlignLeft)
+        label_fps.setFixedWidth(60)
         self.spinbox_fps = qtw.QSpinBox()
+        self.spinbox_fps.setFixedWidth(40)
         self.spinbox_fps.setRange(1, 60)
         self.spinbox_fps.setValue(5)
         self.spinbox_fps.setToolTip('Frames per second for the navigation clip')
         for wid in [label_fps, self.spinbox_fps]:
-            layout_fps.addWidget(wid)
+            layout_save_clip.addWidget(wid)
+
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_save_options.addWidget(self.checkbox_autosave)
+        self.checkbox_autosave.setToolTip(
+            'Automatically save when "Calculate All" finishes, instead of needing '
+            'to click "Save Results" manually')
 
         #%% list of files
         self.file_list_widget = qtw.QListWidget()
@@ -223,7 +328,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         layout_mask = qtw.QVBoxLayout()
         self.box_mask.setLayout(layout_mask)
 
-        self.checkbox_useMask = qtw.QCheckBox('Use Virtual Mask (annular detector)')
+        self.checkbox_useMask = qtw.QCheckBox('Use Virtual Mask')
         layout_mask.addWidget(self.checkbox_useMask)
         self.checkbox_useMask.setToolTip(
             'When checked, the navigation image sums each diffraction pattern only '
@@ -234,12 +339,14 @@ class Tab_Create_NavSignal(qtw.QWidget):
         label_centerX = qtw.QLabel('Center X')
         layout_mask_center.addWidget(label_centerX)
         self.spinbox_centerX = qtw.QSpinBox()
+        self.spinbox_centerX.setMaximumWidth(70)
         self.spinbox_centerX.setRange(0, 8192)
         self.spinbox_centerX.setValue(256)
         layout_mask_center.addWidget(self.spinbox_centerX)
         label_centerY = qtw.QLabel('Center Y')
         layout_mask_center.addWidget(label_centerY)
         self.spinbox_centerY = qtw.QSpinBox()
+        self.spinbox_centerY.setMaximumWidth(70)
         self.spinbox_centerY.setRange(0, 8192)
         self.spinbox_centerY.setValue(256)
         layout_mask_center.addWidget(self.spinbox_centerY)
@@ -249,6 +356,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         label_rIn = qtw.QLabel('Inner R')
         layout_mask_radii.addWidget(label_rIn)
         self.spinbox_rIn = qtw.QSpinBox()
+        self.spinbox_rIn.setMaximumWidth(70)
         self.spinbox_rIn.setRange(0, 4096)
         self.spinbox_rIn.setValue(0)
         self.spinbox_rIn.setSingleStep(10)
@@ -256,6 +364,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         label_rOut = qtw.QLabel('Outer R')
         layout_mask_radii.addWidget(label_rOut)
         self.spinbox_rOut = qtw.QSpinBox()
+        self.spinbox_rOut.setMaximumWidth(70)
         self.spinbox_rOut.setRange(1, 4096)
         self.spinbox_rOut.setValue(256)
         self.spinbox_rOut.setSingleStep(10)
@@ -266,47 +375,69 @@ class Tab_Create_NavSignal(qtw.QWidget):
         for sb in (self.spinbox_centerX, self.spinbox_centerY, self.spinbox_rIn, self.spinbox_rOut):
             sb.valueChanged.connect(self.update_mask_overlay)
 
+        # Each row here holds at most one long-label button - a long label
+        # can't shrink below its text's natural width (no eliding on
+        # QPushButton), so packing several per row is what forced the whole
+        # panel wider than intended; \n-wrapping the longer labels keeps
+        # each button itself narrower too.
         layout_mask_buttons = qtw.QHBoxLayout()
         layout_mask.addLayout(layout_mask_buttons)
-        self.button_computePacbed = qtw.QPushButton('Compute PACBED')
-        layout_mask_buttons.addWidget(self.button_computePacbed)
-        self.button_computePacbed.clicked.connect(self.compute_pacbed)
-        self.button_computePacbed.setToolTip(
+
+        self.button_autoCenter = qtw.QPushButton('Auto-Find\nCenter')
+        self.button_autoCenter.setFixedSize(button_w-10, button_h_lrg)
+        layout_mask_buttons.addWidget(self.button_autoCenter)
+        self.button_autoCenter.clicked.connect(self.auto_find_center)
+        self.button_autoCenter.setToolTip('Auto-detect the direct-beam center from the Summed DP preview')
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the center is re-found automatically (large-sigma blur) '
+            'every time a new Summed DP is computed. When unchecked, set the center '
+            'manually via the spinboxes above or by Ctrl+dragging the "+" marker.')
+        layout_mask_buttons.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(self.update_recip_scale_circles)
+
+
+        layout_sum_dp = qtw.QHBoxLayout()
+        layout_mask.addLayout(layout_sum_dp)
+        layout_sum_dp.setAlignment(Qt.AlignLeft)
+
+        self.button_computeSumDp = qtw.QPushButton('Compute\nSummed DP')
+        self.button_computeSumDp.setFixedSize(button_w-10, button_h_lrg)
+        layout_sum_dp.addWidget(self.button_computeSumDp)
+        self.button_computeSumDp.clicked.connect(self.compute_sum_dp)
+        self.button_computeSumDp.setToolTip(
             'Sum all diffraction patterns of the selected (or first) file to find '
             'the detector center - needed to place the virtual mask')
 
-        self.button_autoCenter = qtw.QPushButton('Auto-Find Center')
-        layout_mask_buttons.addWidget(self.button_autoCenter)
-        self.button_autoCenter.clicked.connect(self.auto_find_center)
-        self.button_autoCenter.setToolTip('Auto-detect the direct-beam center from the PACBED preview')
-
-        layout_mask_threshold = qtw.QHBoxLayout()
-        layout_mask.addLayout(layout_mask_threshold)
-        self.button_pacbedFromThreshold = qtw.QPushButton('PACBED from Threshold...')
-        layout_mask_threshold.addWidget(self.button_pacbedFromThreshold)
-        self.button_pacbedFromThreshold.clicked.connect(self.open_threshold_dialog)
-        self.button_pacbedFromThreshold.setToolTip(
+        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP\nby Threshold')
+        self.button_sumDpFromThreshold.setFixedSize(button_w-10, button_h_lrg)
+        layout_sum_dp.addWidget(self.button_sumDpFromThreshold)
+        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_sumDpFromThreshold.setToolTip(
             'Open a window to check/adjust a real-space threshold on the last '
             'tested navigation image, then sum diffraction patterns only at the '
             'scan positions above it, instead of the whole scan - for checking '
-            'purposes only, not a substitute for "Compute PACBED"')
+            'purposes only, not a substitute for "Compute Summed DP"')
 
-        self.button_pacbedFromRoi = qtw.QPushButton('PACBED from ROI')
-        layout_mask_threshold.addWidget(self.button_pacbedFromRoi)
-        self.button_pacbedFromRoi.clicked.connect(self.compute_pacbed_from_roi)
-        self.button_pacbedFromRoi.setDisabled(True)
-        self.button_pacbedFromRoi.setToolTip(
+        self.button_sumDpFromRoi = qtw.QPushButton('Summed DP\nfrom ROI')
+        self.button_sumDpFromRoi.setFixedSize(button_w-10, button_h_lrg)
+        layout_sum_dp.addWidget(self.button_sumDpFromRoi)
+        self.button_sumDpFromRoi.clicked.connect(self.compute_sum_dp_from_roi)
+        self.button_sumDpFromRoi.setDisabled(True)
+        self.button_sumDpFromRoi.setToolTip(
             'Sum diffraction patterns only over the scan-space rectangle drawn '
             'on the navigation/test image (hold Ctrl and drag there), instead '
             'of the whole scan')
 
-        # The PACBED preview canvas itself lives in the main window, beside
+        # The Summed DP preview canvas itself lives in the main window, beside
         # the navigation image (see #%% canvas below), so it has more room
         # to work with and its own navigation toolbar.
         self._mask_artists = []
         self._mask_drag_mode = None
         # Scan-space ROI drawn (Ctrl+drag) on the nav/test image, used only
-        # by "PACBED from ROI" - never by "Compute PACBED", which always
+        # by "Summed DP from ROI" - never by "Compute Summed DP", which always
         # sums the whole scan regardless of whether a ROI is currently drawn.
         self.roi_navsig = None
         self.rect_navsig = None
@@ -336,7 +467,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             spine.set_visible(False)
         self.ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         self.ax.set_xlabel(
-            'Hold Ctrl and drag to draw a scan-space ROI (auto-loads its PACBED).\n'
+            'Hold Ctrl and drag to draw a scan-space ROI (auto-loads its Summed DP).\n'
             'Right-click to remove it.',
             fontsize=7)
         self.ax.xaxis.label.set_visible(True)
@@ -346,7 +477,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.img_display_mask = self.ax_mask_preview.imshow(
             np.zeros((512, 512), dtype='uint16'), cmap='inferno')
         self.img_display_mask.set_norm(SymLogNorm(linthresh=1))
-        self.ax_mask_preview.set_title('PACBED (sum of all DPs)', fontsize=9)
+        self.ax_mask_preview.set_title('Summed DP', fontsize=9)
         # ax_mask_preview keeps its x-axis label visible (for the
         # interaction hint below), so its ticks/spines are hidden
         # individually instead of via set_axis_off() - that sets
@@ -356,13 +487,13 @@ class Tab_Create_NavSignal(qtw.QWidget):
         for spine in self.ax_mask_preview.spines.values():
             spine.set_visible(False)
         self.ax_mask_preview.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-        self.ax_mask_preview.set_xlabel(
-            'Hold Ctrl and drag the center (+) or a circle edge to move/resize '
-            'the virtual mask.\nCtrl+Scroll to zoom either plot; plain click+drag pans (toolbar).',
-            fontsize=7)
         self.ax_mask_preview.xaxis.label.set_visible(True)
         self.colorbar_mask = self.figure.colorbar(
             self.img_display_mask, ax=self.ax_mask_preview, fraction=0.046, pad=0.04)
+
+        # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
+        # it's a figure-wide supxlabel rather than repeated per-axis text.
+        self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom either plot', fontsize=7)
 
         layout_canvas.addWidget(self.canvas)
         self.toolbar = NavigationToolbar(self.canvas, self)
@@ -383,7 +514,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.canvas.mpl_connect('motion_notify_event', self.on_motion_mask)
         self.canvas.mpl_connect('button_release_event', self.on_release_mask)
         # Separate handlers for the nav/test image's own Ctrl+drag ROI
-        # (used by "PACBED from ROI") - each checks event.inaxes for its own
+        # (used by "Summed DP from ROI") - each checks event.inaxes for its own
         # target axis, so both sets of callbacks can coexist on one canvas.
         self.canvas.mpl_connect('button_press_event', self.on_press_navsig)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion_navsig)
@@ -413,6 +544,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
             if path:
                 path = os.path.split(path[0])[0]
+                self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_signal.setText(path)
         elif sender == self.button_dir_save:
             path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
@@ -424,6 +556,54 @@ class Tab_Create_NavSignal(qtw.QWidget):
         if os.path.isdir(directory):
             self.set_save_directory()
         self.refresh_file_list()
+        if os.path.isdir(directory) and any(
+                f.endswith('.tpx3') for f in os.listdir(directory)):
+            self.load_metadata(silent=True)
+
+    def browse_metadata_file(self):
+        start_dir = self.lineEdit_dir_signal.text()
+        path, _ = qtw.QFileDialog.getOpenFileName(
+            self, "Select Metadata File", start_dir, "Text files (*.txt);;All Files (*)")
+        if path:
+            self.metadata_path_override = path
+            self.load_metadata(silent=False)
+
+    def load_metadata(self, silent=True):
+        """Fill scan size / dwell time from a comment.txt in the 4D signals
+        folder, if present (tpx3 acquisitions log scan metadata there).
+        silent=True swallows a missing/unparsable comment.txt quietly (used
+        for the automatic per-folder attempt); silent=False (the "Load
+        Metadata" button, or a manually-browsed file) surfaces the failure
+        to the user."""
+        path_main = self.metadata_path_override or self.lineEdit_dir_signal.text()
+        try:
+            n_blocks = io.get_metadata_block_count(path_main)
+        except Exception:
+            n_blocks = 0
+        self.spinbox_metadataCount.setEnabled(n_blocks > 1)
+        if n_blocks <= 1:
+            self.spinbox_metadataCount.setValue(0)
+        count = self.spinbox_metadataCount.value()
+        fn_used = path_main if os.path.isfile(path_main) else os.path.join(path_main, 'comment.txt')
+        try:
+            metadata = io.get_metadata(path_main, count=count)
+            if not metadata:
+                raise ValueError('comment.txt contained no parsable metadata')
+            if 'scan size x' in metadata and 'scan size y' in metadata:
+                self.lineEdit_scanSize_x.setText(str(int(metadata['scan size x'])))
+                self.lineEdit_scanSize_y.setText(str(int(metadata['scan size y'])))
+                self.checkbox_scanSize.setChecked(False)
+            if 'dwelltime' in metadata:
+                self.spinbox_dwellTime.setValue(int(metadata['dwelltime']))
+            self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
+        except Exception as e:
+            if silent:
+                self.logger.debug('No comment.txt metadata loaded from %s (%s).', path_main, e)
+            else:
+                self.logger.warning('Could not load metadata from comment.txt in %s: %s',
+                                     path_main, e)
+                qtw.QMessageBox.warning(self, 'Metadata Not Loaded',
+                    f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
 
     def refresh_file_list(self):
         """(Re)populate the file list from the current directory, filtered
@@ -479,7 +659,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             return None
 
     def _get_test_fn(self, item=None):
-        """Resolve the file to use for test/PACBED actions: the item that
+        """Resolve the file to use for test/Summed DP actions: the item that
         was clicked, else the current selection, else the first file."""
         if item is None:
             selected = self.file_list_widget.selectedItems()
@@ -536,40 +716,46 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.ax.set_xlim(0, shape_y)
         self.ax.set_ylim(shape_x, 0)
         self.ax.set_title(f'TEST: {os.path.basename(fn)}')
+        # Re-seed the toolbar's view stack so its "Home" button resets to
+        # *this* (correct, full-extent) view - otherwise Home falls back to
+        # whatever the canvas showed before any data was loaded, since our
+        # own Ctrl+Scroll zoom deliberately bypasses the toolbar's stack.
+        self.toolbar.update()
+        self.toolbar.push_current()
         self.canvas.draw_idle()
         self.logger.info('Test navigation image computed successfully for %s.', fn)
 
-    def compute_pacbed(self):
+    def compute_sum_dp(self):
         """Sum all diffraction patterns of one representative file to get a
-        PACBED - the reference image used to place the virtual mask. Always
+        Summed DP - the reference image used to place the virtual mask. Always
         uses the whole scan, regardless of any ROI currently drawn on the
-        nav/test image - for a restricted PACBED instead, use "PACBED from
-        Threshold..." or "PACBED from ROI"."""
+        nav/test image - for a restricted Summed DP instead, use "Summed DP from
+        Threshold..." or "Summed DP from ROI"."""
         fn = self._get_test_fn()
         if fn is None or not os.path.isfile(fn):
             qtw.QMessageBox.critical(self, 'No File',
-                'Load a directory (and optionally select a file) before computing a PACBED.')
+                'Load a directory (and optionally select a file) before computing a Summed DP.')
             return
         dtype = os.path.splitext(fn)[-1]
         scanSize = self._get_current_scanSize()
         if dtype == '.tpx3' and scanSize is None:
-            self.logger.warning('Cannot compute PACBED for %s: scan size is required for .tpx3 files.', fn)
+            self.logger.warning('Cannot compute Summed DP for %s: scan size is required for .tpx3 files.', fn)
             self.message_box_tpx3()
             return
 
-        self.logger.info('Computing PACBED (summed diffraction pattern) from %s...', fn)
-        self.button_computePacbed.setDisabled(True)
-        self._pacbed_tic = perf_counter()
-        worker = WorkerThread_General(io.get_pacbed, 0, fn, dtype=dtype, scanSize=scanSize,
+        self.logger.info('Computing Summed DP (summed diffraction pattern) from %s...', fn)
+        self.button_computeSumDp.setDisabled(True)
+        self._sum_dp_tic = perf_counter()
+        worker = WorkerThread_General(io.get_sum_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self.spinbox_dwellTime.value(), roi=None,
                                       logger=self.logger)
-        worker.signals.results.connect(self._on_pacbed_computed)
-        worker.signals.error.connect(self._on_pacbed_failed)
+        worker.signals.results.connect(self._on_sum_dp_computed)
+        worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
 
-    def compute_pacbed_from_roi(self):
+    def compute_sum_dp_from_roi(self):
         """Sum diffraction patterns only over the scan-space rectangle drawn
-        (Ctrl+drag) on the nav/test image - "Compute PACBED" itself always
+        (Ctrl+drag) on the nav/test image - "Compute Summed DP" itself always
         ignores this ROI and sums the whole scan instead."""
         if not self.roi_navsig:
             qtw.QMessageBox.critical(self, 'No ROI',
@@ -579,65 +765,72 @@ class Tab_Create_NavSignal(qtw.QWidget):
         fn = self._get_test_fn()
         if fn is None or not os.path.isfile(fn):
             qtw.QMessageBox.critical(self, 'No File',
-                'Load a directory (and optionally select a file) before computing a PACBED.')
+                'Load a directory (and optionally select a file) before computing a Summed DP.')
             return
         dtype = os.path.splitext(fn)[-1]
         scanSize = self._get_current_scanSize()
         if dtype == '.tpx3' and scanSize is None:
-            self.logger.warning('Cannot compute PACBED for %s: scan size is required for .tpx3 files.', fn)
+            self.logger.warning('Cannot compute Summed DP for %s: scan size is required for .tpx3 files.', fn)
             self.message_box_tpx3()
             return
 
-        self.logger.info('Computing PACBED from ROI %s of %s...', self.roi_navsig, fn)
-        self.button_computePacbed.setDisabled(True)
-        self.button_pacbedFromRoi.setDisabled(True)
-        self._pacbed_tic = perf_counter()
-        worker = WorkerThread_General(io.get_pacbed, 0, fn, dtype=dtype, scanSize=scanSize,
+        self.logger.info('Computing Summed DP from ROI %s of %s...', self.roi_navsig, fn)
+        self.button_computeSumDp.setDisabled(True)
+        self.button_sumDpFromRoi.setDisabled(True)
+        self._sum_dp_tic = perf_counter()
+        worker = WorkerThread_General(io.get_sum_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self.spinbox_dwellTime.value(),
                                       roi=self.roi_navsig, logger=self.logger)
-        worker.signals.results.connect(self._on_pacbed_from_roi_computed)
-        worker.signals.error.connect(self._on_pacbed_failed)
+        worker.signals.results.connect(self._on_sum_dp_from_roi_computed)
+        worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
 
-    def _on_pacbed_from_roi_computed(self, result, index):
-        self.button_pacbedFromRoi.setEnabled(True)
-        self._on_pacbed_computed(result, index)  # also logs completion + duration
+    def _on_sum_dp_from_roi_computed(self, result, index):
+        self.button_sumDpFromRoi.setEnabled(True)
+        self._on_sum_dp_computed(result, index)  # also logs completion + duration
 
-    def _on_pacbed_failed(self, traceback_text, index):
+    def _on_sum_dp_failed(self, traceback_text, index):
         # Without this, a failure in the background computation (which
         # WorkerThread_General now catches instead of letting it vanish
         # silently) would otherwise leave the triggering button disabled
         # forever, with no way to retry and no visible sign anything went wrong.
-        self.button_computePacbed.setEnabled(True)
-        self.button_pacbedFromThreshold.setEnabled(True)
-        self.button_pacbedFromRoi.setEnabled(True)
-        self.logger.error('Failed to compute PACBED:\n%s', traceback_text)
-        qtw.QMessageBox.critical(self, 'PACBED Failed',
-            'Computing the PACBED failed - see the log for details.')
+        self.button_computeSumDp.setEnabled(True)
+        self.button_sumDpFromThreshold.setEnabled(True)
+        self.button_sumDpFromRoi.setEnabled(True)
+        self.logger.error('Failed to compute Summed DP:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Summed DP Failed',
+            'Computing the Summed DP failed - see the log for details.')
 
-    def _on_pacbed_computed(self, result, index):
-        self.button_computePacbed.setEnabled(True)
-        self.pacbed = result
-        det_y, det_x = self.pacbed.shape
+    def _on_sum_dp_computed(self, result, index):
+        self.button_computeSumDp.setEnabled(True)
+        self.sum_dp = result
+        det_y, det_x = self.sum_dp.shape
         for sb, val in ((self.spinbox_centerX, det_x), (self.spinbox_centerY, det_y),
                        (self.spinbox_rIn, max(det_x, det_y)), (self.spinbox_rOut, max(det_x, det_y))):
             sb.setMaximum(val)
-        self.img_display_mask.set_data(self.pacbed)
-        self.img_display_mask.set_clim(vmin=1, vmax=self.pacbed.max())
+        self.img_display_mask.set_data(self.sum_dp)
+        self.img_display_mask.set_clim(vmin=1, vmax=self.sum_dp.max())
         self.img_display_mask.set_extent([0, det_x, det_y, 0])
         self.ax_mask_preview.set_xlim(0, det_x)
         self.ax_mask_preview.set_ylim(det_y, 0)
+        # Re-seed the toolbar's view stack so its "Home" button resets to
+        # *this* (correct, full-extent) view instead of a stale/placeholder
+        # one - see the identical comment in _on_test_result.
+        self.toolbar.update()
+        self.toolbar.push_current()
+        if self.checkbox_autoCenterDp.isChecked():
+            self.auto_find_center(silent=True)
         self.update_mask_overlay()
-        duration = perf_counter() - self._pacbed_tic if hasattr(self, '_pacbed_tic') else None
+        duration = perf_counter() - self._sum_dp_tic if hasattr(self, '_sum_dp_tic') else None
         if duration is not None:
-            self.logger.info('PACBED computed successfully (%d x %d px) in %.1f s.',
+            self.logger.info('Summed DP computed successfully (%d x %d px) in %.1f s.',
                              det_x, det_y, duration)
         else:
-            self.logger.info('PACBED computed successfully (%d x %d px).', det_x, det_y)
+            self.logger.info('Summed DP computed successfully (%d x %d px).', det_x, det_y)
 
     def update_mask_overlay(self):
         """Redraw the inner/outer radius circles and center marker on the
-        PACBED preview to match the current spinbox values."""
+        Summed DP preview to match the current spinbox values."""
         for artist in self._mask_artists:
             try:
                 artist.remove()
@@ -664,26 +857,32 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.canvas.draw_idle()
 
     def update_recip_scale_circles(self):
-        """Draw concentric dashed 1/A rings on the PACBED preview, centered
+        """Draw concentric dashed 1/A rings on the Summed DP preview, centered
         on the found center (spinbox_centerX/Y) - in place of a conventional
         scale bar, which doesn't read naturally on a radially-symmetric
         diffraction pattern."""
-        if not hasattr(self, 'pacbed'):
+        if not hasattr(self, 'sum_dp'):
             return
         center = (self.spinbox_centerX.value(), self.spinbox_centerY.value())
-        self._pacbed_recip_circles = io.draw_reciprocal_scale_circles(
-            self.ax_mask_preview, self.lineEdit_scale_recip.text(), self.pacbed.shape,
-            center=center, old_artists=getattr(self, '_pacbed_recip_circles', None))
+        self._sum_dp_recip_circles = io.draw_reciprocal_scale_circles(
+            self.ax_mask_preview, self.lineEdit_scale_recip.text(), self.sum_dp.shape,
+            center=center, old_artists=getattr(self, '_sum_dp_recip_circles', None))
+        centering_mode = ('auto (large-sigma blur)' if self.checkbox_autoCenterDp.isChecked()
+                          else 'manual - drag the "+" or use the spinboxes')
+        self.ax_mask_preview.set_xlabel(
+            f'Circle center: {centering_mode}\n'
+            'Hold Ctrl and drag the center (+) or a circle edge to move/resize the virtual mask.',
+            fontsize=7)
         self.canvas.draw_idle()
 
-    def auto_find_center(self):
-        if not hasattr(self, 'pacbed'):
-            qtw.QMessageBox.critical(self, 'No PACBED',
-                'Click "Compute PACBED" first so there is a summed diffraction '
-                'pattern to search for the center in.')
+    def auto_find_center(self, silent=False):
+        if not hasattr(self, 'sum_dp'):
+            if not silent:
+                qtw.QMessageBox.critical(self, 'No Summed DP',
+                    'Click "Compute Summed DP" first so there is a summed diffraction '
+                    'pattern to search for the center in.')
             return
-        r_mask = self.spinbox_rOut.value() or 50
-        y, x = io.find_dp_center(self.pacbed, r_mask=r_mask, det_shape=self.pacbed.shape)
+        x, y = io.find_dp_center_blurred(self.sum_dp)
         self.spinbox_centerX.setValue(int(round(x)))
         self.spinbox_centerY.setValue(int(round(y)))
         self.logger.info('Auto-found diffraction pattern center at (%.0f, %.0f).', x, y)
@@ -691,7 +890,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
     def open_threshold_dialog(self):
         """Open the ThresholdDialog popup to check/adjust the real-space
         threshold on the last-tested navigation image *before* committing
-        to the actual (file-reading) PACBED computation - kept off the main
+        to the actual (file-reading) Summed DP computation - kept off the main
         navigation-image plot, per user request."""
         if not hasattr(self, '_last_test_fn'):
             qtw.QMessageBox.critical(self, 'No Test Image',
@@ -700,27 +899,27 @@ class Tab_Create_NavSignal(qtw.QWidget):
             return
         dlg = ThresholdDialog(self, self._last_test_img, self._last_test_fn)
         if dlg.exec_() == qtw.QDialog.Accepted:
-            self.compute_pacbed_from_threshold(dlg.fn, dlg.mask, dlg.combo_threshMethod.currentText())
+            self.compute_sum_dp_from_threshold(dlg.fn, dlg.mask, dlg.combo_threshMethod.currentText())
 
-    def compute_pacbed_from_threshold(self, fn, mask, method):
+    def compute_sum_dp_from_threshold(self, fn, mask, method):
         """Sum diffraction patterns only at the scan positions in `mask`
         (confirmed via the ThresholdDialog popup), instead of the whole
-        scan - e.g. to exclude vacuum/background regions from the PACBED
+        scan - e.g. to exclude vacuum/background regions from the Summed DP
         used to find the diffraction center."""
         dtype = os.path.splitext(fn)[-1]
         scanSize = self._get_current_scanSize()
         self.logger.info(
-            'Computing PACBED from %s-thresholded scan positions of %s...', method, fn)
-        self.button_pacbedFromThreshold.setDisabled(True)
-        self._pacbed_tic = perf_counter()
-        worker = WorkerThread_General(self._pacbed_from_mask_worker, 0, fn, dtype, scanSize,
+            'Computing Summed DP from %s-thresholded scan positions of %s...', method, fn)
+        self.button_sumDpFromThreshold.setDisabled(True)
+        self._sum_dp_tic = perf_counter()
+        worker = WorkerThread_General(self._sum_dp_from_mask_worker, 0, fn, dtype, scanSize,
                                       mask, self.logger)
-        worker.signals.results.connect(self._on_pacbed_from_threshold_computed)
-        worker.signals.error.connect(self._on_pacbed_failed)
+        worker.signals.results.connect(self._on_sum_dp_from_threshold_computed)
+        worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
 
     @staticmethod
-    def _pacbed_from_mask_worker(fn, dtype, scanSize, mask, logger=None):
+    def _sum_dp_from_mask_worker(fn, dtype, scanSize, mask, logger=None):
         rows = np.any(mask, axis=1)
         cols = np.any(mask, axis=0)
         y_idx = np.where(rows)[0]
@@ -730,13 +929,13 @@ class Tab_Create_NavSignal(qtw.QWidget):
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
         dp = load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize, dwellTime=1)
         if hasattr(dp, 'compute'):
-            with io.LoggingProgressBar(logger, 'Thresholded PACBED'):
+            with io.LoggingProgressBar(logger, 'Thresholded Summed DP'):
                 dp = dp.compute()
         return np.asarray(dp)
 
-    def _on_pacbed_from_threshold_computed(self, result, index):
-        self.button_pacbedFromThreshold.setEnabled(True)
-        self._on_pacbed_computed(result, index)  # also logs completion + duration
+    def _on_sum_dp_from_threshold_computed(self, result, index):
+        self.button_sumDpFromThreshold.setEnabled(True)
+        self._on_sum_dp_computed(result, index)  # also logs completion + duration
 
     def on_press_mask(self, event):
         """Grab the center marker or a circle edge for dragging - gated
@@ -810,7 +1009,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
     def on_press_navsig(self, event):
         """Start dragging a scan-space ROI on the nav/test image (Ctrl+drag),
         mirroring the ROI-drawing convention already used on tab ROI on 4D -
-        this ROI only ever feeds "PACBED from ROI", never "Compute PACBED".
+        this ROI only ever feeds "Summed DP from ROI", never "Compute Summed DP".
         A plain right-click instead deletes the currently-drawn ROI."""
         if event.inaxes != self.ax:
             self._navsig_press = None
@@ -869,16 +1068,16 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.roi_navsig = (int(x0), int(y0), width, height)
         self._navsig_press = None
         self.canvas.draw()
-        self.button_pacbedFromRoi.setEnabled(True)
+        self.button_sumDpFromRoi.setEnabled(True)
         self.logger.info('Nav. signal ROI: %s', self.roi_navsig)
-        # Load the PACBED for this region immediately, as a live preview -
-        # the user can still re-click "PACBED from ROI" later (e.g. after
+        # Load the Summed DP for this region immediately, as a live preview -
+        # the user can still re-click "Summed DP from ROI" later (e.g. after
         # switching files) to recompute it for the same region.
-        self.compute_pacbed_from_roi()
+        self.compute_sum_dp_from_roi()
 
     def clear_navsig_roi(self):
         """Remove the drawn scan-space ROI (right-click on the nav/test
-        image) so it stops feeding "PACBED from ROI" - "Compute PACBED"
+        image) so it stops feeding "Summed DP from ROI" - "Compute Summed DP"
         itself never uses this ROI regardless."""
         had_roi = self.roi_navsig is not None
         self.roi_navsig = None
@@ -889,7 +1088,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
                 pass
             self.rect_navsig = None
             self.canvas.draw_idle()
-        self.button_pacbedFromRoi.setDisabled(True)
+        self.button_sumDpFromRoi.setDisabled(True)
         if had_roi:
             self.logger.info('Cleared nav. signal ROI.')
 
@@ -954,6 +1153,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             os.mkdir(self.pathSave)
 
         self.button_stop.setEnabled(True)
+        self.button_save_results.setDisabled(True)
         self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params)
 
     def create_navigation_signal(self, fns, dtype, scanSize, dwellTime, mask_params=None):
@@ -962,6 +1162,12 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.nav_counter_total = len(fns)
         self._nav_tic = perf_counter()
         self._nav_failed = False
+        self._stopping = False
+        # Each worker saves its result to a .npy file in here and prints
+        # just the path back, instead of a base64+pickle-encoded copy of
+        # the array through stdout - see launch_next_nav_task/
+        # handle_finished_nav and worker_nav_img.py's docstring for why.
+        self._navimg_temp_dir = tempfile.mkdtemp(prefix='py5ded_navimg_')
         self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
         self.tasks = deque()
         for i, fn in enumerate(fns):
@@ -969,6 +1175,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.running_processes = []
         self.process_task_map = {}
         self.process_output_buffers = {}
+        self.process_stderr_buffers = {}
         self.max_processes = self.spinbox_cpuCores.value()
         self.update_progress_bar(0, self.nav_counter_total)
         for _ in range(min(self.max_processes, len(self.tasks))):
@@ -979,7 +1186,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
             return
         fn, dtype, scanSize, dwellTime, i_index, mask_params = self.tasks.popleft()
         scanSize_str = str(scanSize) if scanSize is not None else 'None'
-        args = ['worker_nav_img.py', fn, dtype, scanSize_str, str(dwellTime), str(i_index)]
+        args = ['worker_nav_img.py', fn, dtype, scanSize_str, str(dwellTime), str(i_index),
+               self._navimg_temp_dir]
         if mask_params is not None:
             r_in, r_out, center = mask_params
             args += [str(r_in), str(r_out), str(center)]
@@ -993,36 +1201,86 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.running_processes.append(process)
         self.process_task_map[process] = i_index
         self.process_output_buffers[process] = bytearray()
+        self.process_stderr_buffers[process] = bytearray()
         process.start()
 
     def _accumulate_output_nav(self, process):
         self.process_output_buffers[process] += process.readAllStandardOutput().data()
 
     def handle_error_nav(self, process):
-        err = process.readAllStandardError().data().decode().strip()
-        if err:
-            self._nav_failed = True
-            self.logger.error('Worker ERROR: %s', err)
-            qtw.QMessageBox.warning(self, 'Worker Error', err[:500])
+        """eventem's native tpx3-loading progress lands on stderr - not an
+        error. With several worker processes running in parallel, live-
+        logging every progress tick from all of them noticeably slowed the
+        batch down, and a per-file progress bar isn't that useful anyway
+        (the "Test File" in-thread path still shows live progress, and this
+        tab's own progress bar widget already tracks overall file-by-file
+        completion) - so this doesn't route it to the Qt log console. It's
+        still echoed to the real console, though (like it always was,
+        before any of this app's own logging existed) - it's just not
+        going to the GUI, not vanishing entirely - and it's buffered so it
+        can be surfaced if this worker turns out to have actually failed,
+        in handle_finished_nav, which is the sole source of truth for
+        success/failure (matching the same soft-info treatment already used
+        for the SAM2 QProcess worker's stderr, tab_sam2.py's
+        _handle_error_sam)."""
+        chunk = process.readAllStandardError().data()
+        self.process_stderr_buffers[process] += chunk
+        try:
+            sys.stderr.buffer.write(chunk)
+            sys.stderr.buffer.flush()
+        except Exception:
+            pass
 
     def handle_finished_nav(self, process):
         if process in self.running_processes:
             self.running_processes.remove(process)
         i_index = self.process_task_map.pop(process, None)
+        if self._stopping:
+            # stop_worker() already logged/showed one summary message for
+            # the whole batch - a killed process's incomplete output would
+            # otherwise trip the decode-failure path below and pop an error
+            # dialog for every single worker that was still running.
+            self.process_output_buffers.pop(process, None)
+            self.process_stderr_buffers.pop(process, None)
+            process.deleteLater()
+            return
         # drain any remaining bytes not yet signalled
         self.process_output_buffers[process] += process.readAllStandardOutput().data()
-        raw = bytes(self.process_output_buffers.pop(process, b'')).decode().strip()
+        self.process_stderr_buffers[process] += process.readAllStandardError().data()
+        # worker_nav_img.py's final print(fn_out) is unconditionally the
+        # last thing it ever writes to stdout - taking only the last
+        # non-empty line (instead of the whole accumulated buffer) is
+        # immune to any earlier noise landing on stdout too (e.g. eventem
+        # writing some of its own progress there, not just to stderr).
+        raw_all = bytes(self.process_output_buffers.pop(process, b'')).decode('utf-8', errors='replace')
+        result_lines = [line.strip() for line in raw_all.splitlines() if line.strip()]
+        raw = result_lines[-1] if result_lines else ''
         try:
-            import base64, pickle
-            nav_img, i_index = pickle.loads(base64.b64decode(raw))
+            # raw is a path to the .npy file the worker saved its result to
+            # (see worker_nav_img.py) - loading from disk instead of a
+            # base64+pickle blob through the stdout pipe is what avoids
+            # "Calculate All" getting progressively slower as more workers'
+            # payloads compete for the same GUI-thread-driven pipe draining.
+            nav_img = np.load(raw)
             self.nav_imgs[i_index] = nav_img
+            try:
+                os.remove(raw)
+            except OSError:
+                pass
         except Exception as e:
-            self.logger.error('Failed to decode nav image for index %s: %s', i_index, e)
+            stderr_text = bytes(self.process_stderr_buffers.get(process, b'')).decode(
+                'utf-8', errors='replace').strip()
+            self.logger.error('Failed to load nav image for index %s: %s%s', i_index, e,
+                              f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
+            if stderr_text:
+                qtw.QMessageBox.warning(self, 'Worker Error', stderr_text[:500])
+        self.process_stderr_buffers.pop(process, None)
         process.deleteLater()
         self.nav_counter += 1
         self.update_progress_bar(self.nav_counter, self.nav_counter_total)
         if self.nav_counter >= self.nav_counter_total:
             duration = perf_counter() - self._nav_tic
+            shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
             valid = [img for img in self.nav_imgs if img is not None]
             if not valid:
                 self.logger.error(
@@ -1043,11 +1301,15 @@ class Tab_Create_NavSignal(qtw.QWidget):
                 self.logger.info(
                     'Navigation signal creation completed successfully for %d file(s) in %.1f s.',
                     self.nav_counter_total, duration)
-            self.save_results()
+            self.button_save_results.setEnabled(True)
+            if self.checkbox_autosave.isChecked():
+                self.save_results()
         else:
             self.launch_next_nav_task()
 
     def process_failed_nav(self, error):
+        if self._stopping:
+            return
         self._nav_failed = True
         self.logger.error("QProcess error occurred: %s", error)
         self.button_stop.setDisabled(True)
@@ -1056,12 +1318,28 @@ class Tab_Create_NavSignal(qtw.QWidget):
             'Check that Python is on PATH and worker_nav_img.py exists.')
 
     def stop_worker(self):
+        # Killing several running processes at once each fires their own
+        # finished/errorOccurred signals - without this flag,
+        # handle_finished_nav/process_failed_nav would treat every one of
+        # them as an independent failure and pop an error dialog each,
+        # instead of the one summary message below.
+        self._stopping = True
+        n_done = self.nav_counter
+        n_total = getattr(self, 'nav_counter_total', n_done)
         self.tasks.clear()
         for p in list(self.running_processes):
             p.kill()
         self.running_processes.clear()
         self.process_task_map.clear()
         self.button_stop.setDisabled(True)
+        if hasattr(self, '_navimg_temp_dir'):
+            shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
+        self.logger.warning(
+            'Navigation signal creation stopped by user (%d/%d file(s) already processed).',
+            n_done, n_total)
+        qtw.QMessageBox.information(self, 'Stopped',
+            f'Navigation signal creation stopped - {n_done}/{n_total} file(s) '
+            'were already processed.')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
@@ -1088,7 +1366,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
     def _save_results_impl(self):
         threadpool = QThreadPool.globalInstance()
         s = hs.signals.Signal2D(self.nav_imgs)
-        s.save(os.path.join(self.pathSave, 'navigation_signal.hspy'), overwrite=True)
+        save_name = self.lineEdit_saveName.text().strip() or 'navigation_signal'
+        s.save(os.path.join(self.pathSave, f'{save_name}.hspy'), overwrite=True)
         path_imgs = os.path.join(self.pathSave, 'navigation_images')
         if os.path.isdir(path_imgs):
             [os.remove(os.path.join(path_imgs, fn)) for fn in os.listdir(path_imgs)]
@@ -1104,7 +1383,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             scale_real = None
         worker_clip = WorkerThread_General(io.create_clip_tracking, 0, fn_clip,
                                            s.data, None, scale_real,
-                                           fps=self.spinbox_fps.value())
+                                           fps=self.spinbox_fps.value(), logger=self.logger)
         threadpool.start(worker_clip)
 
     def update_progress_bar(self, value, total):
@@ -1122,12 +1401,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
             scale_real = self.lineEdit_scale_real.text()
             try:
                 scale_real = float(scale_real)
-                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length',
-                                         location='lower left', box_alpha=0, color='w')
-                for artist in self.ax.artists:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-                self.ax.add_artist(scalebar_real)
+                io.add_readable_scalebar(self.ax, scale_real, 'nm')
             except Exception:
                 pass
             self.canvas.draw()

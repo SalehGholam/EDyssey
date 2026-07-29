@@ -24,7 +24,6 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
-from matplotlib_scalebar.scalebar import ScaleBar
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
 from .threshold_dialog import ThresholdDialog
@@ -39,6 +38,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         super().__init__(parent)
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self.threadpool = QThreadPool()
+        self._cancelling = False  # set by cancel_running_work(); suppresses error popups it causes
         self.init_widget()
         
     def init_widget(self):
@@ -47,10 +47,11 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.setLayout(self.layout)
         self._splitter = qtw.QSplitter(Qt.Horizontal)
         self.layout.addWidget(self._splitter)
+        
+        width_userInput = 320
         self._left_widget = qtw.QWidget()
+        self._left_widget.setFixedWidth(width_userInput)
         self._splitter.addWidget(self._left_widget)
-
-        width_userInput = 300
 
         layout_userInput = qtw.QVBoxLayout(self._left_widget)
         #%% directory
@@ -75,47 +76,83 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
         #%% input layout, box scan size
         self.box_scanSize = qtw.QGroupBox('Scan Size')
-        layout_box_scanSize = qtw.QHBoxLayout()
+        layout_box_scanSize = qtw.QVBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
-        
-        # label_scanSize = qtw.QLabel('Scan Size')
-        # layout_box_scanSize.addWidget(label_scanSize)
-        
+
+        layout_scanSize_row1 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row1)
+
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_box_scanSize.addWidget(self.checkbox_scanSize)
+        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
 
         self.lineEdit_scanSize_x = qtw.QLineEdit()
         self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_box_scanSize.addWidget(self.lineEdit_scanSize_x)
-        self.lineEdit_scanSize_x.setFixedWidth(50)
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
+        self.lineEdit_scanSize_x.setFixedWidth(40)
         self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
-        
+
         label_cross = qtw.QLabel('X')
-        layout_box_scanSize.addWidget(label_cross)
-        
+        layout_scanSize_row1.addWidget(label_cross)
+
         self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_box_scanSize.addWidget(self.lineEdit_scanSize_y)
-        self.lineEdit_scanSize_y.setFixedWidth(50)
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
+        self.lineEdit_scanSize_y.setFixedWidth(40)
         self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
 
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-        
-        label_dwellTime = qtw.QLabel('Dwell Time (\u03BCsec)')
+
+        label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
+        label_dwellTime.setToolTip('Dwell time in microseconds')
         self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(75)
+        self.spinbox_dwellTime.setFixedWidth(60)
         self.spinbox_dwellTime.setRange(1, 99999999)
         self.spinbox_dwellTime.setDisabled(True)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_box_scanSize.addWidget(wid)
+            layout_scanSize_row1.addWidget(wid)
 
-        layout_box_scanSize.addStretch(1)
+        layout_scanSize_row1.addStretch(1)
+
+        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
+        # size/dwell time there, alongside the .tpx3 file itself.
+        layout_scanSize_row2 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row2)
+
+        label_metadataCount = qtw.QLabel('Block #')
+        label_metadataCount.setToolTip(
+            'Which 0-indexed metadata block to read from comment.txt. Only '
+            'enabled when comment.txt logs more than one measurement')
+        layout_scanSize_row2.addWidget(label_metadataCount)
+        self.spinbox_metadataCount = qtw.QSpinBox()
+        self.spinbox_metadataCount.setFixedWidth(50)
+        self.spinbox_metadataCount.setRange(0, 99999)
+        self.spinbox_metadataCount.setValue(0)
+        self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
+
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size / dwell time from comment.txt next to the 4D '
+            'signal file (tpx3 acquisitions only)')
+        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip(
+            'Browse for the metadata file (defaults to comment.txt next to the 4D signal)')
+        layout_scanSize_row2.addWidget(self.button_browseMetadata)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+        layout_scanSize_row2.addStretch(1)
+
+        self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
         #%% box for scales
         self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QHBoxLayout()
-        # self.box_scale.setFixedWidth(150)
+        # Real/Recip/Auto-center stack as their own rows (not one wide row)
+        # so this box doesn't force the whole left panel wider than intended.
+        layout_box_scale = qtw.QVBoxLayout()
         self.box_scale.setLayout(layout_box_scale)
         layout_userInput.addWidget(self.box_scale)
         
@@ -124,6 +161,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         layout_scale_real = qtw.QHBoxLayout()
         layout_box_scale.addLayout(layout_scale_real)
         label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
         layout_scale_real.addWidget(label_scale_real)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_real.addWidget(self.lineEdit_scale_real)
@@ -132,26 +170,52 @@ class Tab_ROI_on_4D(qtw.QWidget):
         layout_scale_recip = qtw.QHBoxLayout()
         layout_box_scale.addLayout(layout_scale_recip)
         label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
         layout_scale_recip.addWidget(label_scale_recip)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_recip.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
-        
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the reciprocal-space rings are re-centered on the '
+            'direct beam automatically (found via a large-sigma blur) after '
+            'every redraw. When unchecked, hold Ctrl and click on the '
+            'diffraction pattern to set the center manually.')
+        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(
+            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
+
+        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
+
         self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
         self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
-        
+
         #%% load button
+        layout_load = qtw.QHBoxLayout()
+        layout_userInput.addLayout(layout_load)
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
         self.button_loadNavigation.setFixedSize(110, 50)
-        layout_userInput.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        layout_load.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
         self.button_loadNavigation.clicked.connect(self.get_nav_image)
+
+        self.button_cancel = qtw.QPushButton('Cancel')
+        self.button_cancel.setFixedSize(70, 50)
+        self.button_cancel.setStyleSheet("background-color: red; color: white;")
+        self.button_cancel.setDisabled(True)
+        self.button_cancel.setToolTip(
+            'Stop the running SAM2 segmentation or DP computation. Already-running '
+            'background computations finish silently; their results are discarded.')
+        layout_load.addWidget(self.button_cancel, alignment=Qt.AlignCenter)
+        self.button_cancel.clicked.connect(self.cancel_running_work)
         #%% SAM2 segmentation
         self.box_segmentation = qtw.QGroupBox('SAM2 Segmentation')
         layout_userInput.addWidget(self.box_segmentation)
         layout_segmentation = qtw.QHBoxLayout()
         self.box_segmentation.setLayout(layout_segmentation)
 
-        self.button_segment_image = qtw.QPushButton('Segment Image')
+        self.button_segment_image = qtw.QPushButton('Segment\nImage')
         layout_segmentation.addWidget(self.button_segment_image)
         self.button_segment_image.clicked.connect(self.segment_image)
         self.button_segment_image.setDisabled(True)
@@ -159,29 +223,29 @@ class Tab_ROI_on_4D(qtw.QWidget):
             'Run SAM2 on the points added below (Shift+Click), optionally combined '
             'with the last-drawn ROI (Ctrl+Drag) as a box prompt')
 
-        self.button_clear_points = qtw.QPushButton('Clear Points')
+        self.button_clear_points = qtw.QPushButton('Clear\nPoints')
         layout_segmentation.addWidget(self.button_clear_points)
         self.button_clear_points.clicked.connect(self.clear_seg_points)
         self.button_clear_points.setDisabled(True)
         self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
 
-        self.button_clear_roi = qtw.QPushButton('Clear ROI/Box')
+        self.button_clear_roi = qtw.QPushButton('Clear\nROI/Box')
         layout_segmentation.addWidget(self.button_clear_roi)
         self.button_clear_roi.clicked.connect(self.clear_roi)
         self.button_clear_roi.setToolTip(
             'Remove the drawn ROI so it stops being used as a SAM2 box prompt '
             '(and as the rectangle for diffraction-pattern extraction)')
 
-        #%% PACBED from threshold
-        self.box_pacbedThreshold = qtw.QGroupBox('PACBED from Threshold')
-        layout_userInput.addWidget(self.box_pacbedThreshold)
-        layout_pacbedThreshold = qtw.QHBoxLayout()
-        self.box_pacbedThreshold.setLayout(layout_pacbedThreshold)
+        #%% Summed DP from threshold
+        self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
+        layout_userInput.addWidget(self.box_sumDpThreshold)
+        layout_sumDpThreshold = qtw.QHBoxLayout()
+        self.box_sumDpThreshold.setLayout(layout_sumDpThreshold)
 
-        self.button_pacbedFromThreshold = qtw.QPushButton('PACBED from Threshold...')
-        layout_pacbedThreshold.addWidget(self.button_pacbedFromThreshold)
-        self.button_pacbedFromThreshold.clicked.connect(self.open_threshold_dialog)
-        self.button_pacbedFromThreshold.setToolTip(
+        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
+        layout_sumDpThreshold.addWidget(self.button_sumDpFromThreshold)
+        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_sumDpFromThreshold.setToolTip(
             'Open a window to check/adjust a real-space threshold on the loaded '
             'navigation image, then sum diffraction patterns only at the scan '
             'positions above it, instead of a rectangular ROI')
@@ -192,11 +256,11 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self._splitter.addWidget(self._right_widget)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
-        self._splitter.setSizes([300, 900])
+        self._splitter.setSizes([width_userInput, 900])
         layout_canvas = qtw.QVBoxLayout(self._right_widget)
         
         # self.figure = Figure(figsize=(5,5))
-        self.figure = Figure()
+        self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         layout_canvas.addWidget(self.canvas)
         
@@ -303,8 +367,10 @@ class Tab_ROI_on_4D(qtw.QWidget):
             return
 
         self.logger.info('Loading 4D signal from %s...', self.fn)
+        self._cancelling = False
+        self.button_cancel.setEnabled(True)
         worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime)
-        
+
         worker.signals.result.connect(self.image_handler)  # Connect to result signal
         self.threadpool.start(worker)
 
@@ -315,6 +381,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
     def image_handler(self, result):
         self.navImg = result
+        self.dp_center = None  # a new signal may have a different DP shape/center
         self.update_canvas('nav')
         # Reset the view to the newly loaded image's full extent (in case
         # the user had already zoomed in on a previous signal, which
@@ -328,12 +395,14 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.toolbar.update()
         self.toolbar.push_current()
         self.button_clear_points.setEnabled(True)
+        self.button_cancel.setDisabled(True)
 
     def show_dialog(self):
         file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.mib *.pmf);;All Files (*)"
         path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
         # if path and os.path.isdir(path[0]):
         if path:
+            self.metadata_path_override = None  # new signal - re-derive comment.txt location
             self.lineEdit_dir_signal.setText(path[0])
     
     def enable_dwellTime_spinbox(self, txt):
@@ -347,9 +416,65 @@ class Tab_ROI_on_4D(qtw.QWidget):
             # print(e)
         self.checkbox_scanSize.setChecked(not enable)
         self.checkbox_scanSize.setDisabled(enable)
-            
-    
+        if enable:
+            self.load_metadata(silent=True)
+
+    def browse_metadata_file(self):
+        fn = self.lineEdit_dir_signal.text()
+        start_dir = os.path.dirname(fn) if fn else ''
+        path, _ = qtw.QFileDialog.getOpenFileName(
+            self, "Select Metadata File", start_dir, "Text files (*.txt);;All Files (*)")
+        if path:
+            self.metadata_path_override = path
+            self.load_metadata(silent=False)
+
+    def load_metadata(self, silent=True):
+        """Fill scan size / dwell time from a comment.txt next to the 4D
+        signal file, if present (tpx3 acquisitions log scan metadata there).
+        silent=True swallows a missing/unparsable comment.txt quietly (used
+        for the automatic per-file attempt); silent=False (the "Load
+        Metadata" button, or a manually-browsed file) surfaces the failure
+        to the user."""
+        fn = self.lineEdit_dir_signal.text()
+        path_main = self.metadata_path_override or os.path.dirname(fn)
+        try:
+            n_blocks = io.get_metadata_block_count(path_main)
+        except Exception:
+            n_blocks = 0
+        self.spinbox_metadataCount.setEnabled(n_blocks > 1)
+        if n_blocks <= 1:
+            self.spinbox_metadataCount.setValue(0)
+        count = self.spinbox_metadataCount.value()
+        fn_used = path_main if os.path.isfile(path_main) else os.path.join(path_main, 'comment.txt')
+        try:
+            metadata = io.get_metadata(path_main, count=count)
+            if not metadata:
+                raise ValueError('comment.txt contained no parsable metadata')
+            if 'scan size x' in metadata and 'scan size y' in metadata:
+                self.lineEdit_scanSize_x.setText(str(int(metadata['scan size x'])))
+                self.lineEdit_scanSize_y.setText(str(int(metadata['scan size y'])))
+            if 'dwelltime' in metadata:
+                self.spinbox_dwellTime.setValue(int(metadata['dwelltime']))
+            self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
+        except Exception as e:
+            if silent:
+                self.logger.debug('No comment.txt metadata loaded from %s (%s).', path_main, e)
+            else:
+                self.logger.warning('Could not load metadata from comment.txt in %s: %s',
+                                     path_main, e)
+                qtw.QMessageBox.warning(self, 'Metadata Not Loaded',
+                    f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
+
     def on_press(self, event):
+        if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
+                and 'ctrl' in event.modifiers and not self.checkbox_autoCenterDp.isChecked()
+                and hasattr(self, 'dp')):
+            # Manual re-centering of the reciprocal-space rings (only takes
+            # effect when auto-centering is off, so it isn't immediately
+            # overwritten by the next auto-centered redraw).
+            self.dp_center = (event.xdata, event.ydata)
+            self.update_canvas(ax='dp')
+            return
         if event.inaxes != self.ax_nav:
             self.press = None
             return
@@ -512,19 +637,27 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.ax_dp.set_title('Dif. Pattern')
 
         self.ax_nav_roi.set_axis_off()
-        self.ax_dp.set_axis_off()
-        # ax_nav keeps its x-axis label visible (for the interaction hints
-        # below), so its ticks/spines are hidden individually instead of via
-        # set_axis_off(), which would hide the label too.
+        # ax_nav/ax_dp keep their x-axis label visible (for the interaction
+        # hints below), so their ticks/spines are hidden individually
+        # instead of via set_axis_off(), which would hide the label too.
         for spine in self.ax_nav.spines.values():
             spine.set_visible(False)
         self.ax_nav.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         self.ax_nav.set_xlabel(
             'Hold "ctrl" + Drag => New ROI (also usable as a SAM2 box prompt)\n'
             'Hold "shift" + Click => Add SAM2 point (Left=positive, Right=negative)\n'
-            'Middle Click => Remove last SAM2 point, Ctrl+Scroll => Zoom\n'
-            'Plain Click+Drag => Pan/Zoom Tool', fontsize=6)
+            'Middle Click => Remove last SAM2 point', fontsize=6)
         self.ax_nav.xaxis.label.set_visible(True)
+
+        for spine in self.ax_dp.spines.values():
+            spine.set_visible(False)
+        self.ax_dp.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+        self.ax_dp.xaxis.label.set_visible(True)
+
+        # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
+        # it's a figure-wide supxlabel rather than repeated per-axis text.
+        self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
+                              fontsize=7)
 
         self.colorbars = {}
         self.colorbars['nav'] = self.figure.colorbar(
@@ -534,7 +667,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.colorbars['dp'] = self.figure.colorbar(
             self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
 
-        self.figure.tight_layout()
+        # self.figure.tight_layout()
 
     def reset_canvas(self):
         """Clear displayed data back to blank at the start of every "Load
@@ -595,17 +728,13 @@ class Tab_ROI_on_4D(qtw.QWidget):
             self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
             self.img_display['nav'].set_clim(vmin=self.navImg.min(), vmax=self.navImg.max())
         
-        # scale bars 
+        # scale bars
         #TODO adding and removing the artist is not efficient
         scale_real = self.lineEdit_scale_real.text()
         try:
             scale_real = float(scale_real)
-            for ax in [self.ax_nav, self.ax_nav_roi]:
-                scalebar_real = ScaleBar(scale_real, 'nm', dimension='si-length', location='lower left')
-                for artist in ax.artists:
-                    if isinstance(artist, ScaleBar):
-                        artist.remove()
-                ax.add_artist(scalebar_real)
+            for scale_ax in [self.ax_nav, self.ax_nav_roi]:
+                io.add_readable_scalebar(scale_ax, scale_real, 'nm')
         except Exception as e:
             # print(e)
             pass
@@ -613,9 +742,19 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # radially-symmetric diffraction pattern - concentric dashed rings
         # at every 1 1/A (centered on the DP) work better.
         dp_shape = self.img_display['dp'].get_array().shape
+        if self.checkbox_autoCenterDp.isChecked():
+            try:
+                self.dp_center = io.find_dp_center_blurred(self.dp)
+            except Exception:
+                self.logger.exception('Auto-centering the diffraction pattern failed.')
+        center = self.dp_center if self.dp_center is not None else None
         self._dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
-            old_artists=getattr(self, '_dp_recip_circles', None))
+            center=center, old_artists=getattr(self, '_dp_recip_circles', None))
+        if self.checkbox_autoCenterDp.isChecked():
+            self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=6)
+        else:
+            self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=6)
 
         self.canvas.draw()
     
@@ -700,11 +839,14 @@ class Tab_ROI_on_4D(qtw.QWidget):
             self.logger.info('Cleared ROI/box.')
 
     def show_seg_mask(self, mask, title='SAM2 Segmentation'):
-        """Display a mask (SAM2's or a real-space threshold's), cropped to
-        its bounding box (plus a small padding margin), on the "ROI Image"
-        axis: the crop of the nav image underneath, with the mask drawn at
-        alpha on top of it, as a guide to what's being summed. Also stores
-        the crop's (x, y, w, h) window in self.seg_roi for compute_seg_dp()."""
+        """Display a mask (SAM2's or a real-space threshold's) overlaid on
+        the *full* nav image on the "ROI Image" axis, as a guide to what's
+        being summed - shown at full scale rather than cropped to the
+        mask's own bounding box, so small/thin masks stay readable in
+        context (matches the SAM2 tab's equivalent view; cropping tightly
+        to the mask made this look "too zoomed in" for small selections).
+        Also stores the mask's padded bounding box (x, y, w, h) in
+        self.seg_roi - still used (mask-restricted) by compute_seg_dp()."""
         pad = 10
         rows = np.any(mask, axis=1)
         cols = np.any(mask, axis=0)
@@ -717,12 +859,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
         x1 = min(w_img - 1, int(x_idx[-1]) + pad)
         self.seg_roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 
-        img_crop = self.navImg[y0:y1+1, x0:x1+1]
-        mask_crop = mask[y0:y1+1, x0:x1+1]
-        shape_y, shape_x = img_crop.shape
-
-        self.img_display['nav_roi'].set_data(img_crop)
-        self.img_display['nav_roi'].set_clim(vmin=img_crop.min(), vmax=img_crop.max())
+        shape_y, shape_x = self.navImg.shape
+        self.img_display['nav_roi'].set_data(self.navImg)
+        self.img_display['nav_roi'].set_clim(vmin=self.navImg.min(), vmax=self.navImg.max())
         self.img_display['nav_roi'].set_extent([0, shape_x, shape_y, 0])
         self.ax_nav_roi.set_xlim(0, shape_x)
         self.ax_nav_roi.set_ylim(shape_y, 0)
@@ -731,7 +870,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # tab:orange stands out clearly against the viridis nav-image colormap,
         # unlike tab10's default blue (index 0), which blends into it.
         color = np.array([*mcolors.to_rgb('tab:orange'), 0.5])
-        mask_image = mask_crop.reshape(shape_y, shape_x, 1) * color.reshape(1, 1, -1)
+        mask_image = mask.reshape(shape_y, shape_x, 1) * color.reshape(1, 1, -1)
         self.img_display['seg_mask'].set_data(mask_image)
         self.img_display['seg_mask'].set_extent([0, shape_x, shape_y, 0])
         self.canvas.draw_idle()
@@ -762,6 +901,8 @@ class Tab_ROI_on_4D(qtw.QWidget):
             'Starting SAM2 image segmentation (%d point(s), %s)...',
             len(self.seg_points), f'box={self.roi}' if has_roi else 'no box')
         self.button_segment_image.setDisabled(True)
+        self._cancelling = False
+        self.button_cancel.setEnabled(True)
 
         path_seg = self._get_seg_temp_dir()
         img_8bit = io.convert_img_to_8bit(self.navImg)
@@ -784,6 +925,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
     def _process_failed_sam(self, error):
         self.button_segment_image.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            return
         self.logger.error('SAM2 segmentation QProcess error occurred: %s', error)
         qtw.QMessageBox.critical(self, 'Process Error',
             'The SAM2 segmentation process failed to start.\n'
@@ -799,6 +943,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
     def _handle_finished_sam(self, exit_code=0, exit_status=0):
         self.button_segment_image.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            return
         text = bytes(self._process_sam.readAllStandardOutput()).decode('utf-8')
         try:
             result = json.loads(text.strip())
@@ -842,11 +989,11 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.slider_vmin.setValue(1)
         self.update_canvas(ax='dp')
 
-#%% PACBED from threshold
+#%% Summed DP from threshold
     def open_threshold_dialog(self):
         """Open the ThresholdDialog popup to check/adjust the real-space
         threshold on the loaded navigation image before committing to the
-        actual (file-reading) PACBED computation - shared with the "Make
+        actual (file-reading) summed-DP computation - shared with the "Make
         Nav. Sig." tab's identical feature."""
         if not hasattr(self, 'navImg'):
             qtw.QMessageBox.critical(self, 'No Image',
@@ -855,9 +1002,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
             return
         dlg = ThresholdDialog(self, self.navImg, self.fn)
         if dlg.exec_() == qtw.QDialog.Accepted:
-            self.compute_pacbed_from_threshold(dlg.mask, dlg.combo_threshMethod.currentText())
+            self.compute_sum_dp_from_threshold(dlg.mask, dlg.combo_threshMethod.currentText())
 
-    def compute_pacbed_from_threshold(self, mask, method):
+    def compute_sum_dp_from_threshold(self, mask, method):
         """Sum diffraction patterns only at the scan positions in `mask`
         (confirmed via the ThresholdDialog popup), instead of a rectangular
         ROI - reuses the same masked-DP worker as the SAM2 segmentation path."""
@@ -875,30 +1022,61 @@ class Tab_ROI_on_4D(qtw.QWidget):
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
         dtype = os.path.splitext(self.fn)[-1]
         self.logger.info(
-            'Computing PACBED from %s-thresholded scan positions...', method)
-        self.button_pacbedFromThreshold.setDisabled(True)
+            'Computing summed DP from %s-thresholded scan positions...', method)
+        self.button_sumDpFromThreshold.setDisabled(True)
+        self._cancelling = False
+        self.button_cancel.setEnabled(True)
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize, self.dwellTime)
-        worker.signals.result.connect(self._on_pacbed_from_threshold_computed)
-        worker.signals.error.connect(self._on_pacbed_from_threshold_failed)
+        worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
+        worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
 
-    def _on_pacbed_from_threshold_computed(self, dp):
-        self.button_pacbedFromThreshold.setEnabled(True)
+    def _on_sum_dp_from_threshold_computed(self, dp):
+        self.button_sumDpFromThreshold.setEnabled(True)
+        self.button_cancel.setDisabled(True)
         self.dp = dp
-        self.ax_dp.set_title('PACBED (thresholded)')
+        self.ax_dp.set_title('Summed DP (thresholded)')
         self.update_slider_range()
         self.slider_vmax.setValue(self.dp.max())
         self.slider_vmin.setValue(1)
         self.update_canvas(ax='dp')
 
-    def _on_pacbed_from_threshold_failed(self, traceback_text):
+    def _on_sum_dp_from_threshold_failed(self, traceback_text):
+        self.button_sumDpFromThreshold.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            return
         # Without this, a failure in the background computation would leave
-        # "PACBED from Threshold..." disabled forever, with no way to retry
-        # and no visible sign anything went wrong.
-        self.button_pacbedFromThreshold.setEnabled(True)
-        self.logger.error('Failed to compute PACBED from threshold:\n%s', traceback_text)
-        qtw.QMessageBox.critical(self, 'PACBED Failed',
-            'Computing the PACBED failed - see the log for details.')
+        # "Summed DP from Threshold..." disabled forever, with no way to
+        # retry and no visible sign anything went wrong.
+        self.logger.error('Failed to compute summed DP from threshold:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Summed DP Failed',
+            'Computing the summed DP failed - see the log for details.')
+
+    def cancel_running_work(self):
+        """Stop the running SAM2 segmentation or DP computation and
+        suppress the error popups that killing those workers would
+        otherwise trigger.
+
+        QThreadPool has no way to forcibly interrupt a runnable that has
+        already started (only queued-but-not-started ones can be dropped),
+        so an in-flight nav-image/DP computation will still finish in the
+        background - its result is simply ignored. The SAM2 segmentation
+        subprocess is a real OS process though, so that's actually killed
+        outright."""
+        self._cancelling = True
+        self.threadpool.clear()
+        n_killed = 0
+        if hasattr(self, '_process_sam') and self._process_sam.state() != QProcess.NotRunning:
+            self._process_sam.kill()
+            n_killed = 1
+        self.button_cancel.setDisabled(True)
+        self.logger.warning('Cancelled by user (%d running process(es) killed).', n_killed)
+        qtw.QMessageBox.information(self, 'Cancelled',
+            'Running computation was cancelled.\n\n'
+            'A nav-image/DP computation already running in the background will '
+            'still finish silently - only queued work and the SAM2 segmentation '
+            'process were stopped.')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
@@ -930,7 +1108,7 @@ class Worker_NavImg(QRunnable):
     def run(self):
         try:
             navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize,
-                                             dwellTime=self.dwellTime)
+                                             dwellTime=self.dwellTime, logger=self.logger)
         except Exception:
             self.logger.exception('Failed to calculate navigation image after %.1f s.',
                                    perf_counter() - self._tic)
@@ -959,7 +1137,8 @@ class Worker_CalculateDP(QRunnable):
     def run(self):
         try:
             s_cut = io.load_signal(self.fn, roi=self.roi,
-                                   scanSize=self.scanSize, dwellTime=self.dwellTime)
+                                   scanSize=self.scanSize, dwellTime=self.dwellTime,
+                                   logger=self.logger)
             if type(s_cut) == tuple: # for hdf5
                 s_cut, self.f = s_cut
 

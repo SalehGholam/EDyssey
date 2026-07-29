@@ -136,6 +136,13 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
 # =============================================================================
     
     roi = eventem.Roi(repetitions=repetitions, extract_4D=False)
+    # eventem auto-sizes its own internal thread pool to the whole machine
+    # per instance unless told otherwise - this script always runs as one
+    # of several concurrent per-ROI/per-frame worker subprocesses, so
+    # leaving that unset would oversubscribe the machine (N processes x
+    # full-core-count threads each) exactly like the same bug in
+    # worker_nav_img.py's use of io_utils_ui.py's eventem call sites.
+    roi.n_threads = 1
     # roi.b_cumulative = True
     roi.set_file(fn)
     roi.set_dwell_time(dwellTime * 1000)

@@ -50,11 +50,11 @@ class MainWindow(qtw.QMainWindow):
         self.tab_roi_on_4D = Tab_ROI_on_4D()
         self.tabs.addTab(self.tab_roi_on_4D, 'ROI on 4D')
         self.tab_create_navSignal = Tab_Create_NavSignal()
-        self.tabs.addTab(self.tab_create_navSignal, 'Make Nav. Sig.')
+        self.tabs.addTab(self.tab_create_navSignal, 'Navigator')
         self.tab_tracking_cv2 = Tab_Tracking_CV2()
-        self.tabs.addTab(self.tab_tracking_cv2, 'Tracking by CV2')
+        self.tabs.addTab(self.tab_tracking_cv2, 'ROI Tracker')
         self.tab_sam2 = Tab_SAM2()
-        self.tabs.addTab(self.tab_sam2, 'SAM2 Seg.')
+        self.tabs.addTab(self.tab_sam2, 'SAM2 Tracker')
         
         file_path = os.path.split(os.path.abspath(__file__))[0]
         fn_icon = os.path.join(file_path, 'ui_tabs',
@@ -139,16 +139,6 @@ class MainWindow(qtw.QMainWindow):
         """)
 
     def closeEvent(self, event):
-        # Each tab's own cleanup() (below) disconnects its LogConsole from
-        # the shared log signal - see LogConsole.disconnect_log() - so a
-        # closed-but-not-destroyed window (see __init__ above) doesn't keep
-        # pushing log lines into hidden widgets.
-
-        # These are the *safe* parts of cleanup: they don't destroy any
-        # widget, only stop queued threadpool work, kill running
-        # subprocesses, and no-op-close matplotlib figures. See __init__
-        # for why we deliberately don't go further and force the window
-        # itself to be destroyed.
         for tab in (self.tab_roi_on_4D, self.tab_create_navSignal,
                     self.tab_tracking_cv2, self.tab_sam2):
             try:
@@ -161,34 +151,7 @@ class MainWindow(qtw.QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
-    # Reuse an existing QApplication instead of unconditionally constructing
-    # a new one — Qt only supports one QApplication per process, and this
-    # script may be re-run in the same console/kernel (e.g. Spyder's "Run
-    # File") without the interpreter restarting.
-    app = qtw.QApplication.instance()
-    if app is None:
-        app = qtw.QApplication([])
-    install_excepthook()
-
-    # If a MainWindow from an earlier run in this console is still alive,
-    # reuse it (just bring it to the front) instead of constructing another
-    # one. This is deliberate, not an oversight: closing that old window and
-    # building a fresh MainWindow in its place was verified by hand to
-    # crash the interpreter (a separate, deeper pre-existing bug in how this
-    # app's widget tree — Tab_Tracking_CV2's matplotlib canvas in
-    # particular — tears down and gets reconstructed in the same process).
-    # Never rebuilding it at all sidesteps that crash entirely, and as a
-    # side effect also stops the resource accumulation (duplicate
-    # threadpools, matplotlib figures, hyperspy signal handles) that
-    # building a brand new MainWindow on every rerun used to cause.
-    existing_window = next(
-        (w for w in app.topLevelWidgets() if isinstance(w, MainWindow)), None)
-    if existing_window is not None:
-        existing_window.show()
-        existing_window.raise_()
-        existing_window.activateWindow()
-        window = existing_window
-    else:
-        window = MainWindow()
-        window.show()
+    app = qtw.QApplication([])
+    window = MainWindow()
+    window.show()
     app.exec_()

@@ -7,6 +7,7 @@ Created on Fri Mar 15 16:58:43 2024
 
 import numpy as np
 import cv2
+from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import hyperspy.api as hs
@@ -165,6 +166,9 @@ def select_rois_manual(s):
 
 
 
+_XCORR_METHODS = ('xcorr-phase', 'xcorr-template')
+
+
 def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     """Track one ROI across a sequence of images using an OpenCV tracker.
 
@@ -177,41 +181,47 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
         rois: List/array of (x, y, w, h) initial boxes, one per entry in `init`.
         init: List of frame indices where each box in `rois` is used to (re-)initialise
               the tracker. Default is `[0]` (single init at frame 0).
-        tracking_method: OpenCV tracker name — `'csrt'`, `'mil'`, `'nano'`, or
-                         `'dasiamrpn'`.
+        tracking_method: OpenCV tracker name — `'csrt'`, `'mil'`, `'nano'`,
+                         `'dasiamrpn'` — or a frame-to-frame cross-correlation
+                         method, `'xcorr-phase'` (FFT phase correlation) or
+                         `'xcorr-template'` (normalized template matching in a
+                         local search window). The xcorr methods keep the ROI
+                         size fixed and only estimate translation.
 
     Returns:
         numpy.ndarray of shape (N, 4) with (x, y, w, h) per frame.
     """
-    path_origin = os.getcwd()
-    path_file = os.path.abspath(__file__)
-    path_file = os.path.split(path_file)[0]
-    path_trackerModels = os.path.join(path_file, 'opencv_models')
-    os.chdir(path_trackerModels)
-    if tracking_method == 'csrt':
-        tracker = cv2.TrackerCSRT_create()
-    elif tracking_method == 'mil':
-        tracker = cv2.TrackerMIL_create()
-    elif tracking_method == 'nano':
-        tracker = cv2.TrackerNano_create()
-    elif tracking_method == 'dasiamrpn':
-        tracker = cv2.TrackerDaSiamRPN_create()
-    else:
+    tracker = None
+    if tracking_method not in _XCORR_METHODS:
+        path_origin = os.getcwd()
+        path_file = os.path.abspath(__file__)
+        path_file = os.path.split(path_file)[0]
+        path_trackerModels = os.path.join(path_file, 'opencv_models')
+        os.chdir(path_trackerModels)
+        if tracking_method == 'csrt':
+            tracker = cv2.TrackerCSRT_create()
+        elif tracking_method == 'mil':
+            tracker = cv2.TrackerMIL_create()
+        elif tracking_method == 'nano':
+            tracker = cv2.TrackerNano_create()
+        elif tracking_method == 'dasiamrpn':
+            tracker = cv2.TrackerDaSiamRPN_create()
+        else:
+            os.chdir(path_origin)
+            raise NotImplementedError('The tracker used is not available')
         os.chdir(path_origin)
-        raise NotImplementedError('The tracker used is not available')
-    os.chdir(path_origin)
-    
+
     flag_3ch_cvt = False # flag for converting to 3 channel images
     if tracking_method in ['nano', 'dasiamrpn']:
         flag_3ch_cvt = True
-    
+
     # the image numbers might not be sorted
     init = np.array(init)
     rnk = np.argsort(init)
     rois = np.array(rois)[rnk]
     init = init[rnk]
     init = np.append(init, len(imgs))
-    
+
     tracked_rois = []
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
@@ -219,6 +229,9 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
         if len(imgs_temp) > 1:
             # roi = rois[init[i_c]]
             roi = rois[i_c]
+            if tracking_method in _XCORR_METHODS:
+                tracked_rois.extend(track_roi_xcorr(imgs_temp, roi, tracking_method))
+                continue
             x,y,w,h = roi
             # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
             # roi = convert_roi_to_int((x,y,w,h))
@@ -254,6 +267,126 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
             tracked_rois.append(box)
     cv2.destroyAllWindows() #TODO not sure if it is needed
     return np.array(tracked_rois)
+
+
+def _xcorr_context_window(x, y, w, h, img_w, img_h, min_margin=32):
+    """Padded (x0, y0, x1, y1) window around a (x, y, w, h) box, used as the
+    correlation input in `track_roi_xcorr` instead of the bare box.
+
+    Correlating just the tight ROI starves the band-pass prefilter of
+    spatial support and gives phase/template correlation very little
+    structure to lock onto. Padding out to real image context (clipped to
+    the frame) is what made `other_scripts/cross correlation.py` - which
+    correlates whole navigation frames - track more reliably than a
+    tight-crop approach.
+    """
+    margin_x, margin_y = max(w, min_margin), max(h, min_margin)
+    x0, y0 = max(0, x - margin_x), max(0, y - margin_y)
+    x1, y1 = min(img_w, x + w + margin_x), min(img_h, y + h + margin_y)
+    return x0, y0, x1, y1
+
+
+def _xcorr_bandpass_normalize(img, low_sigma=8.0, high_sigma=1.5):
+    """Suppress slow illumination drift and high-frequency noise before
+    correlating: subtract the mean, band-pass with a difference-of-
+    Gaussians, then normalize to unit standard deviation - the same
+    preprocessing `other_scripts/cross correlation.py` uses
+    (`preprocess_for_cross_correlation`), found to track more reliably on
+    real navigation data than correlating raw pixel values, since a slow
+    background gradient otherwise dominates the correlation peak.
+
+    `low_sigma` is capped to the crop size so small crops (e.g. the tight,
+    unpadded template used by 'xcorr-template') don't get flattened to
+    near-zero by a kernel wider than the crop itself.
+    """
+    # cv2.matchTemplate only accepts CV_8U/CV_32F (not CV_64F), and numpy's
+    # float64 .mean()/.std() scalars silently upcast an otherwise-float32
+    # pipeline under NEP 50 promotion rules, so dtype is pinned to float32
+    # throughout rather than left to fall out of the arithmetic.
+    img = img.astype(np.float32) - np.float32(img.mean())
+    low_sigma = min(low_sigma, max(min(img.shape) / 4.0, high_sigma + 0.5))
+    img = gaussian_filter(img, sigma=high_sigma) - gaussian_filter(img, sigma=low_sigma)
+    std = np.float32(img.std())
+    if std > 1e-8:
+        img = img / std
+    return img.astype(np.float32)
+
+
+def track_roi_xcorr(imgs, roi, tracking_method='xcorr-phase'):
+    """Track a fixed-size ROI across a sequence of images via frame-to-frame
+    cross-correlation, the way cross-correlation is classically used for
+    image centering / drift correction.
+
+    Unlike the appearance-based OpenCV trackers, this only estimates a
+    translation (x, y) per frame; the ROI's (w, h) stays exactly as given in
+    `roi`. Each frame's shift is estimated against the *previous* frame
+    (rolling reference), so it adapts to slow appearance changes but can
+    accumulate drift error over long sequences. Both methods correlate a
+    band-pass-filtered, padded context window around the box (see
+    `_xcorr_context_window`/`_xcorr_bandpass_normalize`) rather than the raw
+    box pixels, for the same reasons `other_scripts/cross correlation.py`
+    preprocesses before correlating.
+
+    Args:
+        imgs: numpy.ndarray of shape (N, H, W) with uint8 (or similar) frames.
+        roi: Initial (x, y, w, h) bounding box on the first frame.
+        tracking_method: `'xcorr-phase'` for FFT phase correlation
+            (`cv2.phaseCorrelate`, sub-pixel) or `'xcorr-template'` for
+            normalized cross-correlation template matching
+            (`cv2.matchTemplate` of the tight box within the padded context
+            window, integer-pixel, more robust to local contrast/intensity
+            changes).
+
+    Returns:
+        List of (x, y, w, h) tuples, one per frame in `imgs`.
+    """
+    x, y, w, h = (int(v) for v in roi)
+    img_h, img_w = imgs[0].shape[:2]
+    w = min(w, img_w)
+    h = min(h, img_h)
+    x = min(max(x, 0), img_w - w)
+    y = min(max(y, 0), img_h - h)
+
+    tracked_rois = [(x, y, w, h)]
+
+    if tracking_method == 'xcorr-phase':
+        cx0, cy0, cx1, cy1 = _xcorr_context_window(x, y, w, h, img_w, img_h)
+        prev_prep = _xcorr_bandpass_normalize(imgs[0][cy0:cy1, cx0:cx1])
+        hann = cv2.createHanningWindow((prev_prep.shape[1], prev_prep.shape[0]), cv2.CV_32F)
+
+        for img in imgs[1:]:
+            cur_prep = _xcorr_bandpass_normalize(img[cy0:cy1, cx0:cx1])
+            (dx, dy), _response = cv2.phaseCorrelate(prev_prep * hann, cur_prep * hann)
+
+            x = min(max(int(round(x + dx)), 0), img_w - w)
+            y = min(max(int(round(y + dy)), 0), img_h - h)
+            tracked_rois.append((x, y, w, h))
+
+            cx0, cy0, cx1, cy1 = _xcorr_context_window(x, y, w, h, img_w, img_h)
+            prev_prep = _xcorr_bandpass_normalize(img[cy0:cy1, cx0:cx1])
+            if prev_prep.shape != hann.shape:
+                hann = cv2.createHanningWindow((prev_prep.shape[1], prev_prep.shape[0]), cv2.CV_32F)
+
+    else: # xcorr-template
+        prev_prep = _xcorr_bandpass_normalize(imgs[0][y:y+h, x:x+w])
+
+        for img in imgs[1:]:
+            sx0, sy0, sx1, sy1 = _xcorr_context_window(x, y, w, h, img_w, img_h)
+            search = img[sy0:sy1, sx0:sx1]
+            if search.shape[0] < h or search.shape[1] < w:
+                dx, dy = 0.0, 0.0
+            else:
+                search_prep = _xcorr_bandpass_normalize(search)
+                result = cv2.matchTemplate(search_prep, prev_prep, cv2.TM_CCOEFF_NORMED)
+                _, _, _, max_loc = cv2.minMaxLoc(result)
+                dx, dy = (sx0 + max_loc[0]) - x, (sy0 + max_loc[1]) - y
+
+            x = min(max(int(round(x + dx)), 0), img_w - w)
+            y = min(max(int(round(y + dy)), 0), img_h - h)
+            tracked_rois.append((x, y, w, h))
+            prev_prep = _xcorr_bandpass_normalize(img[y:y+h, x:x+w])
+
+    return tracked_rois
 
 def convert_roi_to_int(roi):
     """Cast an (x, y, w, h) ROI tuple to integer components.

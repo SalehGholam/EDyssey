@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
-import base64
-import pickle
+import numpy as np
 
 file_path = os.path.abspath(__file__)
 main_path = os.path.dirname(file_path)
@@ -32,14 +31,20 @@ def _read_scansize_hdf5(fn):
             return tuple(int(x) for x in f['4D'].shape[:2])
 
 
-def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index,
+def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
                              r_in=None, r_out=None, center=None):
-    """Compute one navigation image and write the result to stdout as base64+pickle.
+    """Compute one navigation image, save it to `temp_dir` as a .npy file, and
+    print the saved path to stdout - instead of the array itself, base64+
+    pickle-encoded. Transferring a multi-MB encoded array through the
+    stdout pipe for every file in a batch (with many workers doing this
+    concurrently) was making "Calculate All" progressively slower as the
+    batch went on; a short path string avoids that IPC cost entirely. The
+    parent (tab_create_navSignal.py) loads the array back with `np.load`
+    and removes the file once it has.
 
     Called as a subprocess by `tab_create_navSignal.py`. Reads arguments from the
     command line (all as strings), computes the navigation image via `io.calculate_nav_img`
-    (or `io.calculate_nav_img_masked` when a virtual detector mask is given), serialises
-    `(result, i_index)` with pickle, encodes with base64, prints to stdout, and exits 0 on
+    (or `io.calculate_nav_img_masked` when a virtual detector mask is given), and exits 0 on
     success or 1 on error.
 
     Args:
@@ -48,6 +53,8 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index,
         scanSize: Scan dimensions as string `'(nx, ny)'` or `'None'`.
         dwellTime: Dwell time in microseconds as a string.
         i_index: Position of this file in the overall file list, as a string.
+        temp_dir: Directory (already created by the parent) to save the
+            result .npy file into.
         r_in: Optional inner radius (pixels) of the virtual detector mask, as a string.
         r_out: Optional outer radius (pixels) of the virtual detector mask, as a string.
         center: Optional `'(x, y)'` center of the virtual detector mask, as a string.
@@ -63,18 +70,35 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index,
         dwellTime = int(dwellTime)
         i_index = int(i_index)
 
+        # Same functions "Test File" calls in-thread - eventem's native
+        # progress output (tpx3 loading) lands on stderr, which QProcess
+        # already keeps separate from stdout (this script's IPC channel for
+        # the result below), so nothing special needs to happen here; the
+        # parent process reads/handles stderr on its own side.
+        #
+        # n_threads=1: eventem auto-sizes its own internal thread pool to
+        # the whole machine per instance unless told otherwise - fine for a
+        # single call, but this script runs as one of up to spinbox_cpuCores
+        # *concurrent* processes, each of which would otherwise also try to
+        # claim the whole machine's threads for itself. That oversubscription
+        # (N processes x full-core-count threads each) is what was causing
+        # per-file throughput to collapse as more workers piled up
+        # concurrently - pinning each process to 1 internal thread makes
+        # total concurrency match what the user actually configured.
         if r_in is not None:
             r_in = float(r_in)
             r_out = float(r_out)
             center = tuple(map(float, center.strip("()").split(",")))
             result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                                  dwellTime=dwellTime, r_in=r_in,
-                                                 r_out=r_out, center=center)
+                                                 r_out=r_out, center=center, n_threads=1)
         else:
-            result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize, dwellTime=dwellTime)
+            result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
+                                          dwellTime=dwellTime, n_threads=1)
 
-        serialized = base64.b64encode(pickle.dumps((result, i_index))).decode('utf-8')
-        print(serialized)
+        fn_out = os.path.join(temp_dir, f'{i_index}.npy')
+        np.save(fn_out, result)
+        print(fn_out)
         sys.stdout.flush()
         sys.exit(0)
 

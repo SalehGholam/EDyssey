@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Shared "PACBED from Threshold" popup, used by both Tab_Create_NavSignal and
+Shared "Summed DP from Threshold" popup, used by both Tab_Create_NavSignal and
 Tab_ROI_on_4D so the two tabs don't duplicate the widget.
 """
 
@@ -18,13 +18,13 @@ import py4DTomo.io_utils as io
 
 class ThresholdDialog(qtw.QDialog):
     """Popup for checking/adjusting the real-space threshold mask used by
-    "PACBED from Threshold" before committing to it - kept off the main
+    "Summed DP from Threshold" before committing to it - kept off the main
     navigation-image plot (which stays a plain image, no overlay); this is
     its own small window instead."""
 
     def __init__(self, parent, img, fn):
         super().__init__(parent)
-        self.setWindowTitle('PACBED from Threshold')
+        self.setWindowTitle('Summed DP from Threshold')
         self.resize(600, 650)
         self.img = img
         self.fn = fn
@@ -76,7 +76,7 @@ class ThresholdDialog(qtw.QDialog):
 
         buttons = qtw.QHBoxLayout()
         layout.addLayout(buttons)
-        self.button_compute = qtw.QPushButton('Compute PACBED from Threshold')
+        self.button_compute = qtw.QPushButton('Compute Summed DP from Threshold')
         self.button_compute.clicked.connect(self.conditional_accept)
         buttons.addWidget(self.button_compute)
         self.button_cancel = qtw.QPushButton('Cancel')

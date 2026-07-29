@@ -15,6 +15,7 @@ import logging
 import traceback
 from logging.handlers import RotatingFileHandler
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtGui import QTextCursor
 import PyQt5.QtWidgets as qtw
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -29,14 +30,20 @@ _LOGGER_PREFIX = 'py5DED.'
 
 class QtLogHandler(logging.Handler, QObject):
     """Re-emits every log record as a Qt signal (tab_name, formatted
-    message, level) so a GUI console box can display it live.
+    message, level, progress_key) so a GUI console box can display it live.
+
+    `progress_key` is empty for ordinary log calls (always appended as a new
+    line); a caller can pass `extra={'progress_key': some_stable_id}` to
+    `logger.info(...)` to mark a record as a progress update that should
+    replace its own previous line instead of appending a new one - see
+    LogConsole._append_log.
 
     Instantiation is deferred to get_qt_log_handler() rather than done at
     import time, because a QObject with signals needs a QApplication to
     already exist for cross-thread (QueuedConnection) delivery to work,
     and tab/module imports happen before QApplication is constructed.
     """
-    log_emitted = pyqtSignal(str, str, int)
+    log_emitted = pyqtSignal(str, str, int, str)
 
     def __init__(self):
         logging.Handler.__init__(self)
@@ -50,7 +57,8 @@ class QtLogHandler(logging.Handler, QObject):
             msg = record.getMessage()
         name = record.name
         tab_name = name[len(_LOGGER_PREFIX):] if name.startswith(_LOGGER_PREFIX) else name
-        self.log_emitted.emit(tab_name, msg, record.levelno)
+        progress_key = getattr(record, 'progress_key', '')
+        self.log_emitted.emit(tab_name, msg, record.levelno, progress_key)
 
 
 _qt_log_handler = None
@@ -106,9 +114,14 @@ class LogConsole(qtw.QPlainTextEdit):
             "background-color: #1e1e1e; color: #d0d0d0;"
             "font-family: Consolas, monospace; font-size: 9pt;"
             "border-top: 1px solid #555;")
+        # Tracks the line last written for a given progress_key, so repeated
+        # updates (e.g. a tpx3 load's progress ticks) can replace that one
+        # line in place instead of appending a new line every time.
+        self._progress_cursors = {}
+        self._progress_text = {}
         get_qt_log_handler().log_emitted.connect(self._append_log)
 
-    def _append_log(self, tab_name, msg, levelno):
+    def _append_log(self, tab_name, msg, levelno, progress_key=''):
         if levelno >= logging.ERROR:
             color = self._LEVEL_COLORS[logging.ERROR]
         elif levelno >= logging.WARNING:
@@ -116,10 +129,37 @@ class LogConsole(qtw.QPlainTextEdit):
         else:
             color = None
         line = f'[{tab_name}] {html.escape(msg)}'
+
+        if progress_key:
+            cursor = self._progress_cursors.get(progress_key)
+            # The text check (not just block validity) guards against
+            # setMaximumBlockCount() trimming/renumbering blocks from the
+            # top of the document - a stale cursor can silently end up
+            # pointing at an unrelated line rather than becoming invalid.
+            if (cursor is not None and not cursor.isNull()
+                    and cursor.block().isValid()
+                    and cursor.block().text() == self._progress_text.get(progress_key)):
+                cursor.movePosition(QTextCursor.StartOfBlock)
+                cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+                cursor.removeSelectedText()
+                if color:
+                    cursor.insertHtml(f'<span style="color:{color}">{line}</span>')
+                else:
+                    cursor.insertText(line)
+                self._progress_text[progress_key] = line
+                return
+
         if color:
             self.appendHtml(f'<span style="color:{color}">{line}</span>')
         else:
             self.appendPlainText(line)
+
+        if progress_key:
+            new_cursor = QTextCursor(self.document())
+            new_cursor.movePosition(QTextCursor.End)
+            new_cursor.movePosition(QTextCursor.StartOfBlock)
+            self._progress_cursors[progress_key] = new_cursor
+            self._progress_text[progress_key] = line
 
     def disconnect_log(self):
         """Stop receiving log signals - call from the owning tab's
