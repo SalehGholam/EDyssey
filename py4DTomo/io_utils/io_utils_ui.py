@@ -25,3 +25,4 @@ from py4DTomo.io_utils.nav_image import *
 from py4DTomo.io_utils.contrast import *
 from py4DTomo.io_utils.video import *
 from py4DTomo.io_utils.pets import *
+from py4DTomo.io_utils.smart_scan import *

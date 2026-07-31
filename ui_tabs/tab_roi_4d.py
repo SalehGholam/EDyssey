@@ -147,6 +147,29 @@ class Tab_ROI_on_4D(TabBase):
         layout_scanSize_row2.addStretch(1)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
+
+        # smart-scan (pattern-file) acquisition support
+        layout_scanSize_row3 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row3)
+
+        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        self.checkbox_smartScan.setToolTip(
+            'This 4D signal is a smart-scanned (sparsely acquired) file - a pattern '
+            'file is needed to reshape it correctly. See other_scripts/smart scanning '
+            'guide/ for background on the format.')
+        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_lineEdit_patternFile)
+
+        self.lineEdit_patternFile = qtw.QLineEdit()
+        self.lineEdit_patternFile.setPlaceholderText('Pattern file...')
+        self.lineEdit_patternFile.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.lineEdit_patternFile)
+
+        self.button_browsePattern = qtw.QPushButton('...')
+        self.button_browsePattern.setFixedWidth(30)
+        self.button_browsePattern.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.button_browsePattern)
+        self.button_browsePattern.clicked.connect(self.browse_pattern_file)
         #%% box for scales
         self.box_scale = qtw.QGroupBox('Scale bars')
         # Real/Recip/Auto-center stack as their own rows (not one wide row)
@@ -235,6 +258,29 @@ class Tab_ROI_on_4D(TabBase):
             'Remove the drawn ROI so it stops being used as a SAM2 box prompt '
             '(and as the rectangle for diffraction-pattern extraction)')
 
+        #%% edge detection (mask post-processing)
+        self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
+        layout_userInput.addWidget(self.box_edgeDetection)
+        layout_edgeDetection = qtw.QHBoxLayout()
+        self.box_edgeDetection.setLayout(layout_edgeDetection)
+
+        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Only')
+        self.checkbox_edgeOnly.setToolTip(
+            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
+            'before it is displayed or summed - applies to both mask sources below')
+        layout_edgeDetection.addWidget(self.checkbox_edgeOnly)
+        self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
+
+        label_edgeKernel = qtw.QLabel('Kernel')
+        layout_edgeDetection.addWidget(label_edgeKernel)
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        layout_edgeDetection.addWidget(self.spinbox_edgeKernel)
+        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection.addStretch(1)
+
         #%% Summed DP from threshold
         self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
         layout_userInput.addWidget(self.box_sumDpThreshold)
@@ -293,7 +339,9 @@ class Tab_ROI_on_4D(TabBase):
         # SAM2 segmentation point prompts for the currently loaded nav image
         self.seg_points = []
         self.seg_labels = []
-        self.seg_mask = None
+        self.seg_mask = None        # raw (un-eroded) mask - see _refresh_edge_mask()
+        self._mask_source = None    # 'sam2' or 'threshold' - which path produced self.seg_mask
+        self._threshold_method = None  # method string, only set when _mask_source == 'threshold'
         self.scatter_plots = []
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
@@ -368,7 +416,7 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.info('Loading 4D signal from %s...', self.fn)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
-        worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime)
+        worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime, self.get_fn_pattern())
 
         worker.signals.result.connect(self.image_handler)  # Connect to result signal
         self.threadpool.start(worker)
@@ -463,6 +511,34 @@ class Tab_ROI_on_4D(TabBase):
                                      path_main, e)
                 qtw.QMessageBox.warning(self, 'Metadata Not Loaded',
                     f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
+
+    def activate_lineEdit_patternFile(self):
+        enable = self.checkbox_smartScan.isChecked()
+        self.lineEdit_patternFile.setEnabled(enable)
+        self.button_browsePattern.setEnabled(enable)
+
+    def browse_pattern_file(self):
+        fn = self.lineEdit_dir_signal.text()
+        start_dir = os.path.dirname(fn) if fn else ''
+        path, _ = qtw.QFileDialog.getOpenFileName(
+            self, "Select Pattern File", start_dir, "Text files (*.txt);;All Files (*)")
+        if path:
+            self.lineEdit_patternFile.setText(path)
+
+    def get_fn_pattern(self):
+        if self.checkbox_smartScan.isChecked() and self.lineEdit_patternFile.text():
+            return self.lineEdit_patternFile.text()
+        return None
+
+    def apply_edge_mask(self, mask):
+        """Reduce `mask` to just its edge/outline when "Edge Only" is
+        checked (see io.erode_mask_edge) - a no-op copy otherwise. Called on
+        every mask right as it becomes "final" (SAM2 segmentation result,
+        accepted threshold-dialog mask), so both the on-screen overlay and
+        the DP extraction that follows see the same, possibly-eroded, mask."""
+        if self.checkbox_edgeOnly.isChecked():
+            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value())
+        return mask
 
     def on_press(self, event):
         if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
@@ -581,7 +657,8 @@ class Tab_ROI_on_4D(TabBase):
                 self.dwellTime = self.spinbox_dwellTime.value()
             except Exception:
                 self.dwellTime = None
-        worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime)
+        worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime,
+                                    self.get_fn_pattern())
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
     
@@ -810,6 +887,8 @@ class Tab_ROI_on_4D(TabBase):
         self.seg_points = []
         self.seg_labels = []
         self.seg_mask = None
+        self._mask_source = None
+        self._threshold_method = None
         for p in self.scatter_plots:
             try:
                 p.remove()
@@ -966,11 +1045,14 @@ class Tab_ROI_on_4D(TabBase):
                 'SAM2 did not select any pixels. Try adjusting or adding more points.')
             return
 
+        # Kept raw (un-eroded) so toggling "Edge Only"/the kernel size later
+        # can re-derive from the original SAM2 result instead of compounding
+        # erosion on an already-eroded mask - see _refresh_edge_mask().
         self.seg_mask = mask
+        self._mask_source = 'sam2'
         self.button_clear_points.setEnabled(True)
         self.logger.info('SAM2 image segmentation completed successfully.')
-        self.show_seg_mask(mask)
-        self.compute_seg_dp(mask)
+        self._refresh_edge_mask()
 
     def compute_seg_dp(self, mask):
         """Sum diffraction patterns over the SAM2 mask's scan positions and
@@ -979,7 +1061,7 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.info('Computing diffraction pattern summed over SAM2 mask...')
         dtype = os.path.splitext(self.fn)[-1]
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
-                                         self.scanSize, self.dwellTime)
+                                         self.scanSize, self.dwellTime, self.get_fn_pattern())
         worker.signals.result.connect(self.get_dp_from_mask)
         self.threadpool.start(worker)
 
@@ -1004,7 +1086,31 @@ class Tab_ROI_on_4D(TabBase):
             return
         dlg = ThresholdDialog(self, self.navImg, self.fn)
         if dlg.exec_() == qtw.QDialog.Accepted:
-            self.compute_sum_dp_from_threshold(dlg.mask, dlg.combo_threshMethod.currentText())
+            # Kept raw (un-eroded) - see _refresh_edge_mask().
+            self.seg_mask = dlg.mask
+            self._mask_source = 'threshold'
+            self._threshold_method = dlg.combo_threshMethod.currentText()
+            self._refresh_edge_mask()
+
+    def _refresh_edge_mask(self):
+        """Re-derive the displayed/extracted mask from the last raw SAM2 or
+        threshold result (self.seg_mask) and re-run its display+DP
+        computation - called both right after a new mask is produced, and
+        whenever "Edge Only"/the kernel size changes afterward, so the user
+        can freely retune the edge parameters without re-segmenting or
+        re-thresholding from scratch."""
+        if self.seg_mask is None or self._mask_source is None:
+            return
+        mask = self.apply_edge_mask(self.seg_mask)
+        if not mask.any():
+            self.logger.warning(
+                'Edge Only removed the entire mask (kernel too large for this mask\'s size).')
+            return
+        if self._mask_source == 'sam2':
+            self.show_seg_mask(mask)
+            self.compute_seg_dp(mask)
+        elif self._mask_source == 'threshold':
+            self.compute_sum_dp_from_threshold(mask, self._threshold_method)
 
     def compute_sum_dp_from_threshold(self, mask, method):
         """Sum diffraction patterns only at the scan positions in `mask`
@@ -1028,7 +1134,8 @@ class Tab_ROI_on_4D(TabBase):
         self.button_sumDpFromThreshold.setDisabled(True)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
-        worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize, self.dwellTime)
+        worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
+                                         self.dwellTime, self.get_fn_pattern())
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -1097,7 +1204,7 @@ class WorkerSignals(QObject):
 
 # Step 2: Create a WorkerThread class that runs the task in the background
 class Worker_NavImg(QRunnable):
-    def __init__(self, fn, scanSize=None, dwellTime=None):
+    def __init__(self, fn, scanSize=None, dwellTime=None, fn_pattern=None):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1105,12 +1212,14 @@ class Worker_NavImg(QRunnable):
         self.fn = fn
         self.scanSize = scanSize
         self.dwellTime = dwellTime
+        self.fn_pattern = fn_pattern
         self.signals = WorkerSignals()  # Create an instance of WorkerSignals
 
     def run(self):
         try:
             navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize,
-                                             dwellTime=self.dwellTime, logger=self.logger)
+                                             dwellTime=self.dwellTime, logger=self.logger,
+                                             fn_pattern=self.fn_pattern)
         except Exception:
             self.logger.exception('Failed to calculate navigation image after %s.',
                                    io.format_duration_hms(perf_counter() - self._tic))
@@ -1124,7 +1233,7 @@ class Worker_NavImg(QRunnable):
         self.signals.finished.emit()  # Emit the finished signal when done
 
 class Worker_CalculateDP(QRunnable):
-    def __init__(self, fn, roi, scanSize, dwellTime):
+    def __init__(self, fn, roi, scanSize, dwellTime, fn_pattern=None):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1133,6 +1242,7 @@ class Worker_CalculateDP(QRunnable):
         self.roi = roi
         self.scanSize = scanSize
         self.dwellTime = dwellTime
+        self.fn_pattern = fn_pattern
 
         self.signals = WorkerSignals()
 
@@ -1140,7 +1250,7 @@ class Worker_CalculateDP(QRunnable):
         try:
             s_cut = io.load_signal(self.fn, roi=self.roi,
                                    scanSize=self.scanSize, dwellTime=self.dwellTime,
-                                   logger=self.logger)
+                                   logger=self.logger, fn_pattern=self.fn_pattern)
             if type(s_cut) == tuple: # for hdf5
                 s_cut, self.f = s_cut
 
@@ -1175,7 +1285,7 @@ class Worker_CalculateDP_Mask(QRunnable):
     (e.g. SAM2-segmented) mask is True, restricted to `roi` (the mask's
     bounding box) for efficiency. Reuses the same per-format masked loaders
     already used by the CV2/SAM2 tabs' 3DED extraction."""
-    def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime):
+    def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1186,12 +1296,14 @@ class Worker_CalculateDP_Mask(QRunnable):
         self.dtype = dtype
         self.scanSize = scanSize
         self.dwellTime = dwellTime
+        self.fn_pattern = fn_pattern
         self.signals = WorkerSignals()
 
     def run(self):
         try:
             dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
-                        scanSize=self.scanSize, dwellTime=self.dwellTime)
+                        scanSize=self.scanSize, dwellTime=self.dwellTime,
+                        fn_pattern=self.fn_pattern)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:

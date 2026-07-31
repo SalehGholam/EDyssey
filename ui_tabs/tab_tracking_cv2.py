@@ -26,11 +26,13 @@ import matplotlib.patches as patches
 import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
+from worker_extract_frame import load_dp
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import TabBase
 from .pets2_dialog import Pets2ParamsDialog
+from .smart_scan_dialog import SmartScanCheckDialog
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -277,6 +279,46 @@ class Tab_Tracking_CV2(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
+        # smart-scan (pattern-file) support: the 4D signals folder holds a
+        # detection + acquisition tpx3/mib file pair per tracked frame -
+        # extraction always reads the acquisition (smart-scanned) file, with
+        # its matching pattern file - see py4DTomo/io_utils/smart_scan.py.
+        layout_scanSize_row3 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row3)
+        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        self.checkbox_smartScan.setToolTip(
+            'The 4D signals folder holds a smart-scanned tomography series - 3DED '
+            'extraction will read each frame\'s acquisition file with its matching '
+            'pattern file, instead of every raw file in the folder.')
+        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
+        label_patternDir = qtw.QLabel('Pattern Dir.')
+        layout_scanSize_row3.addWidget(label_patternDir)
+        self.lineEdit_patternDir = qtw.QLineEdit()
+        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_patternDir.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.lineEdit_patternDir)
+        self.button_browsePatternDir = qtw.QPushButton('...')
+        self.button_browsePatternDir.setFixedWidth(30)
+        self.button_browsePatternDir.setDisabled(True)
+        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
+        layout_scanSize_row3.addWidget(self.button_browsePatternDir)
+
+        layout_scanSize_row4 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row4)
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
+        self.button_checkSmartScanFiles.setToolTip(
+            'Review the automatic per-frame detection/acquisition/pattern-file match '
+            'before extracting - fix or exclude any mismatched frame by hand')
+        self.button_checkSmartScanFiles.setDisabled(True)
+        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
+        layout_scanSize_row4.addWidget(self.button_checkSmartScanFiles)
+        self.label_smartScanSummary = qtw.QLabel('')
+        layout_scanSize_row4.addWidget(self.label_smartScanSummary)
+        layout_scanSize_row4.addStretch(1)
+
+        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
+
         #%% display contrast (8-bit conversion used for both display and tracking)
         self.box_contrast = ContrastScalingBox()
         layout_userInput.addWidget(self.box_contrast)
@@ -416,6 +458,24 @@ class Tab_Tracking_CV2(TabBase):
         self.button_thresh = qtw.QPushButton('Reset')
         layout_deviation.addWidget(self.button_thresh)
         self.button_thresh.clicked.connect(self.reset_thresh)
+
+        layout_edgeDetection = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_edgeDetection)
+        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Only')
+        self.checkbox_edgeOnly.setToolTip(
+            'Reduce each frame\'s threshold mask to just its outline (via binary '
+            'erosion) before it is previewed, extracted, or saved')
+        layout_edgeDetection.addWidget(self.checkbox_edgeOnly)
+        self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
+        label_edgeKernel = qtw.QLabel('Kernel')
+        layout_edgeDetection.addWidget(label_edgeKernel)
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        layout_edgeDetection.addWidget(self.spinbox_edgeKernel)
+        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
+        layout_edgeDetection.addStretch(1)
             #%% 3DED
         layout_threadNo = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_threadNo)
@@ -463,7 +523,15 @@ class Tab_Tracking_CV2(TabBase):
         layout_extract.addWidget(self.button_3ded)
         self.button_3ded.setFixedSize(button_w, button_h_lrg)
         self.button_3ded.clicked.connect(self.extract_3ded)
-        
+
+        self.button_extractCurrentFrame = qtw.QPushButton('Extract DP\n(Current Frame)')
+        layout_extract.addWidget(self.button_extractCurrentFrame)
+        self.button_extractCurrentFrame.setFixedSize(button_w, button_h_lrg)
+        self.button_extractCurrentFrame.setToolTip(
+            'Compute the diffraction pattern for just the selected ROI at the frame the '
+            'slider is currently on - a quick one-off check, not saved as part of the series')
+        self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
+
         self.button_save_results = qtw.QPushButton('Save Results')
         layout_extract.addWidget(self.button_save_results)
         self.button_save_results.setFixedSize(button_w, button_h_lrg)
@@ -686,6 +754,8 @@ class Tab_Tracking_CV2(TabBase):
             if path:
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_4d.setText(path)
+                self._smart_scan_rows = None  # stale for a different folder
+                self.label_smartScanSummary.setText('')
                 if any(f.endswith('.tpx3') for f in os.listdir(path)):
                     self.load_metadata(silent=True)
 
@@ -789,10 +859,70 @@ class Tab_Tracking_CV2(TabBase):
         if scale_recip:
             self.lineEdit_scale_recip.setText(str(scale_recip))
             applied.append('reciprocal-space scale')
+        smart_scan = metadata.get('smart_scan')
+        if smart_scan and smart_scan.get('role') == 'acquisition':
+            # Reuse the exact per-angle file/pattern match already confirmed
+            # when this nav signal was built, instead of re-deriving (and
+            # potentially resolving differently) it from the 4D signals
+            # folder - avoids the detection/acquisition file-count mismatch
+            # this tab used to need manual folder cleanup to work around.
+            self.checkbox_smartScan.setChecked(True)
+            self.lineEdit_patternDir.setText(smart_scan.get('pattern_dir') or '')
+            d4d_for_join = d4d or self.lineEdit_dir_4d.text()
+            self._smart_scan_rows = [{
+                'angle': item['angle'], 'detection_file': None,
+                'acquisition_file': os.path.join(d4d_for_join, item['file']),
+                'pattern_file': item['pattern_file'],
+                'extra_files': [], 'status': ['ok'], 'excluded': False,
+            } for item in smart_scan.get('files', [])]
+            self.label_smartScanSummary.setText(
+                f"{len(self._smart_scan_rows)} angle(s) from navigator metadata")
+            applied.append('smart-scan file match')
         if applied:
             self.logger.info(
                 'Applied metadata.json from the navigator tab (%s): %s.',
                 fn_nav, ', '.join(applied))
+
+    def activate_smartScan_widgets(self):
+        enable = self.checkbox_smartScan.isChecked()
+        for wid in (self.lineEdit_patternDir, self.button_browsePatternDir,
+                    self.button_checkSmartScanFiles):
+            wid.setEnabled(enable)
+
+    def browse_pattern_dir(self):
+        start_dir = self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
+        path = qtw.QFileDialog.getExistingDirectory(self, "Select Pattern Files Folder", start_dir)
+        if path:
+            self.lineEdit_patternDir.setText(path)
+            self._smart_scan_rows = None
+            self.label_smartScanSummary.setText('')
+
+    def get_pattern_dir(self):
+        return self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
+
+    def open_smart_scan_check_dialog(self):
+        directory = self.lineEdit_dir_4d.text()
+        if not os.path.isdir(directory):
+            qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
+            return
+        dtype = None
+        for ext in io.DATA_EXTENSIONS:
+            if any(f.endswith(ext) for f in os.listdir(directory)):
+                dtype = ext
+                break
+        if dtype is None:
+            qtw.QMessageBox.warning(self, 'Unsupported Format',
+                f'Smart-scan file matching currently supports {", ".join(io.DATA_EXTENSIONS)} '
+                'data only.')
+            return
+        dlg = SmartScanCheckDialog(self, directory, dtype, pattern_dir=self.get_pattern_dir(),
+                                   rows=self._smart_scan_rows)
+        if dlg.exec_() == qtw.QDialog.Accepted:
+            self._smart_scan_rows = dlg.rows
+            n_ok = sum(1 for row in dlg.rows if not row['excluded'])
+            self.label_smartScanSummary.setText(f'{n_ok} / {len(dlg.rows)} angle(s) included')
+            self.logger.info('Smart-scan file check confirmed: %d / %d angle(s) included.',
+                             n_ok, len(dlg.rows))
 
     def load_navSignal(self):
         def get_signal(fn):
@@ -1372,6 +1502,8 @@ class Tab_Tracking_CV2(TabBase):
         thresh = thresh_offset * th
         img_mask = img_blur >= thresh
         img_mask = img_mask[x:x+w, y:y+h]
+        if self.checkbox_edgeOnly.isChecked():
+            img_mask = io.erode_mask_edge(img_mask, self.spinbox_edgeKernel.value())
         return img_mask, img_cut
 
     def on_press(self, event):
@@ -1877,8 +2009,24 @@ class Tab_Tracking_CV2(TabBase):
                 '(.hdf5, .tpx3, .zspy, etc.) before extraction.')
             return
 
-        # check if no of files matches with no of images
-        fns_4d = glob(os.path.join(path_4d, '*'))
+        fns_pattern_4d = None  # parallel per-file pattern-file list, smart-scan only
+        if self.checkbox_smartScan.isChecked():
+            if self._smart_scan_rows is None:
+                self.open_smart_scan_check_dialog()
+            if self._smart_scan_rows is None:  # still None: user cancelled the dialog
+                self.spinner.stop()
+                return
+            resolved = io.resolve_smart_scan_files(self._smart_scan_rows, role='acquisition')
+            if not resolved:
+                self.spinner.stop()
+                qtw.QMessageBox.warning(self, 'No Files',
+                    'No included tilt angle has an acquisition file - check "Check Files..." above.')
+                return
+            fns_4d = [item['file'] for item in resolved]
+            fns_pattern_4d = [item['pattern_file'] for item in resolved]
+        else:
+            # check if no of files matches with no of images
+            fns_4d = glob(os.path.join(path_4d, '*'))
         if len(fns_4d) == 0:
             self.spinner.stop()
             qtw.QMessageBox.critical(self, 'Wrong Path',
@@ -1900,10 +2048,17 @@ class Tab_Tracking_CV2(TabBase):
         # make masks
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
+        edge_only = self.checkbox_edgeOnly.isChecked()
+        edge_kernel = self.spinbox_edgeKernel.value()
         for ind in self.df_rois[self.df_rois.use == 1].index:
-            self.df_rois.at[ind, 'mask'] = tr.create_masks(
+            masks = tr.create_masks(
                 self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
                 thresh_method, thresh_offset, blur_kernel)
+            if edge_only:
+                # Applied per-frame - erode_mask_edge is a single-2D-mask
+                # transform, and this stack is (N frames, H, W).
+                masks = np.stack([io.erode_mask_edge(m, edge_kernel) for m in masks])
+            self.df_rois.at[ind, 'mask'] = masks
 
         # set detector size for tpx3
         if dtype == '.tpx3': # TODO not good
@@ -1937,9 +2092,10 @@ class Tab_Tracking_CV2(TabBase):
             out_rois = self.df_rois.loc[idx, 'out_rois']
             for i_fr, fn in enumerate(fns_4d):
                 if out_rois[i_fr].any():
+                    fn_pattern = fns_pattern_4d[i_fr] if fns_pattern_4d is not None else None
                     self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
                                        os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
-                                       dtype, scanSize, (idx, i_fr)])
+                                       dtype, scanSize, (idx, i_fr), fn_pattern or ''])
         
         
         # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\debug'
@@ -1960,7 +2116,92 @@ class Tab_Tracking_CV2(TabBase):
         os.makedirs(temp_dir, exist_ok=True)
         self.logger.info('temp directory: %s', temp_dir)
         return temp_dir
-    
+
+    def extract_dp_current_frame(self):
+        """Compute the diffraction pattern for just the selected ROI at the
+        frame the slider currently points to - the single-frame equivalent
+        of "Extract!" (extract_3ded), for quick data-checking. Runs inline
+        (WorkerThread_General on self.threadpool) rather than as a QProcess,
+        since it's a one-off single frame, not a whole series."""
+        selected_items = self.tree_objects.selectedItems()
+        if not selected_items:
+            qtw.QMessageBox.warning(self, 'No ROI Selected', 'Select a tracked ROI first.')
+            return
+        idx = int(selected_items[0].text(1))
+        i_fr = self.slider_imgNo.value()
+
+        if np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])):
+            qtw.QMessageBox.warning(self, 'Not Tracked', 'This ROI has not been tracked yet.')
+            return
+        out_rois = self.df_rois.loc[idx, 'out_rois']
+        roi = out_rois[i_fr]
+        if not roi.any():
+            qtw.QMessageBox.warning(self, 'No ROI', 'No tracked ROI at the current frame.')
+            return
+
+        path_4d = self.lineEdit_dir_4d.text()
+        if path_4d == '':
+            qtw.QMessageBox.critical(self, 'No Entry',
+                'Enter the path to the folder containing 4D signal files before extraction.')
+            return
+
+        fn_pattern = None
+        if self.checkbox_smartScan.isChecked():
+            if self._smart_scan_rows is None:
+                self.open_smart_scan_check_dialog()
+            if self._smart_scan_rows is None:
+                return
+            resolved = io.resolve_smart_scan_files(self._smart_scan_rows, role='acquisition')
+            if i_fr >= len(resolved):
+                qtw.QMessageBox.warning(self, 'Frame Out of Range',
+                    'The current frame has no matching acquisition file in the smart-scan match.')
+                return
+            fn = resolved[i_fr]['file']
+            fn_pattern = resolved[i_fr]['pattern_file']
+        else:
+            fns_4d = sorted(glob(os.path.join(path_4d, '*')))
+            if i_fr >= len(fns_4d):
+                qtw.QMessageBox.warning(self, 'Frame Out of Range',
+                    'The current frame has no matching 4D signal file in the folder.')
+                return
+            fn = fns_4d[i_fr]
+        dtype = os.path.splitext(fn)[-1]
+
+        scanSize = self.get_scan_size()
+        if scanSize is None:  # "Auto": fall back to the loaded nav signal's own shape
+            scanSize = tuple(self.nav_imgs.shape[1:])
+
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value() / 100
+        blur_kernel = int(self.combo_blur.currentText())
+        mask = tr.create_masks(self.nav_imgs[i_fr:i_fr + 1], out_rois[i_fr:i_fr + 1],
+                               thresh_method, thresh_offset, blur_kernel)[0]
+        if self.checkbox_edgeOnly.isChecked():
+            mask = io.erode_mask_edge(mask, self.spinbox_edgeKernel.value())
+
+        self.logger.info('Extracting DP for ROI %d, frame %d (current-frame check)...', idx, i_fr)
+        self.button_extractCurrentFrame.setDisabled(True)
+        worker = WorkerThread_General(load_dp, 0, fn, roi=roi, mask=mask, dtype=dtype,
+                                      scanSize=scanSize, fn_pattern=fn_pattern)
+        worker.signals.results.connect(
+            lambda dp, _idx, idx=idx, i_fr=i_fr: self._on_current_frame_dp(dp, idx, i_fr))
+        worker.signals.error.connect(self._on_current_frame_dp_failed)
+        self.threadpool.start(worker)
+
+    def _on_current_frame_dp(self, dp, idx, i_fr):
+        self.button_extractCurrentFrame.setEnabled(True)
+        if hasattr(dp, 'compute'):
+            dp = dp.compute()
+        self.update_ax(dp, 'dp', self.ax_dp, f'DP (ROI {idx}, frame {i_fr} only)')
+        self.canvas_extract.draw_idle()
+        self.logger.info('Current-frame DP extraction complete (ROI %d, frame %d).', idx, i_fr)
+
+    def _on_current_frame_dp_failed(self, traceback_text, _idx):
+        self.button_extractCurrentFrame.setEnabled(True)
+        self.logger.error('Current-frame DP extraction failed:\n%s', traceback_text)
+        qtw.QMessageBox.warning(self, 'Extraction Failed',
+            f'Could not extract the diffraction pattern:\n{traceback_text[-500:]}')
+
 # =============================================================================
 #     def launch_initial_tasks(self):
 #         for _ in range(min(self.max_processes, len(self.tasks))):
@@ -1973,7 +2214,11 @@ class Tab_Tracking_CV2(TabBase):
     
         args = self.tasks.popleft()
         mask_path = args[2]
-        idx, i_fr = args[-1]
+        # args = [fn, roi, mask_path, dtype, scanSize, (idx, i_fr), fn_pattern] -
+        # (idx, i_fr) is second-to-last (fn_pattern, always present since
+        # extract_3ded() appends it unconditionally, must stay last to land
+        # in extract_3ded_mask_single_frame's matching positional slot).
+        idx, i_fr = args[-2]
         np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
         program, arguments = worker_command('extract_frame', args)
         process = QProcess()
@@ -2149,6 +2394,8 @@ class Tab_Tracking_CV2(TabBase):
             df['thresh'] = [('blur kernel', self.combo_blur.currentText()),
                             ('thresh method', self.combo_thresh_method.currentText()),
                             ('thresh offset', self.slider_thresh.value())]
+            df['edge_detection'] = [('enabled', self.checkbox_edgeOnly.isChecked()),
+                                    ('kernel_size', self.spinbox_edgeKernel.value())]
             df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])

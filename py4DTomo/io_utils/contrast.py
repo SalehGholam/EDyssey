@@ -115,3 +115,29 @@ def gaussian_blur(img, kernel_size=3):
         Blurred numpy.ndarray of the same shape and dtype as `img`.
     """
     return cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+
+def erode_mask_edge(mask, kernel_size=3):
+    """Reduce a binary mask to just its edge/outline, `kernel_size` pixels wide.
+
+    Erodes the mask with a square kernel, then subtracts the eroded mask
+    from the original - what's left is the boundary ring the erosion ate
+    away, i.e. everything except the mask's own interior. Used as an
+    optional post-processing step on segmentation/threshold masks (ROI on
+    4D, ROI Tracker, SAM2 Tracker) so extraction/display can be restricted
+    to a particle's edge instead of its whole area.
+
+    Args:
+        mask: 2-D array, truthy where the mask is set (any dtype).
+        kernel_size: Side length of the square erosion kernel, in pixels.
+            Larger values eat further into the mask before subtracting,
+            producing a wider edge band. Must be >= 1.
+
+    Returns:
+        numpy.ndarray of dtype bool, same shape as `mask` - True only on the
+        mask's edge band.
+    """
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask_u8 = mask.astype('uint8')
+    mask_eroded = cv2.erode(mask_u8, kernel, iterations=1)
+    edge_mask = (mask_u8 & ~mask_eroded).astype(bool)
+    return edge_mask

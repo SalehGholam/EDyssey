@@ -42,7 +42,7 @@ def load_signal(fn, **kwargs):
 
 def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
               det_shape=512, repetitions=1, sum_dp=False, logger=None,
-              n_threads=None, **kwargs):
+              n_threads=None, fn_pattern=None, **kwargs):
     """Load a .tpx3 4D-STEM file via eventem; returns a HyperSpy Signal2D or summed nav image.
 
     `logger`: optional logger the eventem progress output (printed straight
@@ -56,6 +56,12 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     several *concurrent processes* doing the same thing - otherwise each
     process additionally claims the whole machine's threads for itself,
     causing severe oversubscription once more than one runs at a time.
+
+    `fn_pattern`: optional path to a smart-scan pattern file (a text file of
+    flat scan-pixel indices, one per acquired frame, in acquisition order) -
+    required to correctly reshape a smart-scanned (sparsely acquired)
+    acquisition into its full (ny, nx, det, det) grid. None (default) treats
+    the file as a normal dense raster, matching prior behaviour.
     """
     if roi is None:
         x, y, w, h = 0, 0, scanSize[0], scanSize[1]
@@ -69,6 +75,8 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     roi.nx = scanSize[0]
     roi.ny = scanSize[1]
     roi.set_file(fn)
+    if fn_pattern:
+        roi.set_pattern_file(fn_pattern)
     roi.set_roi(x=x, y=y, width=w, height=h)
     roi.set_dwell_time(dwellTime*1000)
     with redirect_console_to_logger(logger, 'Loading tpx3'):
@@ -162,22 +170,37 @@ def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False,
         # cp.get_default_memory_pool().free_all_blocks()
         return s, f
 
-def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, logger=None, **kwargs):
-    """Load a .hspy/.zspy HyperSpy signal; supports lazy loading, ROI crop, and DP summation."""
+def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, logger=None,
+           fn_pattern=None, scanSize=None, **kwargs):
+    """Load a .hspy/.zspy HyperSpy signal; supports lazy loading, ROI crop, and DP summation.
+
+    Args:
+        fn_pattern: Optional path to a smart-scan pattern file - treats `fn`
+            as a flat, un-reshaped stream of acquired frames (the same
+            situation as a smart-scanned .mib - both are loaded via
+            `hs.load` identically, see `_reconstruct_smart_scan`) rather
+            than an already-dense 4D signal. Requires `scanSize`. None
+            (default) loads `fn` as an already-dense signal, matching prior
+            behaviour.
+        scanSize: (nx, ny) scan dimensions - only used when `fn_pattern` is given.
+    """
     #TODO add cupy if possible
-    s = hs.load(fn, lazy=True)
-    det_shape = s.data.shape[-1]
-    # Unlike raw acquisition .hdf5 (whose native chunk is already a
-    # reasonably-sized block, so it's read as-is - see load_hdf5), 4D-STEM
-    # .hspy/.zspy files are typically written with a per-navigation-pixel
-    # chunk (e.g. (1,1,det,det)) to make single-frame random access fast
-    # during acquisition - exactly the wrong shape for a full-scan
-    # reduction, so re-chunking to a coarser nav grid first pays for itself.
-    if chunks is None:
-        nav_chunk = 16 if det_shape == 512 else 32
-        s.rechunk(nav_chunks=(nav_chunk, nav_chunk), sig_chunks=(det_shape, det_shape))
+    if fn_pattern:
+        s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks)
     else:
-        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+        s = hs.load(fn, lazy=True)
+        det_shape = s.data.shape[-1]
+        # Unlike raw acquisition .hdf5 (whose native chunk is already a
+        # reasonably-sized block, so it's read as-is - see load_hdf5), 4D-STEM
+        # .hspy/.zspy files are typically written with a per-navigation-pixel
+        # chunk (e.g. (1,1,det,det)) to make single-frame random access fast
+        # during acquisition - exactly the wrong shape for a full-scan
+        # reduction, so re-chunking to a coarser nav grid first pays for itself.
+        if chunks is None:
+            nav_chunk = 16 if det_shape == 512 else 32
+            s.rechunk(nav_chunks=(nav_chunk, nav_chunk), sig_chunks=(det_shape, det_shape))
+        else:
+            s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
 
     if np.any(roi):
         x,y,w,h = roi
@@ -193,8 +216,41 @@ def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, logger=None, **
             s.compute()
     return s
 
+def _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks=None):
+    """Reconstruct a smart-scanned acquisition into its full dense
+    (ny, nx, det, det) grid.
+
+    Used for .mib/.hspy/.zspy - unlike .tpx3 (whose eventem reader
+    understands a pattern file natively, see `load_tpx3`), these are all
+    loaded via `hs.load` (just dispatching to a different reader plugin per
+    extension) as a flat stream of only the frames that were actually
+    acquired, in acquisition order - `fn_pattern` (a text file of one flat
+    scan-pixel index per stored frame) says where each one belongs. Every
+    scan position not visited is left as zero. Mirrors `recreate_4d` in
+    "other_scripts/smart scanning guide/smart_scanning_analysis_mib.py", but
+    reshapes to (ny, nx, det, det) - matching this app's own convention for
+    a dense .mib load (see the comment in `load_mib` below) rather than that
+    script's (nx, ny) - so `roi`/`.inav` cropping right after this call
+    behaves identically to the non-smart-scan path.
+    """
+    pattern = np.loadtxt(fn_pattern).astype('int64')
+    s_flat = hs.load(fn, lazy=True)  # (n_frames, det, det), acquisition order
+    det_shape = s_flat.data.shape[-2:]
+    dask_arr = da.zeros((scanSize[0] * scanSize[1], *det_shape),
+                        dtype=s_flat.data.dtype, chunks=(256, *det_shape))
+    dask_arr[pattern] = s_flat.data
+    dask_arr = dask_arr.reshape(scanSize[1], scanSize[0], *det_shape)
+    s = hs.signals.Signal2D(dask_arr).as_lazy()
+
+    if chunks is None:
+        nav_chunk = 16 if det_shape[0] == 512 else 32
+        s.rechunk(nav_chunks=(nav_chunk, nav_chunk), sig_chunks=det_shape)
+    else:
+        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+    return s
+
 def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
-            logger=None, **kwargs):
+            logger=None, fn_pattern=None, **kwargs):
     """Load a .mib file, rechunk, and optionally crop/sum.
 
     Args:
@@ -205,6 +261,9 @@ def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
         lazy: Return a lazy (dask-backed) signal without computing.
         sum_dp: Return summed diffraction patterns (2D navigation image) instead of 4D signal.
         logger: Optional logger to report dask compute progress through.
+        fn_pattern: Optional path to a smart-scan pattern file - see
+            `_reconstruct_smart_scan`. None (default) loads `fn` as a normal
+            dense raster, matching prior behaviour.
 
     Returns:
         numpy.ndarray if `sum_dp` is True; otherwise a HyperSpy Signal2D (lazy or computed).
@@ -214,22 +273,26 @@ def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
         fn_hdr = os.path.join(fld, 'default.hdr')
         if os.path.isfile(fn_hdr):
             scanSize = get_scan_size_mib_hdr(fn_hdr)
-    # Passing navigation_shape=(nx, ny) lets the mib reader itself reshape
-    # the raw frame stream into a proper 4D array (it reverses the pair
-    # internally to (ny, nx, det, det) before returning it) - manually
-    # reshaping a flat (N, det, det) stack afterwards, as this used to do,
-    # silently assumed the same (nx, ny) axis order without that reversal
-    # and could produce a transposed navigation image.
-    s = hs.load(fn, lazy=True, navigation_shape=scanSize)
-    det_shape = s.data.shape[-1]
 
-    if chunks is None:
-        if det_shape == 512:
-            s.rechunk(nav_chunks=(16,16), sig_chunks=(det_shape,det_shape))
-        else:
-            s.rechunk(nav_chunks=(32,32), sig_chunks=(det_shape,det_shape))
+    if fn_pattern:
+        s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks)
     else:
-        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+        # Passing navigation_shape=(nx, ny) lets the mib reader itself
+        # reshape the raw frame stream into a proper 4D array (it reverses
+        # the pair internally to (ny, nx, det, det) before returning it) -
+        # manually reshaping a flat (N, det, det) stack afterwards, as this
+        # used to do, silently assumed the same (nx, ny) axis order without
+        # that reversal and could produce a transposed navigation image.
+        s = hs.load(fn, lazy=True, navigation_shape=scanSize)
+        det_shape = s.data.shape[-1]
+
+        if chunks is None:
+            if det_shape == 512:
+                s.rechunk(nav_chunks=(16,16), sig_chunks=(det_shape,det_shape))
+            else:
+                s.rechunk(nav_chunks=(32,32), sig_chunks=(det_shape,det_shape))
+        else:
+            s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
 
     if roi is not None:
         x,y,w,h = roi

@@ -273,7 +273,7 @@ def find_dp_center_blurred(dp, sigma=15):
     return (float(x), float(y))
 
 def get_sum_dp(fn, dtype=None, scanSize=None, dwellTime=1, roi=None, logger=None,
-               n_threads=None):
+               n_threads=None, fn_pattern=None):
     """Return a summed diffraction pattern (position-averaged over the
     scan), summed either over the whole scan (roi=None) or over a
     scan-space rectangle (roi=(x, y, w, h)) - used both as the reference
@@ -296,6 +296,9 @@ def get_sum_dp(fn, dtype=None, scanSize=None, dwellTime=1, roi=None, logger=None
         n_threads: Optional override for eventem's own internal thread pool
             (`.tpx3` only) - see `load_tpx3`'s docstring for why this
             matters for concurrent callers.
+        fn_pattern: Optional path to a smart-scan pattern file (see
+            `loaders.load_tpx3`/`loaders._load_mib_smart_scan`) - `.tpx3`
+            and `.mib` only.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
@@ -303,10 +306,11 @@ def get_sum_dp(fn, dtype=None, scanSize=None, dwellTime=1, roi=None, logger=None
     if dtype is None:
         dtype = os.path.splitext(fn)[-1]
     if dtype == '.tpx3':
-        return get_dp(fn, scanSize, roi=roi, dwellTime=dwellTime, logger=logger,
-                      n_threads=n_threads)
+        return get_dp(fn, scanSize, fn_pattern=fn_pattern, roi=roi, dwellTime=dwellTime,
+                      logger=logger, n_threads=n_threads)
 
-    s = load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=True, logger=logger)
+    s = load_signal(fn, dtype=dtype, scanSize=scanSize, roi=roi, lazy=True, logger=logger,
+                    fn_pattern=fn_pattern)
     f = None
     if isinstance(s, tuple):  # lazy .hdf5 load returns (signal, open file handle)
         s, f = s
@@ -326,7 +330,7 @@ def get_sum_dp(fn, dtype=None, scanSize=None, dwellTime=1, roi=None, logger=None
 
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1,
                              r_in=0, r_out=None, center=None, logger=None,
-                             n_threads=None):
+                             n_threads=None, fn_pattern=None):
     """Compute a navigation image by summing each diffraction pattern's
     intensity within an annular virtual-detector mask (inner/outer radius
     around a user-defined center), instead of the whole detector.
@@ -361,9 +365,11 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1,
             center = (center[1], center[0])
             return calculate_nav_img_tpx3(fn, scanSize, dwellTime,
                                           r_in=r_in, r_out=r_out or 512, offset=center,
+                                          fn_pattern=fn_pattern,
                                           logger=logger, n_threads=n_threads)
 
-    s = load_signal(fn, dtype=dtype, scanSize=scanSize, lazy=True, logger=logger)
+    s = load_signal(fn, dtype=dtype, scanSize=scanSize, lazy=True, logger=logger,
+                    fn_pattern=fn_pattern)
     f = None
     if isinstance(s, tuple):  # lazy .hdf5 load returns (signal, open file handle)
         s, f = s
@@ -410,7 +416,7 @@ def calculate_nav_img_hdf5(fn, scanSize=None, logger=None):
     return nav_img
 
 def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
-                      n_threads=None):
+                      n_threads=None, fn_pattern=None):
     """Dispatch navigation image computation to the format-specific function.
 
     Args:
@@ -430,10 +436,11 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         dtype = os.path.splitext(fn)[-1]
 
     if dtype == '.mib':
-        nav_img = load_signal(fn, dtype=dtype, scanSize=scanSize, sum_dp=True, logger=logger)
+        nav_img = load_signal(fn, dtype=dtype, scanSize=scanSize, sum_dp=True, logger=logger,
+                              fn_pattern=fn_pattern)
     elif dtype == '.tpx3':
-        nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, logger=logger,
-                                         n_threads=n_threads)
+        nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
+                                         logger=logger, n_threads=n_threads)
     elif dtype == '.hdf5':
         nav_img = calculate_nav_img_hdf5(fn, scanSize, logger=logger)
     elif dtype in ['.zspy', '.hspy']:

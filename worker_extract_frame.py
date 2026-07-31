@@ -27,7 +27,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
 #%%
 #TODO add cupy if possible
-def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
+def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_pattern=None):
     """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
 
     Subprocess entry point called by `tab_sam2.py`. Deserialises CLI arguments, loads the
@@ -41,6 +41,8 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
         dtype: File extension string (e.g. `.tpx3`, `.hdf5`).
         scanSize: Scan dimensions as `'(nx, ny)'` string.
         i_c: Frame index within the extraction batch, as a string.
+        fn_pattern: Optional path to a smart-scan pattern file for this frame
+            (empty string/None for a normal dense frame) - see `load_tpx3`/`load_mib` below.
     """
     try:
         # Parse input args
@@ -50,8 +52,9 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c):
         # roi = eval(roi) # read as str of list
         mask = np.load(mask_path)
         # mask = mask_path
-        
-        dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize)
+        fn_pattern = fn_pattern or None
+
+        dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize, fn_pattern=fn_pattern)
         # Serialize result to base64 string and print it to stdout
         serialized = base64.b64encode(pickle.dumps((dp, i_c))).decode('utf-8')
         print(serialized)  # <- this goes to QProcess output
@@ -91,7 +94,7 @@ def load_dp(fn, **kwargs):
         result = load_mib(fn, **kwargs)
     return result
 
-def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
+def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, **kwargs):
     """Load a .tpx3 file, apply an ROI crop and mask, and return the summed diffraction pattern.
 
     Args:
@@ -100,6 +103,9 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
         scanSize: (nx, ny) scan dimensions.
         roi: (x, y, w, h) scan-space crop or None for the full scan.
         dwellTime: Dwell time in microseconds.
+        fn_pattern: Optional path to a smart-scan pattern file for `fn` -
+            reshapes/selects scan positions correctly for a smart-scanned
+            (sparsely acquired) frame, same as `loaders.load_tpx3`.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
@@ -149,6 +155,8 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, **kwargs):
     roi.set_bitdepth(bitDepth)
     roi.nx = scanSize[0]
     roi.ny = scanSize[1]
+    if fn_pattern:
+        roi.set_pattern_file(fn_pattern)
     # roi.set_roi_mask([np.where(mask.flatten())[0]])
     # roi.set_roi_mask([np.where(mask.flatten())[0]])
     roi.set_roi_mask([mask.flatten()])
@@ -183,18 +191,36 @@ def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs)
         dp = s[mask_idx].sum(axis=0).compute()
     return dp
     
-def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), **kwargs):
+def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
     """Load a .hspy/.zspy file and sum diffraction patterns at mask-True scan pixels.
 
     Args:
         fn: Path to the HyperSpy signal file.
-        roi: (x, y, w, h) scan-space crop, applied via HyperSpy `inav`.
+        roi: (x, y, w, h) scan-space crop, applied via HyperSpy `inav`. Ignored
+            when `fn_pattern` is given (see below).
         mask: 2-D boolean array matching the full scan dimensions.
         chunks: Dask rechunk shape.
+        fn_pattern: Optional path to a smart-scan pattern file - `.hspy`/
+            `.zspy` are loaded via HyperSpy exactly like `.mib` (see
+            `load_mib`'s docstring above for the full explanation); when
+            given, only the raw frames whose scan position falls inside
+            `mask` are read and summed directly (no dense-grid
+            reconstruction - cheaper for the single/few-frame case this
+            worker is called for).
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
+    if fn_pattern:
+        pattern = np.loadtxt(fn_pattern).astype('int64')
+        coords = set(np.where(mask.flatten())[0].tolist())
+        idx = [i for i, val in enumerate(pattern) if val in coords]
+        s_flat = load(fn, lazy=True).data  # (n_frames, det, det), acquisition order
+        if not idx:
+            return np.zeros(s_flat.shape[-2:], dtype='uint32')
+        dp = s_flat[idx].sum(axis=0).compute()
+        return dp
+
     s = load(fn, lazy=True)
     try:
         s.rechunk(chunks)
@@ -211,19 +237,38 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), **kwargs):
     dp = dp.compute()
     return dp
 
-def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), **kwargs):
+def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
     """Load a .mib file and sum diffraction patterns at mask-True scan pixels.
 
     Args:
         fn: Path to the .mib file.
-        roi: (x, y, w, h) scan-space crop applied via HyperSpy `inav`.
+        roi: (x, y, w, h) scan-space crop applied via HyperSpy `inav`. Ignored
+            when `fn_pattern` is given (see below).
         mask: 2-D boolean array.
         scanSize: (nx, ny) scan dimensions. Reads from `default.hdr` if None.
         chunks: Dask rechunk shape.
+        fn_pattern: Optional path to a smart-scan pattern file - a text file
+            of one flat scan-pixel index per frame actually stored in `fn`,
+            in acquisition order (see
+            "other_scripts/smart scanning guide/smart_scanning_analysis_mib.py").
+            When given, only the raw frames whose scan position falls inside
+            `mask` are read and summed directly (no dense-grid
+            reconstruction, unlike `loaders._load_mib_smart_scan` - cheaper
+            for the single/few-frame case this worker is called for).
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
+    if fn_pattern:
+        pattern = np.loadtxt(fn_pattern).astype('int64')
+        coords = set(np.where(mask.flatten())[0].tolist())
+        idx = [i for i, val in enumerate(pattern) if val in coords]
+        s_flat = load(fn, lazy=True).data  # (n_frames, det, det), acquisition order
+        if not idx:
+            return np.zeros(s_flat.shape[-2:], dtype='uint32')
+        dp = s_flat[idx].sum(axis=0).compute()
+        return dp
+
     s = load(fn, lazy=True)
     if len(s.data.shape) == 3:
         if scanSize is None:

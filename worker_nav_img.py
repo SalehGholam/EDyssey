@@ -32,7 +32,7 @@ def _read_scansize_hdf5(fn):
 
 
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
-                             r_in=None, r_out=None, center=None):
+                             r_in=None, r_out=None, center=None, fn_pattern=None):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
     print the saved path to stdout - instead of the array itself, base64+
     pickle-encoded. Transferring a multi-MB encoded array through the
@@ -58,8 +58,12 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         r_in: Optional inner radius (pixels) of the virtual detector mask, as a string.
         r_out: Optional outer radius (pixels) of the virtual detector mask, as a string.
         center: Optional `'(x, y)'` center of the virtual detector mask, as a string.
+        fn_pattern: Optional path to a smart-scan pattern file for `fn` (empty
+            string/'None' for a normal dense file) - see `loaders.load_tpx3`/
+            `loaders._load_mib_smart_scan`.
     """
     try:
+        fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
         if scanSize == 'None':
             if dtype == '.hdf5':
                 scanSize = _read_scansize_hdf5(fn)
@@ -85,16 +89,18 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         # per-file throughput to collapse as more workers piled up
         # concurrently - pinning each process to 1 internal thread makes
         # total concurrency match what the user actually configured.
-        if r_in is not None:
+        if r_in not in (None, 'None'):
             r_in = float(r_in)
             r_out = float(r_out)
             center = tuple(map(float, center.strip("()").split(",")))
             result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                                  dwellTime=dwellTime, r_in=r_in,
-                                                 r_out=r_out, center=center, n_threads=1)
+                                                 r_out=r_out, center=center, n_threads=1,
+                                                 fn_pattern=fn_pattern)
         else:
             result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
-                                          dwellTime=dwellTime, n_threads=1)
+                                          dwellTime=dwellTime, n_threads=1,
+                                          fn_pattern=fn_pattern)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')
         np.save(fn_out, result)

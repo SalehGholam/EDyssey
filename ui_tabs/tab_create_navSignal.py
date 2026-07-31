@@ -32,6 +32,7 @@ from .base_tab import TabBase
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .threshold_dialog import ThresholdDialog
+from .smart_scan_dialog import SmartScanCheckDialog
 from worker_extract_frame import load_dp
 #%% class
 class Tab_Create_NavSignal(TabBase):
@@ -232,6 +233,62 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize_row2.addStretch(1)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
+
+        # smart-scan (pattern-file) tomography support: each tilt angle may
+        # have a "detection" file (dense, no pattern needed) and/or an
+        # "acquisition" file (sparse, needs its own pattern file) - see
+        # py4DTomo/io_utils/smart_scan.py.
+        layout_scanSize_row3 = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_row3)
+
+        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        self.checkbox_smartScan.setToolTip(
+            'This folder holds a smart-scanned tomography series (detection + '
+            'acquisition files per tilt angle, each acquisition needing its own '
+            'pattern file). See other_scripts/smart scanning guide/ for background.')
+        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
+
+        self.combo_smartScanRole = qtw.QComboBox()
+        self.combo_smartScanRole.addItems(['Acquisition', 'Detection'])
+        self.combo_smartScanRole.setToolTip(
+            'Which file role to build the batch navigation signal from for each tilt '
+            'angle - "Acquisition" (smart-scanned, uses the pattern file) or '
+            '"Detection" (a plain dense raster, no pattern needed)')
+        self.combo_smartScanRole.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.combo_smartScanRole)
+        layout_scanSize_row3.addStretch(1)
+
+        layout_scanSize_row4 = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_row4)
+
+        label_patternDir = qtw.QLabel('Pattern Dir.')
+        label_patternDir.setFixedWidth(70)
+        layout_scanSize_row4.addWidget(label_patternDir)
+        self.lineEdit_patternDir = qtw.QLineEdit()
+        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_patternDir.setDisabled(True)
+        layout_scanSize_row4.addWidget(self.lineEdit_patternDir)
+        self.button_browsePatternDir = qtw.QPushButton('...')
+        self.button_browsePatternDir.setFixedWidth(30)
+        self.button_browsePatternDir.setDisabled(True)
+        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
+        layout_scanSize_row4.addWidget(self.button_browsePatternDir)
+
+        layout_scanSize_row5 = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_row5)
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
+        self.button_checkSmartScanFiles.setToolTip(
+            'Review the automatic per-angle detection/acquisition/pattern-file match '
+            'before calculating - fix or exclude any mismatched tilt angle by hand')
+        self.button_checkSmartScanFiles.setDisabled(True)
+        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
+        layout_scanSize_row5.addWidget(self.button_checkSmartScanFiles)
+        self.label_smartScanSummary = qtw.QLabel('')
+        layout_scanSize_row5.addWidget(self.label_smartScanSummary)
+        layout_scanSize_row5.addStretch(1)
+
+        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog(); cleared on new 4D folder
         #%% list of files
         layout_fileList = qtw.QVBoxLayout()
         layout_userInput.addLayout(layout_fileList)
@@ -591,6 +648,10 @@ class Tab_Create_NavSignal(TabBase):
         if os.path.isdir(directory) and any(
                 f.endswith('.tpx3') for f in os.listdir(directory)):
             self.load_metadata(silent=True)
+        # A previously-reviewed smart-scan match table is only valid for the
+        # folder it was built from - stale otherwise.
+        self._smart_scan_rows = None
+        self.label_smartScanSummary.setText('')
 
     def browse_metadata_file(self):
         start_dir = self.lineEdit_dir_signal.text()
@@ -636,6 +697,52 @@ class Tab_Create_NavSignal(TabBase):
                                      path_main, e)
                 qtw.QMessageBox.warning(self, 'Metadata Not Loaded',
                     f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
+
+    def activate_smartScan_widgets(self):
+        enable = self.checkbox_smartScan.isChecked()
+        for wid in (self.combo_smartScanRole, self.lineEdit_patternDir,
+                    self.button_browsePatternDir, self.button_checkSmartScanFiles):
+            wid.setEnabled(enable)
+        self._smart_scan_rows = None
+        self.label_smartScanSummary.setText('')
+
+    def browse_pattern_dir(self):
+        start_dir = self.lineEdit_patternDir.text() or self.lineEdit_dir_signal.text()
+        path = qtw.QFileDialog.getExistingDirectory(self, "Select Pattern Files Folder", start_dir)
+        if path:
+            self.lineEdit_patternDir.setText(path)
+            self._smart_scan_rows = None
+            self.label_smartScanSummary.setText('')
+
+    def get_pattern_dir(self):
+        return self.lineEdit_patternDir.text() or self.lineEdit_dir_signal.text()
+
+    def open_smart_scan_check_dialog(self):
+        directory = self.lineEdit_dir_signal.text()
+        if not os.path.isdir(directory):
+            qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
+            return
+        if self.checkbox_selectAll.isChecked():
+            dtype = None
+            for ext in io.DATA_EXTENSIONS:
+                if any(f.endswith(ext) for f in os.listdir(directory)):
+                    dtype = ext
+                    break
+        else:
+            dtype = self.combo_dtype.currentText()
+        if dtype not in io.DATA_EXTENSIONS:
+            qtw.QMessageBox.warning(self, 'Unsupported Format',
+                f'Smart-scan file matching currently supports {", ".join(io.DATA_EXTENSIONS)} '
+                'data only.')
+            return
+        dlg = SmartScanCheckDialog(self, directory, dtype, pattern_dir=self.get_pattern_dir(),
+                                   rows=self._smart_scan_rows)
+        if dlg.exec_() == qtw.QDialog.Accepted:
+            self._smart_scan_rows = dlg.rows
+            n_ok = sum(1 for row in dlg.rows if not row['excluded'])
+            self.label_smartScanSummary.setText(f'{n_ok} / {len(dlg.rows)} angle(s) included')
+            self.logger.info('Smart-scan file check confirmed: %d / %d angle(s) included.',
+                             n_ok, len(dlg.rows))
 
     def refresh_file_list(self):
         """(Re)populate the file list from the current directory, filtered
@@ -707,6 +814,23 @@ class Tab_Create_NavSignal(TabBase):
             name = item.text()
         return os.path.join(self.lineEdit_dir_signal.text(), name)
 
+    def _get_fn_pattern_for(self, fn):
+        """Pattern file to use for `fn` in the "Test File" single-file
+        preview, when "Smart Scanned" is checked and the folder has already
+        been reviewed via "Check Files..." (self._smart_scan_rows) - looks
+        `fn` up by basename against the selected role's file in each row.
+        Returns None if smart-scan isn't in use, hasn't been checked yet, or
+        `fn` isn't in the resolved match table."""
+        if not self.checkbox_smartScan.isChecked() or not self._smart_scan_rows:
+            return None
+        role = self.combo_smartScanRole.currentText().lower()
+        key = f'{role}_file'
+        name = os.path.basename(fn)
+        for row in self._smart_scan_rows:
+            if row.get(key) and os.path.basename(row[key]) == name:
+                return row.get('pattern_file') if role == 'acquisition' else None
+        return None
+
     def test_selected_file(self, item):
         """Compute and preview the navigation image for a single file
         (double-clicked in the file list), without touching the full batch
@@ -724,6 +848,7 @@ class Tab_Create_NavSignal(TabBase):
             return
 
         dwellTime = self.spinbox_dwellTime.value()
+        fn_pattern = self._get_fn_pattern_for(fn)
         self.logger.info('Testing navigation image for %s...', fn)
         if self.checkbox_useMask.isChecked():
             worker = WorkerThread_General(
@@ -731,11 +856,11 @@ class Tab_Create_NavSignal(TabBase):
                 dwellTime=dwellTime, r_in=self.spinbox_rIn.value(),
                 r_out=self.spinbox_rOut.value(),
                 center=(self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                logger=self.logger)
+                logger=self.logger, fn_pattern=fn_pattern)
         else:
             worker = WorkerThread_General(io.calculate_nav_img, 0, fn, dtype=dtype,
                                           scanSize=scanSize, dwellTime=dwellTime,
-                                          logger=self.logger)
+                                          logger=self.logger, fn_pattern=fn_pattern)
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
         QThreadPool.globalInstance().start(worker)
 
@@ -1127,30 +1252,37 @@ class Tab_Create_NavSignal(TabBase):
 
     def calculate_button(self):
         self.path_main = self.lineEdit_dir_signal.text()
-        if self.checkbox_selectAll.isChecked():
-            fns = self.get_all_item_names()
+        fns_pattern = None  # parallel per-file pattern-file list, smart-scan only
+        smart_scan_rows_used = None
+        if self.checkbox_smartScan.isChecked():
+            fns, dtype, fns_pattern, smart_scan_rows_used = self._resolve_smart_scan_fns()
+            if fns is None:
+                return
         else:
-            fns = self.file_list_widget.selectedItems()
-            fns = [item.text() for item in fns]
-            if len(fns) == 0:
-                # The list is already filtered to this dtype by
-                # refresh_file_list(); this is just a defensive fallback.
-                dtype = self.combo_dtype.currentText()
+            if self.checkbox_selectAll.isChecked():
                 fns = self.get_all_item_names()
-                fns = [fn for fn in fns if os.path.splitext(fn)[1] == dtype]
-        fns = [os.path.join(self.path_main, fn) for fn in fns]
-        fns.sort()
+            else:
+                fns = self.file_list_widget.selectedItems()
+                fns = [item.text() for item in fns]
+                if len(fns) == 0:
+                    # The list is already filtered to this dtype by
+                    # refresh_file_list(); this is just a defensive fallback.
+                    dtype = self.combo_dtype.currentText()
+                    fns = self.get_all_item_names()
+                    fns = [fn for fn in fns if os.path.splitext(fn)[1] == dtype]
+            fns = [os.path.join(self.path_main, fn) for fn in fns]
+            fns.sort()
 
-        dtype = [os.path.splitext(fn)[1] for fn in fns]
-        dtype = np.array(dtype)
-        dtype = np.unique(dtype)
-        if len(dtype) != 1:
-            self.logger.warning('Mixed file types found in directory: %s', list(dtype))
-            qtw.QMessageBox.warning(self, 'Mixed File Types',
-                f'Files with different extensions found in directory: {list(dtype)}\n'
-                'Select a single file type and try again.')
-            return
-        dtype = dtype[0]
+            dtype = [os.path.splitext(fn)[1] for fn in fns]
+            dtype = np.array(dtype)
+            dtype = np.unique(dtype)
+            if len(dtype) != 1:
+                self.logger.warning('Mixed file types found in directory: %s', list(dtype))
+                qtw.QMessageBox.warning(self, 'Mixed File Types',
+                    f'Files with different extensions found in directory: {list(dtype)}\n'
+                    'Select a single file type and try again.')
+                return
+            dtype = dtype[0]
 
         dwellTime = self.spinbox_dwellTime.value()
         if self.checkbox_scanSize.isChecked():
@@ -1201,6 +1333,20 @@ class Tab_Create_NavSignal(TabBase):
                 'path': self.metadata_path_override or self.path_main,
                 'block': self.spinbox_metadataCount.value(),
             } if dtype == '.tpx3' else None,
+            # Recorded (in this exact per-file order, matching `files` above)
+            # whenever "Smart Scanned" was used to build this nav signal, so
+            # CV2/SAM2's own extraction can reuse the *same* resolved
+            # angle/file/pattern match via their own "Load Metadata" instead
+            # of re-deriving (and potentially resolving differently) it from
+            # the folder - see tab_tracking_cv2.py/tab_sam2.py's
+            # apply_navigator_metadata().
+            'smart_scan': {
+                'role': self.combo_smartScanRole.currentText().lower(),
+                'pattern_dir': self.get_pattern_dir(),
+                'files': [{'angle': row['angle'], 'file': os.path.basename(row['file']),
+                          'pattern_file': row['pattern_file']}
+                         for row in smart_scan_rows_used],
+            } if self.checkbox_smartScan.isChecked() else None,
         }
 
         self.pathSave = self.lineEdit_dir_save.text()
@@ -1209,9 +1355,50 @@ class Tab_Create_NavSignal(TabBase):
 
         self.button_cancel.setEnabled(True)
         self.button_save_results.setDisabled(True)
-        self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params)
+        self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params, fns_pattern)
 
-    def create_navigation_signal(self, fns, dtype, scanSize, dwellTime, mask_params=None):
+    def _resolve_smart_scan_fns(self):
+        """Resolve the ordered (fns, dtype, fns_pattern, rows) to use for
+        "Calculate All" when "Smart Scanned" is checked - opens the check
+        dialog if the folder hasn't been reviewed yet (or the folder/role
+        changed since), using `self.combo_smartScanRole`'s selected role.
+        Returns (None, None, None, None) if the user cancels or there's
+        nothing usable to run."""
+        directory = self.lineEdit_dir_signal.text()
+        if not os.path.isdir(directory):
+            qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
+            return None, None, None, None
+        dtype = None
+        if self.checkbox_selectAll.isChecked():
+            for ext in io.DATA_EXTENSIONS:
+                if any(f.endswith(ext) for f in os.listdir(directory)):
+                    dtype = ext
+                    break
+        else:
+            dtype = self.combo_dtype.currentText()
+        if dtype not in io.DATA_EXTENSIONS:
+            qtw.QMessageBox.warning(self, 'Unsupported Format',
+                f'Smart-scan file matching currently supports {", ".join(io.DATA_EXTENSIONS)} '
+                'data only.')
+            return None, None, None, None
+
+        if self._smart_scan_rows is None:
+            self.open_smart_scan_check_dialog()
+        if self._smart_scan_rows is None:  # still None: user cancelled the dialog
+            return None, None, None, None
+
+        role = self.combo_smartScanRole.currentText().lower()
+        resolved = io.resolve_smart_scan_files(self._smart_scan_rows, role=role)
+        if not resolved:
+            qtw.QMessageBox.warning(self, 'No Files',
+                f'No included tilt angle has a {role} file - check "Check Files..." above.')
+            return None, None, None, None
+        fns = [item['file'] for item in resolved]
+        fns_pattern = [item['pattern_file'] if role == 'acquisition' else None for item in resolved]
+        return fns, dtype, fns_pattern, resolved
+
+    def create_navigation_signal(self, fns, dtype, scanSize, dwellTime, mask_params=None,
+                                 fns_pattern=None):
         self.nav_imgs = [None] * len(fns)
         self.nav_counter = 0
         self.nav_counter_total = len(fns)
@@ -1226,7 +1413,8 @@ class Tab_Create_NavSignal(TabBase):
         self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
         self.tasks = deque()
         for i, fn in enumerate(fns):
-            self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params))
+            fn_pattern = fns_pattern[i] if fns_pattern is not None else None
+            self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params, fn_pattern))
         self.running_processes = []
         self.process_task_map = {}
         self.process_output_buffers = {}
@@ -1238,12 +1426,19 @@ class Tab_Create_NavSignal(TabBase):
     def launch_next_nav_task(self):
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
-        fn, dtype, scanSize, dwellTime, i_index, mask_params = self.tasks.popleft()
+        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern = self.tasks.popleft()
         scanSize_str = str(scanSize) if scanSize is not None else 'None'
         args = [fn, dtype, scanSize_str, str(dwellTime), str(i_index), self._navimg_temp_dir]
-        if mask_params is not None:
-            r_in, r_out, center = mask_params
-            args += [str(r_in), str(r_out), str(center)]
+        if mask_params is not None or fn_pattern:
+            # r_in/r_out/center must all be present (even as 'None') for
+            # fn_pattern to land in the right positional slot - see
+            # calculate_nav_img_worker's signature in worker_nav_img.py.
+            if mask_params is not None:
+                r_in, r_out, center = mask_params
+                args += [str(r_in), str(r_out), str(center)]
+            else:
+                args += ['None', 'None', 'None']
+            args += [fn_pattern or '']
         program, arguments = worker_command('nav_img', args)
         process = QProcess()
         process.setProgram(program)
