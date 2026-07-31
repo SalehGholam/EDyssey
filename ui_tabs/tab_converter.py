@@ -12,6 +12,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QIntValidator
 import gc
 # import py4DTomo.io_utils as io
+from py4DTomo.io_utils.progress import format_duration_hms
 from .worker_thread import WorkerThread_General
 from .logging_utils import get_tab_logger
 import hyperspy.api as hs
@@ -208,12 +209,12 @@ class Tab_Converter(qtw.QWidget):
 
     def _on_convert_success(self, results):
         duration = perf_counter() - self._tic_convert
-        self.logger.info('tpx3 conversion completed successfully for %d file(s) in %.1f min.',
-                          len(results), duration / 60)
+        self.logger.info('tpx3 conversion completed successfully for %d file(s) in %s.',
+                          len(results), format_duration_hms(duration))
 
     def _on_convert_error(self, exc):
         duration = perf_counter() - self._tic_convert
-        self.logger.error('tpx3 conversion failed after %.1f min: %s', duration / 60, exc)
+        self.logger.error('tpx3 conversion failed after %s: %s', format_duration_hms(duration), exc)
 
     def process_file(self, in_file, out_file, scan_size, bitdepth=8, chunksize=8,
                      det_size=512, det_bin=1, scan_bin=1, compression_factor=4, counter=0):

@@ -258,7 +258,7 @@ class Object_Detector_Widget(qtw.QWidget):
             self.img_disp = {}
             self.img_disp[0] = self.ax_raw.imshow(self.img)
             self.img_disp[1] = self.ax_maskFinal.imshow(img_zero)
-            
+
             self.img_disp[2] = self.ax_blur.imshow(img_zero)
             self.img_disp[3] = self.ax_binarized.imshow(img_zero)
             self.img_disp[4] = self.ax_morph.imshow(img_zero)
@@ -274,10 +274,13 @@ class Object_Detector_Widget(qtw.QWidget):
             self.img_disp = {}
             self.img_disp[0] = self.ax_raw.imshow(self.img)
             self.img_disp[1] = self.ax_maskFinal.imshow(img_zero)
-        
+
+        # figure.clf() above wipes any previous colorbars along with the old
+        # axes, so these are (re)created fresh every call, one per panel.
         for i, ax in enumerate(self.axes):
             ax.set_axis_off()
             ax.set_title(titles[i])
+            self.figure.colorbar(self.img_disp[i], ax=ax, fraction=0.046, pad=0.04)
         # self.canvas.draw()
         
         self.img_disp[0].set_clim(vmin=self.img.min(), vmax=self.img.max())

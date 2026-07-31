@@ -6,14 +6,16 @@ Created on Fri Sep 13 13:53:46 2024
 """
 
 import os
-import sys
 import shutil
 import tempfile
+import json
+import datetime
 from time import perf_counter
 from collections import deque
 from PyQt5.QtCore import Qt, QProcess, QThreadPool
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QIntValidator, QDoubleValidator
+from PyQt5.QtGui import QIntValidator, QDoubleValidator, QKeySequence
+from PyQt5.QtWidgets import QShortcut
 import numpy as np
 import gc
 import matplotlib.pyplot as plt
@@ -25,15 +27,22 @@ import hyperspy.api as hs
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from .logging_utils import get_tab_logger, LogConsole
-from .worker_thread import WorkerThread_General
+from .logging_utils import LogConsole
+from .base_tab import TabBase
+from .worker_thread import WorkerThread_General, ProcessStderrBuffer
+from .worker_launch import worker_command
 from .threshold_dialog import ThresholdDialog
 from worker_extract_frame import load_dp
 #%% class
-class Tab_Create_NavSignal(qtw.QWidget):
+class Tab_Create_NavSignal(TabBase):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.logger = get_tab_logger('Tab_Create_NavSignal')
+        # own_threadpool=False: this tab's batch nav-image jobs are
+        # dispatched via QProcess, not QThreadPool - the only QThreadPool
+        # work it has is small one-off clip/frame-export jobs, which
+        # deliberately share QThreadPool.globalInstance() with everything
+        # else instead of getting a dedicated pool.
+        super().__init__('Tab_Create_NavSignal', parent, own_threadpool=False)
+        self._stderr_buffer = ProcessStderrBuffer()
         self.init_widget()
 
     def init_widget(self):
@@ -91,6 +100,20 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
+
+        layout_project_name = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_project_name)
+
+        label_project_name = qtw.QLabel('Project')
+        label_project_name.setFixedWidth(55)
+        layout_project_name.addWidget(label_project_name)
+
+        self.lineEdit_projectName = qtw.QLineEdit()
+        layout_project_name.addWidget(self.lineEdit_projectName)
+        self.lineEdit_projectName.setToolTip(
+            'Results are saved to "<Save Path>/<Project>_5DED Analysis/navigator signal/'
+            '<timestamp>/" - defaults to the 4D signals folder name whenever that '
+            'folder changes, but can be edited freely before saving.')
 
         layout_save_name = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_save_name)
@@ -257,12 +280,15 @@ class Tab_Create_NavSignal(qtw.QWidget):
         layout_calculate_buttons2 = qtw.QHBoxLayout()
         layout_userInput.addLayout(layout_calculate_buttons2)
 
-        self.button_stop = qtw.QPushButton('Stop')
-        self.button_stop.setFixedSize(button_w, button_h_lrg)
-        layout_calculate_buttons.addWidget(self.button_stop)
-        self.button_stop.setStyleSheet("background-color: red; color: white;")
-        self.button_stop.setDisabled(True)
-        self.button_stop.clicked.connect(self.stop_worker)
+        self.button_cancel = qtw.QPushButton('Cancel')
+        self.button_cancel.setFixedSize(button_w, button_h_lrg)
+        layout_calculate_buttons.addWidget(self.button_cancel)
+        self.button_cancel.setStyleSheet("background-color: red; color: white;")
+        self.button_cancel.setDisabled(True)
+        self.button_cancel.clicked.connect(self.cancel_running_work)
+        self.button_cancel.setToolTip(
+            'Stop the running navigation signal creation. Already-running '
+            'background computations finish silently; their results are discarded.')
 
 
         #%% save
@@ -469,7 +495,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.ax.set_xlabel(
             'Hold Ctrl and drag to draw a scan-space ROI (auto-loads its Summed DP).\n'
             'Right-click to remove it.',
-            fontsize=7)
+            fontsize=10)
         self.ax.xaxis.label.set_visible(True)
         self.colorbar_nav = self.figure.colorbar(
             self.img_display, ax=self.ax, fraction=0.046, pad=0.04)
@@ -493,7 +519,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
 
         # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
         # it's a figure-wide supxlabel rather than repeated per-axis text.
-        self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom either plot', fontsize=7)
+        self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom either plot', fontsize=10)
 
         layout_canvas.addWidget(self.canvas)
         self.toolbar = NavigationToolbar(self.canvas, self)
@@ -508,6 +534,12 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.slider_imgNo.setRange(0,0)
         layout_slider.addWidget(self.slider_imgNo)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
+
+        # keyboard shortcuts
+        QShortcut(QKeySequence('Ctrl+Right'), self,
+                  lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() + 1))
+        QShortcut(QKeySequence('Ctrl+Left'), self,
+                  lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() - 1))
 
         self.canvas.mpl_connect('scroll_event', self.on_scroll_mask)
         self.canvas.mpl_connect('button_press_event', self.on_press_mask)
@@ -625,6 +657,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         p = self.lineEdit_dir_signal.text()
         self.path_save = os.path.dirname(p)
         self.lineEdit_dir_save.setText(self.path_save)
+        self.lineEdit_projectName.setText(os.path.basename(p.rstrip('/\\')))
 
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
@@ -823,8 +856,8 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.update_mask_overlay()
         duration = perf_counter() - self._sum_dp_tic if hasattr(self, '_sum_dp_tic') else None
         if duration is not None:
-            self.logger.info('Summed DP computed successfully (%d x %d px) in %.1f s.',
-                             det_x, det_y, duration)
+            self.logger.info('Summed DP computed successfully (%d x %d px) in %s.',
+                             det_x, det_y, io.format_duration_hms(duration))
         else:
             self.logger.info('Summed DP computed successfully (%d x %d px).', det_x, det_y)
 
@@ -872,7 +905,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.ax_mask_preview.set_xlabel(
             f'Circle center: {centering_mode}\n'
             'Hold Ctrl and drag the center (+) or a circle edge to move/resize the virtual mask.',
-            fontsize=7)
+            fontsize=10)
         self.canvas.draw_idle()
 
     def auto_find_center(self, silent=False):
@@ -1125,7 +1158,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         else:
             try:
                 scanSize = (int(self.lineEdit_scanSize_x.text()), int(self.lineEdit_scanSize_y.text()))
-            except:
+            except ValueError:
                 scanSize = None
         if dtype == '.tpx3' and scanSize is None:
             self.logger.warning('Cannot start: scan size is required for .tpx3 files.')
@@ -1148,11 +1181,33 @@ class Tab_Create_NavSignal(qtw.QWidget):
                 'Using virtual mask: center=%s, inner radius=%d, outer radius=%d.',
                 mask_params[2], r_in, r_out)
 
+        # Captured now (while these are all known) rather than re-derived at
+        # save time, since "Save Results" can be clicked well after
+        # "Calculate All" finishes - see _save_results_impl/metadata.json.
+        self._analysis_metadata = {
+            '4d_signals_directory': self.path_main,
+            'n_files': len(fns),
+            'files': [os.path.basename(fn) for fn in fns],
+            'dtype': dtype,
+            'scan_size': list(scanSize) if scanSize is not None else None,
+            'dwell_time_us': dwellTime,
+            'virtual_detector': {
+                'used': mask_params is not None,
+                'inner_radius': mask_params[0] if mask_params else None,
+                'outer_radius': mask_params[1] if mask_params else None,
+                'center': list(mask_params[2]) if mask_params else None,
+            },
+            'comment_txt_metadata_source': {
+                'path': self.metadata_path_override or self.path_main,
+                'block': self.spinbox_metadataCount.value(),
+            } if dtype == '.tpx3' else None,
+        }
+
         self.pathSave = self.lineEdit_dir_save.text()
         if not os.path.isdir(self.pathSave):
             os.mkdir(self.pathSave)
 
-        self.button_stop.setEnabled(True)
+        self.button_cancel.setEnabled(True)
         self.button_save_results.setDisabled(True)
         self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params)
 
@@ -1162,7 +1217,7 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.nav_counter_total = len(fns)
         self._nav_tic = perf_counter()
         self._nav_failed = False
-        self._stopping = False
+        self._cancelling = False
         # Each worker saves its result to a .npy file in here and prints
         # just the path back, instead of a base64+pickle-encoded copy of
         # the array through stdout - see launch_next_nav_task/
@@ -1175,7 +1230,6 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.running_processes = []
         self.process_task_map = {}
         self.process_output_buffers = {}
-        self.process_stderr_buffers = {}
         self.max_processes = self.spinbox_cpuCores.value()
         self.update_progress_bar(0, self.nav_counter_total)
         for _ in range(min(self.max_processes, len(self.tasks))):
@@ -1186,14 +1240,14 @@ class Tab_Create_NavSignal(qtw.QWidget):
             return
         fn, dtype, scanSize, dwellTime, i_index, mask_params = self.tasks.popleft()
         scanSize_str = str(scanSize) if scanSize is not None else 'None'
-        args = ['worker_nav_img.py', fn, dtype, scanSize_str, str(dwellTime), str(i_index),
-               self._navimg_temp_dir]
+        args = [fn, dtype, scanSize_str, str(dwellTime), str(i_index), self._navimg_temp_dir]
         if mask_params is not None:
             r_in, r_out, center = mask_params
             args += [str(r_in), str(r_out), str(center)]
+        program, arguments = worker_command('nav_img', args)
         process = QProcess()
-        process.setProgram(sys.executable)
-        process.setArguments(args)
+        process.setProgram(program)
+        process.setArguments(arguments)
         process.readyReadStandardOutput.connect(lambda: self._accumulate_output_nav(process))
         process.readyReadStandardError.connect(lambda: self.handle_error_nav(process))
         process.finished.connect(lambda: self.handle_finished_nav(process))
@@ -1201,7 +1255,6 @@ class Tab_Create_NavSignal(qtw.QWidget):
         self.running_processes.append(process)
         self.process_task_map[process] = i_index
         self.process_output_buffers[process] = bytearray()
-        self.process_stderr_buffers[process] = bytearray()
         process.start()
 
     def _accumulate_output_nav(self, process):
@@ -1223,30 +1276,24 @@ class Tab_Create_NavSignal(qtw.QWidget):
         success/failure (matching the same soft-info treatment already used
         for the SAM2 QProcess worker's stderr, tab_sam2.py's
         _handle_error_sam)."""
-        chunk = process.readAllStandardError().data()
-        self.process_stderr_buffers[process] += chunk
-        try:
-            sys.stderr.buffer.write(chunk)
-            sys.stderr.buffer.flush()
-        except Exception:
-            pass
+        self._stderr_buffer.append(process)
 
     def handle_finished_nav(self, process):
         if process in self.running_processes:
             self.running_processes.remove(process)
         i_index = self.process_task_map.pop(process, None)
-        if self._stopping:
-            # stop_worker() already logged/showed one summary message for
+        if self._cancelling:
+            # cancel_running_work() already logged/showed one summary message for
             # the whole batch - a killed process's incomplete output would
             # otherwise trip the decode-failure path below and pop an error
             # dialog for every single worker that was still running.
             self.process_output_buffers.pop(process, None)
-            self.process_stderr_buffers.pop(process, None)
+            self._stderr_buffer.discard(process)
             process.deleteLater()
             return
         # drain any remaining bytes not yet signalled
         self.process_output_buffers[process] += process.readAllStandardOutput().data()
-        self.process_stderr_buffers[process] += process.readAllStandardError().data()
+        self._stderr_buffer.append(process)
         # worker_nav_img.py's final print(fn_out) is unconditionally the
         # last thing it ever writes to stdout - taking only the last
         # non-empty line (instead of the whole accumulated buffer) is
@@ -1268,13 +1315,12 @@ class Tab_Create_NavSignal(qtw.QWidget):
             except OSError:
                 pass
         except Exception as e:
-            stderr_text = bytes(self.process_stderr_buffers.get(process, b'')).decode(
-                'utf-8', errors='replace').strip()
+            stderr_text = self._stderr_buffer.pop_text(process)
             self.logger.error('Failed to load nav image for index %s: %s%s', i_index, e,
                               f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
             if stderr_text:
                 qtw.QMessageBox.warning(self, 'Worker Error', stderr_text[:500])
-        self.process_stderr_buffers.pop(process, None)
+        self._stderr_buffer.discard(process)
         process.deleteLater()
         self.nav_counter += 1
         self.update_progress_bar(self.nav_counter, self.nav_counter_total)
@@ -1285,22 +1331,22 @@ class Tab_Create_NavSignal(qtw.QWidget):
             if not valid:
                 self.logger.error(
                     'Navigation signal creation failed: all worker processes '
-                    'failed to produce output (after %.1f s).', duration)
+                    'failed to produce output (after %s).', io.format_duration_hms(duration))
                 qtw.QMessageBox.critical(self, 'No Results', 'All worker processes failed to produce output.')
-                self.button_stop.setDisabled(True)
+                self.button_cancel.setDisabled(True)
                 return
             self.nav_imgs = np.stack(valid)
             self.update_canvas(0)
             self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
-            self.button_stop.setDisabled(True)
+            self.button_cancel.setDisabled(True)
             if self._nav_failed or len(valid) < self.nav_counter_total:
                 self.logger.error(
                     'Navigation signal creation finished with errors: %d/%d file(s) '
-                    'succeeded in %.1f s.', len(valid), self.nav_counter_total, duration)
+                    'succeeded in %s.', len(valid), self.nav_counter_total, io.format_duration_hms(duration))
             else:
                 self.logger.info(
-                    'Navigation signal creation completed successfully for %d file(s) in %.1f s.',
-                    self.nav_counter_total, duration)
+                    'Navigation signal creation completed successfully for %d file(s) in %s.',
+                    self.nav_counter_total, io.format_duration_hms(duration))
             self.button_save_results.setEnabled(True)
             if self.checkbox_autosave.isChecked():
                 self.save_results()
@@ -1308,22 +1354,22 @@ class Tab_Create_NavSignal(qtw.QWidget):
             self.launch_next_nav_task()
 
     def process_failed_nav(self, error):
-        if self._stopping:
+        if self._cancelling:
             return
         self._nav_failed = True
         self.logger.error("QProcess error occurred: %s", error)
-        self.button_stop.setDisabled(True)
+        self.button_cancel.setDisabled(True)
         qtw.QMessageBox.critical(self, 'Process Error',
             f'A worker process failed to start (error code {error}).\n'
             'Check that Python is on PATH and worker_nav_img.py exists.')
 
-    def stop_worker(self):
+    def cancel_running_work(self):
         # Killing several running processes at once each fires their own
         # finished/errorOccurred signals - without this flag,
         # handle_finished_nav/process_failed_nav would treat every one of
         # them as an independent failure and pop an error dialog each,
         # instead of the one summary message below.
-        self._stopping = True
+        self._cancelling = True
         n_done = self.nav_counter
         n_total = getattr(self, 'nav_counter_total', n_done)
         self.tasks.clear()
@@ -1331,14 +1377,14 @@ class Tab_Create_NavSignal(qtw.QWidget):
             p.kill()
         self.running_processes.clear()
         self.process_task_map.clear()
-        self.button_stop.setDisabled(True)
+        self.button_cancel.setDisabled(True)
         if hasattr(self, '_navimg_temp_dir'):
             shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
         self.logger.warning(
-            'Navigation signal creation stopped by user (%d/%d file(s) already processed).',
+            'Cancelled by user (%d/%d file(s) already processed).',
             n_done, n_total)
-        qtw.QMessageBox.information(self, 'Stopped',
-            f'Navigation signal creation stopped - {n_done}/{n_total} file(s) '
+        qtw.QMessageBox.information(self, 'Cancelled',
+            f'Navigation signal creation cancelled - {n_done}/{n_total} file(s) '
             'were already processed.')
 
     def cleanup(self):
@@ -1356,35 +1402,67 @@ class Tab_Create_NavSignal(qtw.QWidget):
         try:
             self._save_results_impl()
         except Exception:
-            self.logger.exception('Failed to save navigation signal after %.1f s.',
-                                   perf_counter() - tic)
+            self.logger.exception('Failed to save navigation signal after %s.',
+                                   io.format_duration_hms(perf_counter() - tic))
             return
         self.logger.info(
-            'Navigation signal saved successfully in %.1f s (background frame/clip '
-            'generation continues asynchronously).', perf_counter() - tic)
+            'Navigation signal saved successfully in %s (background frame/clip '
+            'generation continues asynchronously).', io.format_duration_hms(perf_counter() - tic))
 
     def _save_results_impl(self):
+        """Save into "<Save Path>/<Project>_5DED Analysis/navigator signal/
+        <timestamp>/" - a dedicated, per-run subfolder, not directly in the
+        Save Path - so every navigator run for a project lands under one
+        shared "<Project>_5DED Analysis" tree (CV2/SAM2 default their own
+        "Save Dir." into this same folder - see io.default_analysis_save_dir)
+        and is directly loadable via "Load Saved Analysis" in those tabs.
+        Everything this produces - the .hspy signal, per-frame TIFFs, clip,
+        and metadata.json - lives under this one timestamped folder,
+        nothing is left in the 4D signals folder."""
         threadpool = QThreadPool.globalInstance()
+        if not os.path.isdir(self.pathSave):
+            os.mkdir(self.pathSave)
+        project_name = (self.lineEdit_projectName.text().strip()
+                        or os.path.basename(self.path_main.rstrip('/\\')) or 'project')
+        path_navigator = os.path.join(self.pathSave, f'{project_name}_5DED Analysis', 'navigator signal')
+        os.makedirs(path_navigator, exist_ok=True)
+        fld_1 = datetime.date.today()
+        fld_2 = datetime.datetime.now().strftime("%H-%M-%S")
+        path_save = os.path.join(path_navigator, f'{fld_1}__{fld_2}')
+        os.mkdir(path_save)
+        self.logger.info('Saving navigation signal to %s...', path_save)
+
         s = hs.signals.Signal2D(self.nav_imgs)
         save_name = self.lineEdit_saveName.text().strip() or 'navigation_signal'
-        s.save(os.path.join(self.pathSave, f'{save_name}.hspy'), overwrite=True)
-        path_imgs = os.path.join(self.pathSave, 'navigation_images')
-        if os.path.isdir(path_imgs):
-            [os.remove(os.path.join(path_imgs, fn)) for fn in os.listdir(path_imgs)]
-        else:
-            os.mkdir(path_imgs)
+        s.save(os.path.join(path_save, f'{save_name}.hspy'), overwrite=True)
+        path_imgs = os.path.join(path_save, 'navigation_images')
+        os.mkdir(path_imgs)
         worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s.data)
         threadpool.start(worker_frames)
-        fn_clip = self.pathSave + '\\navigation_images_clip'
+        fn_clip = os.path.join(path_save, 'navigation_images_clip')
         scale_real = self.lineEdit_scale_real.text()
         try:
             scale_real = float(scale_real)
-        except:
+        except ValueError:
             scale_real = None
         worker_clip = WorkerThread_General(io.create_clip_tracking, 0, fn_clip,
                                            s.data, None, scale_real,
                                            fps=self.spinbox_fps.value(), logger=self.logger)
         threadpool.start(worker_clip)
+
+        scale_recip = self.lineEdit_scale_recip.text()
+        try:
+            scale_recip = float(scale_recip)
+        except ValueError:
+            scale_recip = None
+        metadata = dict(getattr(self, '_analysis_metadata', {}))
+        metadata['project_name'] = project_name
+        metadata['saved_at'] = datetime.datetime.now().isoformat(timespec='seconds')
+        metadata['nav_signal_shape'] = list(s.data.shape)
+        metadata['scale_real_nm_per_px'] = scale_real
+        metadata['scale_recip_invA_per_px'] = scale_recip
+        with open(os.path.join(path_save, 'metadata.json'), 'w') as f:
+            json.dump(metadata, f, indent=4)
 
     def update_progress_bar(self, value, total):
         self.progress_bar.setRange(0, total)

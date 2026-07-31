@@ -8,8 +8,7 @@ Created on Thu Sep 19 15:55:17 2024
 import os
 import json
 from glob import glob
-import sys
-from PyQt5.QtCore import (Qt, QThreadPool)
+from PyQt5.QtCore import Qt, QTimer
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.colors import SymLogNorm
@@ -26,8 +25,12 @@ from matplotlib_scalebar.scalebar import ScaleBar
 import matplotlib.patches as patches
 import datetime
 from copy import deepcopy
-from .worker_thread import WorkerThread_General
-from .logging_utils import get_tab_logger, LogConsole
+from .worker_thread import WorkerThread_General, ProcessStderrBuffer
+from .worker_launch import worker_command
+from .contrast_scaling import ContrastScalingBox
+from .logging_utils import LogConsole
+from .base_tab import TabBase
+from .pets2_dialog import Pets2ParamsDialog
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -44,12 +47,12 @@ from .loading_label import LoadingSpinner
 from .object_detection_widget import Object_Detector_Widget
 import pandas as pd
 #%% wdiget
-class Tab_Tracking_CV2(qtw.QWidget):
-# class Tab_Create_NavSignal(qtw.QMainWindow):
+class Tab_Tracking_CV2(TabBase):
     def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self.logger = get_tab_logger('Tab_Tracking_CV2')
+        super().__init__('Tab_Tracking_CV2', parent)
+        self.threadpool.setMaxThreadCount(max(1, os.cpu_count() - 2))
+        self._tracking_lock = threading.Lock()
+        self._stderr_buffer = ProcessStderrBuffer()
 
         # Recomputing constrained_layout's spacing solve on every redraw
         # (canvas.draw()'s default behavior) is one of the most expensive
@@ -66,21 +69,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         self.init_widget()
 
-
         # cluster = LocalCluster(n_workers=4, threads_per_worker=1, memory_limit='2GB')
         # client = Client(cluster)
-
-        # threadpool to use in the entire tab
-        self.threadpool = QThreadPool()
-        self.threadpool.setMaxThreadCount(max(1, os.cpu_count() - 2))
-        self._tracking_lock = threading.Lock()
-        self._cancelling = False  # set by cancel_running_work(); suppresses error popups it causes
 
     def init_widget(self):
         button_w = 110
         button_h_sml = 30
         button_h_lrg = 50
-        height_userInput = 200
         width_userInput = 320
         self.layout = qtw.QHBoxLayout(self)
         self.setLayout(self.layout)
@@ -96,7 +91,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedHeight(height_userInput)
+        self.box_dir.setFixedHeight(225)
         
         layout_dir = qtw.QVBoxLayout()
         layout_userInput.addWidget(self.box_dir)
@@ -203,6 +198,90 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
         layout_load_buttons.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
+
+        #%% box scan size (raw scan dims used to extract DPs for 3DED)
+        self.box_scanSize = qtw.QGroupBox('Scan Size')
+        layout_box_scanSize = qtw.QVBoxLayout()
+        self.box_scanSize.setLayout(layout_box_scanSize)
+        layout_userInput.addWidget(self.box_scanSize)
+
+        layout_scanSize_row1 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row1)
+
+        self.checkbox_scanSize = qtw.QCheckBox('Auto')
+        self.checkbox_scanSize.setChecked(True)
+        self.checkbox_scanSize.setToolTip(
+            'When checked, scan size is taken from the loaded navigation '
+            "signal's shape. Uncheck (or Load Metadata below) to override "
+            'manually - needed when that shape does not match the raw 4D '
+            'signal files being extracted from.')
+        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
+
+        self.lineEdit_scanSize_x = qtw.QLineEdit()
+        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
+        self.lineEdit_scanSize_x.setFixedWidth(40)
+        self.lineEdit_scanSize_x.setValidator(QIntValidator(0, 99999))
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
+
+        label_cross = qtw.QLabel('X')
+        layout_scanSize_row1.addWidget(label_cross)
+
+        self.lineEdit_scanSize_y = qtw.QLineEdit()
+        self.lineEdit_scanSize_y.setFixedWidth(40)
+        self.lineEdit_scanSize_y.setValidator(QIntValidator(0, 99999))
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
+
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
+
+        label_dwellTime = qtw.QLabel('Dwell T. (μs)')
+        label_dwellTime.setToolTip('Dwell time in microseconds')
+        self.spinbox_dwellTime = qtw.QSpinBox()
+        self.spinbox_dwellTime.setFixedWidth(60)
+        self.spinbox_dwellTime.setRange(1, 99999999)
+        for wid in [label_dwellTime, self.spinbox_dwellTime]:
+            layout_scanSize_row1.addWidget(wid)
+        layout_scanSize_row1.addStretch(1)
+
+        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
+        # size/dwell time there, alongside the .tpx3 file(s).
+        layout_scanSize_row2 = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_row2)
+
+        label_metadataCount = qtw.QLabel('Block #')
+        label_metadataCount.setToolTip(
+            'Which 0-indexed metadata block to read from comment.txt. Only '
+            'enabled when comment.txt logs more than one measurement')
+        layout_scanSize_row2.addWidget(label_metadataCount)
+        self.spinbox_metadataCount = qtw.QSpinBox()
+        self.spinbox_metadataCount.setFixedWidth(50)
+        self.spinbox_metadataCount.setRange(0, 99999)
+        self.spinbox_metadataCount.setValue(0)
+        self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
+
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size / dwell time from comment.txt in the 4D signals '
+            'folder (tpx3 acquisitions only)')
+        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip(
+            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
+        layout_scanSize_row2.addWidget(self.button_browseMetadata)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+        layout_scanSize_row2.addStretch(1)
+
+        self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
+
+        #%% display contrast (8-bit conversion used for both display and tracking)
+        self.box_contrast = ContrastScalingBox()
+        layout_userInput.addWidget(self.box_contrast)
+        self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+
         #%% feature handling
         layout_userInput_2 = qtw.QVBoxLayout()
         self.box_buttons = qtw.QGroupBox('Feature Handling')
@@ -277,95 +356,23 @@ class Tab_Tracking_CV2(qtw.QWidget):
         layout_3ded = qtw.QVBoxLayout()
         layout_userInput.addLayout(layout_3ded)
 
-        #%% box scan size (raw scan dims used to extract DPs for 3DED)
-        self.box_scanSize = qtw.QGroupBox('Scan Size')
-        layout_box_scanSize = qtw.QVBoxLayout()
-        self.box_scanSize.setLayout(layout_box_scanSize)
-        layout_3ded.addWidget(self.box_scanSize)
-
-        layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row1)
-
-        self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        self.checkbox_scanSize.setChecked(True)
-        self.checkbox_scanSize.setToolTip(
-            'When checked, scan size is taken from the loaded navigation '
-            "signal's shape. Uncheck (or Load Metadata below) to override "
-            'manually - needed when that shape does not match the raw 4D '
-            'signal files being extracted from.')
-        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
-
-        self.lineEdit_scanSize_x = qtw.QLineEdit()
-        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        self.lineEdit_scanSize_x.setFixedWidth(40)
-        self.lineEdit_scanSize_x.setValidator(QIntValidator(0, 99999))
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
-
-        label_cross = qtw.QLabel('X')
-        layout_scanSize_row1.addWidget(label_cross)
-
-        self.lineEdit_scanSize_y = qtw.QLineEdit()
-        self.lineEdit_scanSize_y.setFixedWidth(40)
-        self.lineEdit_scanSize_y.setValidator(QIntValidator(0, 99999))
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
-
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-
-        label_dwellTime = qtw.QLabel('Dwell T. (μs)')
-        label_dwellTime.setToolTip('Dwell time in microseconds')
-        self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(60)
-        self.spinbox_dwellTime.setRange(1, 99999999)
-        for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_scanSize_row1.addWidget(wid)
-        layout_scanSize_row1.addStretch(1)
-
-        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
-        # size/dwell time there, alongside the .tpx3 file(s).
-        layout_scanSize_row2 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row2)
-
-        label_metadataCount = qtw.QLabel('Block #')
-        label_metadataCount.setToolTip(
-            'Which 0-indexed metadata block to read from comment.txt. Only '
-            'enabled when comment.txt logs more than one measurement')
-        layout_scanSize_row2.addWidget(label_metadataCount)
-        self.spinbox_metadataCount = qtw.QSpinBox()
-        self.spinbox_metadataCount.setFixedWidth(50)
-        self.spinbox_metadataCount.setRange(0, 99999)
-        self.spinbox_metadataCount.setValue(0)
-        self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
-        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_loadMetadata = qtw.QPushButton('Load')
-        self.button_loadMetadata.setToolTip(
-            'Fill scan size / dwell time from comment.txt in the 4D signals '
-            'folder (tpx3 acquisitions only)')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
-        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
-
-        self.button_browseMetadata = qtw.QPushButton('...')
-        self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
-        layout_scanSize_row2.addWidget(self.button_browseMetadata)
-        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
-        layout_scanSize_row2.addStretch(1)
-
-        self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
-
         # Deliberately kept outside box_3ded (whose contents are disabled/
         # enabled together elsewhere) so it stays clickable regardless of
         # tracking/extraction state - it needs to work throughout both.
         self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedSize(button_w, button_h_sml)
+        # Matches the height of the tab's other action buttons (Extract!,
+        # Track!) rather than the shorter button_h_sml - a narrower width is
+        # enough to read as "secondary", it doesn't need to be shorter too.
+        # self.button_cancel.setFixedSize(button_w, button_h_lrg)
+        self.button_cancel.setFixedHeight(button_h_lrg)
+        self.button_cancel.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Fixed)
+        
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.setToolTip(
             'Stop the running tracking or 3DED extraction. Already-running '
             'background computations finish silently; their results are discarded.')
-        layout_3ded.addWidget(self.button_cancel, alignment=Qt.AlignLeft)
+        layout_3ded.addWidget(self.button_cancel)
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
         self.box_3ded = qtw.QGroupBox('Extract 3DED')
@@ -433,10 +440,21 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.spinbox_fps.setValue(5)
         self.spinbox_fps.setToolTip('Frames per second for saved video clips')
 
-        self.checkbox_autosave = qtw.QCheckBox('Autosave')
-        layout_threadNo.addWidget(self.checkbox_autosave)
+        # Own row (rather than sharing layout_threadNo with the CPU/FPS
+        # labels+spinboxes above) so the checkbox labels have enough room
+        # and don't get clipped by the left panel's fixed width.
+        layout_saveOptions = qtw.QHBoxLayout()
+        layout_box_3ded.addLayout(layout_saveOptions)
 
-        layout_threadNo.addItem(spacer)
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_saveOptions.addWidget(self.checkbox_autosave)
+
+        self.checkbox_makePets2 = qtw.QCheckBox('Make *.pts2')
+        layout_saveOptions.addWidget(self.checkbox_makePets2)
+        self.pets2_params = None
+        self.checkbox_makePets2.stateChanged.connect(self.on_makePets2_toggled)
+
+        layout_saveOptions.addStretch()
         
         layout_extract = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract)
@@ -488,10 +506,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
 
         self.ax_track.set_xlabel(
-            'Select the reference ROI and Hold "ctrl" + Drag to draw ROIinROI', fontsize=7)
+            'Select the reference ROI and Hold "ctrl" + Drag to draw ROIinROI', fontsize=10)
         self.ax_nav.set_xlabel(
             'Hold "ctrl" + Left Click+Drag => New ROI\n'
-            'Hold "ctrl" + Right Click => Add init to existing ROI', fontsize=7)
+            'Hold "ctrl" + Right Click => Add init to existing ROI', fontsize=10)
         self.ax_nav.xaxis.label.set_visible(True)
         self.ax_track.xaxis.label.set_visible(True)
         self.ax_dp.xaxis.label.set_visible(True)
@@ -500,15 +518,29 @@ class Tab_Tracking_CV2(qtw.QWidget):
         # it's a figure-wide supxlabel (one per figure) rather than repeated
         # per-axis text.
         self.figure_nav.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
-                                  fontsize=7)
+                                  fontsize=10)
         self.figure_extract.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
-                                      fontsize=7)
+                                      fontsize=10)
 
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
         self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.1)
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
+
+        # Created once here (not per-frame) - update_canvas() only updates
+        # the underlying image data, which keeps these in sync for free.
+        # 'mask' is excluded: it's a low-alpha threshold overlay on top of
+        # 'img_mask', not an independently meaningful scalar image.
+        self.colorbars = {}
+        self.colorbars['nav'] = self.figure_nav.colorbar(
+            self.img_display['nav'], ax=self.ax_nav, fraction=0.046, pad=0.04)
+        self.colorbars['track'] = self.figure_nav.colorbar(
+            self.img_display['track'], ax=self.ax_track, fraction=0.046, pad=0.04)
+        self.colorbars['img_mask'] = self.figure_extract.colorbar(
+            self.img_display['img_mask'], ax=self.ax_mask, fraction=0.046, pad=0.04)
+        self.colorbars['dp'] = self.figure_extract.colorbar(
+            self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
 
         self.canvas_nav.setMinimumHeight(650)
         self.canvas_extract.setMinimumHeight(650)
@@ -621,6 +653,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.combo_blur.setToolTip('Gaussian blur kernel applied before thresholding')
         self.spinbox_threadNo.setToolTip('Number of CPU cores used for parallel 4D extraction')
         self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
+        self.checkbox_makePets2.setToolTip(
+            "Write a PETS2 project file (v1.pts2) into each ROI's pets/ folder on save, "
+            'ready to open directly in PETS for further 3D ED processing')
 
         # keyboard shortcuts
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
@@ -628,6 +663,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         QShortcut(QKeySequence('Ctrl+T'), self, self.button_track.click)
         QShortcut(QKeySequence('Ctrl+E'), self, self.button_3ded.click)
         QShortcut(QKeySequence('Ctrl+S'), self, self.button_save_results.click)
+        QShortcut(QKeySequence('Ctrl+Right'), self,
+                  lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() + 1))
+        QShortcut(QKeySequence('Ctrl+Left'), self,
+                  lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() - 1))
     #%% load data
     def show_dialog(self, f):
         sender = self.sender()
@@ -637,9 +676,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
             path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
             if path and os.path.isfile(path[0]):
                 self.lineEdit_dir_navSignal.setText(path[0])
-                path_save = os.path.join(os.path.dirname(path[0]), '5DED Analysis')
-                self.lineEdit_dir_save.setText(path_save)
-                
+                self.lineEdit_dir_save.setText(io.default_analysis_save_dir(path[0]))
+                self.apply_nav_signal_metadata(path[0])
+
+
         elif sender == self.button_dir_4dSignals:
             path = qtw.QFileDialog.getExistingDirectory(self, "Select 4D Folder")
             # if path and os.path.isdir(path[0]):
@@ -719,6 +759,41 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 qtw.QMessageBox.warning(self, 'Metadata Not Loaded',
                     f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
 
+    def apply_nav_signal_metadata(self, fn_nav):
+        """Fill scan size, dwell time, real/reciprocal scale, and the 4D
+        signals directory from the navigator tab's metadata.json, if one
+        sits next to `fn_nav` (i.e. this signal was produced by that tab)."""
+        metadata = io.load_analysis_metadata(fn_nav)
+        if not metadata:
+            return
+        applied = []
+        d4d = metadata.get('4d_signals_directory')
+        if d4d:
+            self.lineEdit_dir_4d.setText(d4d)
+            applied.append('4D signals directory')
+        scan_size = metadata.get('scan_size')
+        if scan_size:
+            self.checkbox_scanSize.setChecked(False)
+            self.lineEdit_scanSize_x.setText(str(int(scan_size[0])))
+            self.lineEdit_scanSize_y.setText(str(int(scan_size[1])))
+            applied.append('scan size')
+        dwell = metadata.get('dwell_time_us')
+        if dwell:
+            self.spinbox_dwellTime.setValue(int(dwell))
+            applied.append('dwell time')
+        scale_real = metadata.get('scale_real_nm_per_px')
+        if scale_real:
+            self.lineEdit_scale_real.setText(str(scale_real))
+            applied.append('real-space scale')
+        scale_recip = metadata.get('scale_recip_invA_per_px')
+        if scale_recip:
+            self.lineEdit_scale_recip.setText(str(scale_recip))
+            applied.append('reciprocal-space scale')
+        if applied:
+            self.logger.info(
+                'Applied metadata.json from the navigator tab (%s): %s.',
+                fn_nav, ', '.join(applied))
+
     def load_navSignal(self):
         def get_signal(fn):
             return load(fn)
@@ -773,11 +848,52 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['dp'].set_data(self.img_zero)
         self.img_display['nav'].set_data(self.img_zero)
         self.tree_objects.clear()
+        # Cached PETS2 params (esp. the per-study center/alpha start/step)
+        # were computed for the ROI set just wiped out above - don't let them
+        # silently apply to whatever gets added next.
+        self.pets2_params = None
+        self.checkbox_makePets2.setChecked(False)
         
     
+    def rescale_nav_signal(self):
+        """Retune contrast without reloading the signal from disk: the
+        currently-displayed frame is rescaled immediately (cheap, instant
+        feedback), while the full stack (used for tracking, and to keep
+        every other frame in sync) rescales in the background - a long
+        stack no longer blocks/lags the GUI on every settings tweak.
+        Rapid retuning cancels (i.e. discards the result of) any
+        still-running previous background rescale - see
+        ContrastScalingBox.rescale_async."""
+        if not hasattr(self, 's'):
+            return
+        imgNo = self.slider_imgNo.value()
+        frame_8bit = self.box_contrast.rescale_frame(self.nav_imgs_raw[imgNo])
+        self.nav_imgs[imgNo] = frame_8bit
+        self.img_display['nav'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
+        self.img_display['track'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
+        self.update_canvas()
+        self.canvas_nav.draw_idle()
+        self.canvas_extract.draw_idle()
+
+        self.box_contrast.rescale_async(self.s, self.threadpool, self.logger,
+                                        on_done=self._on_nav_signal_rescaled)
+
+    def _on_nav_signal_rescaled(self, s_8bit):
+        self.s_8bit = s_8bit
+        self.nav_imgs = deepcopy(s_8bit.data)
+        self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.update_canvas()
+        self.canvas_nav.draw_idle()
+        self.canvas_extract.draw_idle()
+
     def initiate_processing(self, result, index):
         self.s = result
-        self.s_8bit = io.convert_to_8bit(self.s)
+        # Anchor the clip-threshold sliders to this signal's raw range before
+        # reading get_kwargs() below - a previous signal's clip values would
+        # otherwise carry over onto a dataset with a different intensity scale.
+        self.box_contrast.set_data_range(self.s.data.min(), self.s.data.max())
+        self.s_8bit = io.convert_to_8bit(self.s, **self.box_contrast.get_kwargs())
         self.nav_imgs_raw = self.s.data
         self.nav_imgs = deepcopy(self.s_8bit.data)
         self.dp_center = None  # a new signal may have a different DP shape/center
@@ -809,6 +925,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.update_canvas(0)
         self.canvas_nav.draw()
         self.canvas_extract.draw()
+        # Scale fields may already hold a value from a previous session/load -
+        # update_scalebar() is otherwise only triggered by the fields' own
+        # textChanged signal, so a fresh load wouldn't show it until touched.
+        self.update_scalebar('real')
+        self.update_scalebar('reciprocal')
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
         self.logger.info('No. of Images: %s', len(self.nav_imgs))
         
@@ -824,13 +945,34 @@ class Tab_Tracking_CV2(qtw.QWidget):
             self, "Select Saved Analysis Folder", self.lineEdit_dir_save.text())
         if not path:
             return
-        fn_nav = os.path.join(path, 'navigation_signal.hspy')
-        if not os.path.isfile(fn_nav):
-            qtw.QMessageBox.critical(self, 'Navigation Signal Not Found',
-                f'Cannot find navigation_signal.hspy in:\n{path}\n\n'
-                'This folder does not look like a saved analysis (or it was '
-                'saved before this feature was added).')
+        # Newer saves only record the *path* the nav signal was loaded from
+        # (see save_analysis_info); fall back to an in-folder copy for
+        # analyses saved before that change.
+        info = io.load_analysis_info(path)
+        analysis_type = info.get('analysis_type') if info else None
+        if analysis_type is not None and analysis_type != 'cv2':
+            self.logger.warning(
+                'Refusing to load %s: this analysis was saved from the %s tab, not CV2.',
+                path, analysis_type)
+            qtw.QMessageBox.warning(self, 'Wrong Analysis Type',
+                f'This folder was saved from the {analysis_type.upper()} tab, not this '
+                'ROI tracker - the two tabs save different per-object data (masks, points, '
+                "columns) and this folder won't load correctly here.\n\n"
+                f'Open it from the {analysis_type.upper()} tab instead.')
             return
+        fn_nav = info.get('nav_signal_source') if info else None
+        if not (fn_nav and os.path.isfile(fn_nav)):
+            fn_nav_legacy = os.path.join(path, 'navigation_signal.hspy')
+            if os.path.isfile(fn_nav_legacy):
+                fn_nav = fn_nav_legacy
+            else:
+                missing = fn_nav or fn_nav_legacy
+                self.logger.error('Cannot find the navigation signal for this analysis: %s', missing)
+                qtw.QMessageBox.critical(self, 'Navigation Signal Not Found',
+                    f'Cannot find the navigation signal for this analysis.\n\n'
+                    f'Expected it at:\n{missing}\n\n'
+                    'It may have been moved, renamed, or deleted since this analysis was saved.')
+                return
 
         self.load_spinner()
         gc.collect()
@@ -887,10 +1029,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 'in_rois': row['in_rois'], 'end': row['end'], 'ref': row['ref'],
                 'out_rois': out_rois, 'mask': mask, 'dp': dp,
             })
-        return s, rois, path
+        return s, rois, path, fn_nav
 
     def _on_saved_analysis_loaded(self, result, index):
-        s, rois, path = result
+        s, rois, path, fn_nav = result
+        self.lineEdit_dir_navSignal.setText(fn_nav)
         self.initiate_processing(s, index)
 
         for roi in rois:
@@ -906,6 +1049,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
         self.disable_3ded_widgets(False)
         self.update_canvas(0)
+        # Loaded DPs may have a different center than the placeholder - re-run
+        # auto-centering now if enabled.
+        self.update_scalebar('reciprocal')
         self.logger.info('Loaded saved analysis from %s (%d ROI(s)).', path, len(rois))
 
     def disable_3ded_widgets(self, state):
@@ -944,6 +1090,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.tree_objects.clear()
         self.empty_main_dataframe()
         self.update_canvas()
+        # Cached PETS2 params (esp. the per-study center/alpha start/step)
+        # were computed for the ROI set just wiped out above - don't let them
+        # silently apply to whatever gets added next.
+        self.pets2_params = None
+        self.checkbox_makePets2.setChecked(False)
         self.logger.info('Reset all ROIs.')
 #%% canvas functions    
     def jump_to_frame_no(self):
@@ -988,7 +1139,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 try:
                     self.update_ax(self.df_rois.loc[idx, 'dp'][imgNo], 'dp', self.ax_dp)
                     #TODO set the content size after getting the data
-                except:
+                except Exception:
                     self.update_ax(self.img_zero, 'dp', self.ax_dp)
             else:
                 self.update_ax(self.img_zero, 'dp', self.ax_dp)
@@ -1117,7 +1268,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                         t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center', 
                                                verticalalignment='center', color='tab:orange', fontsize=font_size)
                         self.patches_axTrack.append(t)
-                except:
+                except Exception:
                     pass
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
@@ -1127,7 +1278,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
         self.img_display['img_mask'].set_data(img_roi)
         try:
             self.img_display['img_mask'].set_clim(vmin=img_roi.min(), vmax=img_roi.max())
-        except:
+        except ValueError:
             pass
         self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
         
@@ -1181,7 +1332,13 @@ class Tab_Tracking_CV2(qtw.QWidget):
             # rings at every 1 1/A (centered on the DP) work better.
             dp_array = self.img_display['dp'].get_array()
             shape = dp_array.shape
-            if self.checkbox_autoCenterDp.isChecked():
+            # Skip auto-centering on the all-zero placeholder shown before
+            # any ROI has a diffraction pattern yet - the blurred-max search
+            # degenerates to (0, 0) on blank data, which would otherwise
+            # leave the reciprocal-space rings missing right after a fresh
+            # load. Leaving dp_center at None falls back to the image's own
+            # geometric center.
+            if self.checkbox_autoCenterDp.isChecked() and np.any(dp_array):
                 try:
                     self.dp_center = io.find_dp_center_blurred(dp_array)
                 except Exception:
@@ -1190,9 +1347,9 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 self.ax_dp, self.lineEdit_scale_recip.text(), shape,
                 center=self.dp_center, old_artists=getattr(self, '_dp_recip_circles', None))
             if self.checkbox_autoCenterDp.isChecked():
-                self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=6)
+                self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=9)
             else:
-                self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click DP plot to set', fontsize=6)
+                self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click DP plot to set', fontsize=9)
             # The circles are static across frames like the scale bars above.
             self._bg_extract = None
             self.canvas_extract.draw_idle()
@@ -1285,7 +1442,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 selected_items = self.tree_objects.selectedItems()
                 item = selected_items[0]
                 ind = int(item.text(1))
-            except:
+            except (IndexError, ValueError):
                 qtw.QMessageBox.critical(self, 'No Ref ROI', 'There is no reference ROI selected for ROI in ROI.')
                 self.logger.warning('First select a reference ROI')
                 self.press = None
@@ -1600,7 +1757,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def receive_objects(self, objects):
         try:
             idx_max = self.df_rois.index.to_numpy().max()
-        except:
+        except ValueError:
             idx_max = 0
         for i, obj in enumerate(objects):
             self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
@@ -1652,11 +1809,11 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 ref = int(df.loc[ind, 'ref'])
                 try:
                     rois_ref = df[df.idx == ref].out_rois.to_numpy()
-                except:
-                    raise ValueError(f'The reference roi for roi #{ind} is not available') 
+                except Exception:
+                    raise ValueError(f'The reference roi for roi #{ind} is not available')
                 imgs = tr.cut_imgs_by_roi(imgs, rois_ref)
                 rois_in = tr.translate_roiInRoi(rois_in, rois_ref, fwd=True)
-            except:
+            except Exception:
                 pass
             worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in, 
                                           init, tracking_method)
@@ -1687,7 +1844,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
                     rois_ref = self.df_rois[self.df_rois.index == ref].out_rois.to_numpy()
                     rois_pre = self.df_rois.loc[idx, 'out_rois'].to_numpy()
                     self.df_rois.at[idx, 'out_rois'] = tr.translate_roiInRoi(rois_pre, rois_ref, fwd=False)
-                except:
+                except Exception:
                     pass
                             
             # self.slider_imgNo.setValue(0)
@@ -1706,8 +1863,8 @@ class Tab_Tracking_CV2(qtw.QWidget):
 
             duration = perf_counter() - self._track_tic
             self.logger.info(
-                'CV2 tracking completed successfully for %d ROI(s) in %.1f s.',
-                self.tracking_counter_end, duration)
+                'CV2 tracking completed successfully for %d ROI(s) in %s.',
+                self.tracking_counter_end, io.format_duration_hms(duration))
 
     def extract_3ded(self):
         self.load_spinner()
@@ -1818,9 +1975,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         mask_path = args[2]
         idx, i_fr = args[-1]
         np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
+        program, arguments = worker_command('extract_frame', args)
         process = QProcess()
-        process.setProgram(sys.executable)
-        process.setArguments(["worker_extract_frame.py"] + list(map(str, args)))
+        process.setProgram(program)
+        process.setArguments(arguments)
         process.readyReadStandardOutput.connect(lambda: self.handle_output(process))
         process.readyReadStandardError.connect(lambda: self.handle_error(process))
         process.finished.connect(lambda: self.handle_finished(process))
@@ -1844,14 +2002,14 @@ class Tab_Tracking_CV2(qtw.QWidget):
             'Check that Python is on PATH and worker_extract_frame.py exists.')
 
     def handle_error(self, process):
+        # worker_extract_frame.py loads tpx3 via eventem, whose progress bar
+        # (and any other routine diagnostics) writes straight to stderr on
+        # every run, success or failure - this is not itself an error (see
+        # ProcessStderrBuffer). A worker that genuinely fails to produce
+        # output is instead caught in handle_output/handle_finished below.
         if self._cancelling:
             return
-        error_output = process.readAllStandardError().data().decode().strip()
-        if error_output:
-            self._3ded_failed = True
-            self.logger.error("Worker ERROR: %s", error_output)
-            qtw.QMessageBox.warning(self, 'Worker Error',
-                f'A worker process reported an error:\n{error_output[:500]}')
+        self._stderr_buffer.log_info(process, self.logger, 'Worker')
 
     def handle_output(self, process):
         raw_output = process.readAllStandardOutput().data().decode().strip()
@@ -1891,13 +2049,16 @@ class Tab_Tracking_CV2(qtw.QWidget):
             duration = self.toc - self.tic
             if self._3ded_failed:
                 self.logger.error(
-                    '3DED extraction finished with errors after %.1f min '
-                    '(see log above for details).', duration / 60)
+                    '3DED extraction finished with errors after %s '
+                    '(see log above for details).', io.format_duration_hms(duration))
             else:
                 self.logger.info(
-                    '3DED extraction completed successfully (%d frame(s)) in %.1f min.',
-                    self.tomo_counter_total, duration / 60)
+                    '3DED extraction completed successfully (%d frame(s)) in %s.',
+                    self.tomo_counter_total, io.format_duration_hms(duration))
             self.update_canvas()
+            # Freshly-extracted DPs may have a different center than whatever
+            # was last found - re-run auto-centering now if enabled.
+            self.update_scalebar('reciprocal')
             self.spinner.stop()
             self.button_cancel.setDisabled(True)
             for idx in self.df_rois[self.df_rois.use == 1].index:
@@ -1916,18 +2077,52 @@ class Tab_Tracking_CV2(qtw.QWidget):
     def reset_thresh(self):
         self.slider_thresh.setValue(100)
         self.update_canvas()
-    
+
+    def on_makePets2_toggled(self, state):
+        if state != Qt.Checked:
+            return
+        # Opening a modal dialog synchronously from within the checkbox's own
+        # stateChanged handler (as this used to do) leaves QCheckBox's
+        # internal click/press state confused - after Cancel calls
+        # setChecked(False) here, the very next check click wouldn't reopen
+        # the dialog until the box had been toggled a few more times.
+        # Deferring to the next event-loop iteration lets Qt finish handling
+        # the click first, so the dialog opens cleanly every time.
+        QTimer.singleShot(0, self._open_pets2_dialog)
+
+    def _open_pets2_dialog(self):
+        voltage_kv = None
+        try:
+            path_main = self.metadata_path_override or self.lineEdit_dir_4d.text()
+            metadata = io.get_metadata(path_main, count=self.spinbox_metadataCount.value())
+            if 'Voltage' in metadata:
+                voltage_kv = metadata['Voltage']
+        except Exception:
+            pass
+        exposure_s = self.spinbox_dwellTime.value() / 1e6
+        try:
+            aperpixel = float(self.lineEdit_scale_recip.text())
+        except ValueError:
+            aperpixel = None
+        dialog = Pets2ParamsDialog(self, voltage_kv=voltage_kv, exposure_s=exposure_s,
+                                    aperpixel=aperpixel, center=self.dp_center)
+        if dialog.exec_() == qtw.QDialog.Accepted:
+            self.pets2_params = dialog.get_params()
+        else:
+            self.checkbox_makePets2.setChecked(False)
+
     def save_results(self):
         tic = perf_counter()
         try:
             self._save_results_impl()
         except Exception:
-            self.logger.exception('Failed to save results after %.1f s.', perf_counter() - tic)
+            self.logger.exception('Failed to save results after %s.',
+                                   io.format_duration_hms(perf_counter() - tic))
             return
         self.logger.info(
-            'Results saved successfully in %.1f s (background clip/frame '
+            'Results saved successfully in %s (background clip/frame '
             'generation for each ROI continues asynchronously).',
-            perf_counter() - tic)
+            io.format_duration_hms(perf_counter() - tic))
 
     def _save_results_impl(self):
         path_save = self.lineEdit_dir_save.text()
@@ -1941,11 +2136,10 @@ class Tab_Tracking_CV2(qtw.QWidget):
         os.mkdir(path_save)
         self.logger.info('Saving results to %s...', path_save)
 
-        # Navigation signal: saved once at the top level (shared by every
-        # ROI) so "Load Saved Analysis" can restore it later, since it's
-        # otherwise never persisted anywhere.
-        if hasattr(self, 's'):
-            self.s.save(os.path.join(path_save, 'navigation_signal.hspy'), overwrite=True)
+        # Navigation signal: rather than re-copying the (potentially large)
+        # signal into every saved-analysis folder, just record the path it
+        # was loaded from - "Load Saved Analysis" reloads from there.
+        io.save_analysis_info(path_save, self.lineEdit_dir_navSignal.text(), analysis_type='cv2')
 
         # tracking results, rois, dp
         for idx in self.df_rois.index:
@@ -1967,17 +2161,25 @@ class Tab_Tracking_CV2(qtw.QWidget):
                 # restore the diffraction patterns via hs.load(...).
                 hs.signals.Signal2D(dp).save(
                     os.path.join(path_save_roi, '3DED.hspy'), overwrite=True)
-                fld_frames = os.path.join(path_save_roi, 'frames')
+                path_pets = os.path.join(path_save_roi, 'pets')
+                os.mkdir(path_pets)
+                fld_frames = os.path.join(path_pets, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp)
                 self.threadpool.start(worker_frames)
                 scale_recip = self.lineEdit_scale_recip.text()
                 try:
                     scale_recip = float(scale_recip)
-                except:
+                except ValueError:
                     scale_recip = None
+
+                if self.checkbox_makePets2.isChecked() and self.pets2_params is not None:
+                    io.write_pts2(os.path.join(path_pets, f'Roi Num {idx}.pts2'), n_frames=dp.shape[0],
+                                  frame_shape=dp.shape[1:], roi_id=idx, **self.pets2_params)
+
                 fn_dp = os.path.join(path_save_roi, 'tomo clip')
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_dp, dp,
-                                                      scale_recip, fps=self.spinbox_fps.value(),
+                                                      scale_recip, center=self.dp_center,
+                                                      fps=self.spinbox_fps.value(),
                                                       logger=self.logger)
                 self.threadpool.start(worker_clip_dp)
 
@@ -1985,7 +2187,7 @@ class Tab_Tracking_CV2(qtw.QWidget):
             scale_real = self.lineEdit_scale_real.text()
             try:
                 scale_real = float(scale_real)
-            except:
+            except ValueError:
                 scale_real = None
 
             fn = os.path.join(path_save_roi, 'tracking clip')

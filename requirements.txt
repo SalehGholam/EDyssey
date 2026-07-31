@@ -1,0 +1,25 @@
+# py5DED runtime dependencies, pinned to versions verified against this
+# codebase. See INSTALL.md for the pieces that can't just be `pip install`ed
+# from this file (eventem/pacbed, SAM2, ffmpeg).
+#
+# Install with: pip install -r requirements.txt
+
+numpy==2.4.4
+PyQt5==5.15.11
+hyperspy==2.4.0
+dask==2026.3.0
+opencv-python==4.13.0.92
+matplotlib==3.10.9
+matplotlib-scalebar==0.9.0
+tifffile==2026.5.2
+h5py==3.15.1
+tqdm==4.67.3
+scipy==1.17.1
+scikit-image==0.26.0
+pandas==3.0.2
+Pillow==12.2.0
+
+# torch: install separately, following https://pytorch.org/get-started/locally/
+# for the wheel matching your CUDA version (or CPU-only) - a blind pip
+# install here would ignore that and often pull the wrong build.
+# torch==2.6.0

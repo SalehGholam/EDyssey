@@ -8,10 +8,9 @@ Created on Wed Oct  2 15:34:09 2024
 
 
 import os
-import sys
 import json
 from time import perf_counter
-from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QThreadPool, QProcess)
+from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess)
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QIntValidator, QDoubleValidator
 from matplotlib.colors import SymLogNorm
@@ -26,19 +25,19 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
+from .base_tab import TabBase
 from .threshold_dialog import ThresholdDialog
+from .worker_thread import ProcessStderrBuffer
+from .worker_launch import worker_command
 from worker_extract_frame import load_dp
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 # from skimage import exposure
 #%% wdiget
-class Tab_ROI_on_4D(qtw.QWidget):
-# class Tab_Create_NavSignal(qtw.QMainWindow):
+class Tab_ROI_on_4D(TabBase):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
-        self.threadpool = QThreadPool()
-        self._cancelling = False  # set by cancel_running_work(); suppresses error popups it causes
+        super().__init__('Tab_ROI_on_4D', parent)
+        self._stderr_buffer = ProcessStderrBuffer()
         self.init_widget()
         
     def init_widget(self):
@@ -55,7 +54,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
 
         layout_userInput = qtw.QVBoxLayout(self._left_widget)
         #%% directory
-        self.box_dir = qtw.QGroupBox('Directory')
+        self.box_dir = qtw.QGroupBox('Directories')
         layout_userInput.addWidget(self.box_dir)
         layout_dir = qtw.QVBoxLayout()
         self.box_dir.setLayout(layout_dir)
@@ -196,18 +195,18 @@ class Tab_ROI_on_4D(qtw.QWidget):
         layout_load = qtw.QHBoxLayout()
         layout_userInput.addLayout(layout_load)
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        self.button_loadNavigation.setFixedSize(110, 50)
-        layout_load.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        self.button_loadNavigation.setFixedHeight(50)
+        layout_load.addWidget(self.button_loadNavigation)
         self.button_loadNavigation.clicked.connect(self.get_nav_image)
 
         self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedSize(70, 50)
+        self.button_cancel.setFixedHeight(50)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.setToolTip(
             'Stop the running SAM2 segmentation or DP computation. Already-running '
             'background computations finish silently; their results are discarded.')
-        layout_load.addWidget(self.button_cancel, alignment=Qt.AlignCenter)
+        layout_load.addWidget(self.button_cancel)
         self.button_cancel.clicked.connect(self.cancel_running_work)
         #%% SAM2 segmentation
         self.box_segmentation = qtw.QGroupBox('SAM2 Segmentation')
@@ -349,7 +348,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
                 x = int(self.lineEdit_scanSize_x.text())
                 y = int(self.lineEdit_scanSize_y.text())
                 scanSize = (x,y)
-            except:
+            except ValueError:
                 scanSize = None
         else:
             scanSize = None
@@ -580,7 +579,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         if not hasattr(self, 'dwellTime'):
             try:
                 self.dwellTime = self.spinbox_dwellTime.value()
-            except:
+            except Exception:
                 self.dwellTime = None
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime)
         worker.signals.result.connect(self.get_dp)
@@ -607,9 +606,13 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.update_canvas(roiUpdate=True)
     
     def reset_sliders(self):
+        # Only the DP colormap's vmin/vmax change here - no need for
+        # roiUpdate=True (which refreshes the "ROI Image" panel from
+        # self.navImg_cut, only ever set by a rectangle-ROI DP calculation
+        # and not by the SAM2-mask/threshold DP paths).
         self.slider_vmin.setValue(0)
         self.slider_vmax.setValue(self.dp.max())
-        self.update_canvas(roiUpdate=True)
+        self.update_canvas()
     
     def _setup_canvas(self):
         """One-time creation of the image artists and their colorbars.
@@ -646,7 +649,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         self.ax_nav.set_xlabel(
             'Hold "ctrl" + Drag => New ROI (also usable as a SAM2 box prompt)\n'
             'Hold "shift" + Click => Add SAM2 point (Left=positive, Right=negative)\n'
-            'Middle Click => Remove last SAM2 point', fontsize=6)
+            'Middle Click => Remove last SAM2 point', fontsize=9)
         self.ax_nav.xaxis.label.set_visible(True)
 
         for spine in self.ax_dp.spines.values():
@@ -657,7 +660,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
         # it's a figure-wide supxlabel rather than repeated per-axis text.
         self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
-                              fontsize=7)
+                              fontsize=10)
 
         self.colorbars = {}
         self.colorbars['nav'] = self.figure.colorbar(
@@ -714,7 +717,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
             self.ax_dp.set_xlim(0, shape_y)
             self.ax_dp.set_ylim(shape_x, 0)
 
-            if roiUpdate:
+            if roiUpdate and hasattr(self, 'navImg_cut'):
                 self.img_display['nav_roi'].set_data(self.navImg_cut)
                 self.img_display['nav_roi'].set_clim(self.navImg_cut.min(), self.navImg_cut.max())
                 shape_x, shape_y = self.navImg_cut.shape
@@ -752,9 +755,9 @@ class Tab_ROI_on_4D(qtw.QWidget):
             self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
             center=center, old_artists=getattr(self, '_dp_recip_circles', None))
         if self.checkbox_autoCenterDp.isChecked():
-            self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=6)
+            self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=9)
         else:
-            self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=6)
+            self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=9)
 
         self.canvas.draw()
     
@@ -915,9 +918,10 @@ class Tab_ROI_on_4D(qtw.QWidget):
         seg_input = pd.Series(seg_input_dict)
         seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
 
+        program, arguments = worker_command('sam', ['image', path_seg, '0'])
         self._process_sam = QProcess(self)
-        self._process_sam.setProgram(sys.executable)
-        self._process_sam.setArguments(["worker_sam.py", 'image', path_seg, '0'])
+        self._process_sam.setProgram(program)
+        self._process_sam.setArguments(arguments)
         self._process_sam.readyReadStandardError.connect(self._handle_error_sam)
         self._process_sam.finished.connect(self._handle_finished_sam)
         self._process_sam.errorOccurred.connect(self._process_failed_sam)
@@ -937,9 +941,7 @@ class Tab_ROI_on_4D(qtw.QWidget):
         # SAM2/PyTorch write progress bars and warnings to stderr that
         # aren't necessarily errors - real failures surface via the
         # JSON-decode check in _handle_finished_sam below.
-        text = bytes(self._process_sam.readAllStandardError()).decode('utf-8').strip()
-        if text:
-            self.logger.info('SAM2: %s', text)
+        self._stderr_buffer.log_info(self._process_sam, self.logger, 'SAM2')
 
     def _handle_finished_sam(self, exit_code=0, exit_status=0):
         self.button_segment_image.setEnabled(True)
@@ -1110,15 +1112,15 @@ class Worker_NavImg(QRunnable):
             navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize,
                                              dwellTime=self.dwellTime, logger=self.logger)
         except Exception:
-            self.logger.exception('Failed to calculate navigation image after %.1f s.',
-                                   perf_counter() - self._tic)
+            self.logger.exception('Failed to calculate navigation image after %s.',
+                                   io.format_duration_hms(perf_counter() - self._tic))
             self.signals.finished.emit()
             return
 
         # Emit the result when the task is done
         self.signals.result.emit(navImg)
-        self.logger.info('Navigation image calculated successfully in %.1f s.',
-                          perf_counter() - self._tic)
+        self.logger.info('Navigation image calculated successfully in %s.',
+                          io.format_duration_hms(perf_counter() - self._tic))
         self.signals.finished.emit()  # Emit the finished signal when done
 
 class Worker_CalculateDP(QRunnable):
@@ -1160,12 +1162,12 @@ class Worker_CalculateDP(QRunnable):
                 if hasattr(self, 'f'):
                     self.f.close()
         except Exception:
-            self.logger.exception('Failed to calculate diffraction pattern after %.1f s.',
-                                   perf_counter() - self._tic)
+            self.logger.exception('Failed to calculate diffraction pattern after %s.',
+                                   io.format_duration_hms(perf_counter() - self._tic))
             return
         self.signals.result.emit((dp, navImg_cut))
-        self.logger.info('Diffraction pattern calculated successfully in %.1f s.',
-                          perf_counter() - self._tic)
+        self.logger.info('Diffraction pattern calculated successfully in %s.',
+                          io.format_duration_hms(perf_counter() - self._tic))
         # self.signals.finished.emit()
 
 class Worker_CalculateDP_Mask(QRunnable):
@@ -1195,14 +1197,14 @@ class Worker_CalculateDP_Mask(QRunnable):
         except Exception:
             import traceback
             self.logger.exception(
-                'Failed to calculate mask-based diffraction pattern after %.1f s.',
-                perf_counter() - self._tic)
+                'Failed to calculate mask-based diffraction pattern after %s.',
+                io.format_duration_hms(perf_counter() - self._tic))
             self.signals.error.emit(traceback.format_exc())
             return
         self.signals.result.emit(dp)
         self.logger.info(
-            'Mask-based diffraction pattern calculated successfully in %.1f s.',
-            perf_counter() - self._tic)
+            'Mask-based diffraction pattern calculated successfully in %s.',
+            io.format_duration_hms(perf_counter() - self._tic))
 # =============================================================================
 # if __name__ == "__main__":
 #     app = qtw.QApplication(sys.argv)

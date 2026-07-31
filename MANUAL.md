@@ -8,7 +8,8 @@ extracting per-object 3D electron diffraction (3DED) data.
 
 ## Launching
 
-Run `5DED_MainWidow.py`. The main window has four tabs (described below)
+See [INSTALL.md](INSTALL.md) for setting up dependencies first. Then run
+`5DED_MainWidow.py`. The main window has four tabs (described below)
 and a live log console along the bottom.
 
 If you re-run the script in the same Python console/kernel (e.g. Spyder's

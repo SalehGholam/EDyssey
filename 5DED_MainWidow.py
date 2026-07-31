@@ -14,9 +14,25 @@ os.chdir(fld_path)
 _path_io_utils = os.path.join(fld_path, r'py4DTomo\io_utils')
 if _path_io_utils not in sys.path:
     sys.path.append(_path_io_utils)
+
+# Dispatch to a worker_*.py subprocess (see ui_tabs/worker_launch.py /
+# worker_dispatch.py) before any of the GUI-only imports below - both to
+# avoid paying for PyQt5/matplotlib/the 4 tab classes in every short-lived
+# worker subprocess, and because this is what makes worker subprocesses work
+# at all in a frozen build (no bundled python.exe to hand a bare .py path
+# to, so the frozen exe re-invokes itself with `--worker <name> <args>`
+# instead).
+if len(sys.argv) > 1 and sys.argv[1] == '--worker':
+    from worker_dispatch import run_worker
+    run_worker(sys.argv[2], sys.argv[3:])
+    # run_worker always calls sys.exit(...) itself; this is unreachable but
+    # keeps the module import below from happening if that ever changes.
+    raise SystemExit(0)
+
 import gc
 import logging
 import PyQt5.QtWidgets as qtw
+from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
 from ui_tabs.logging_utils import install_excepthook
@@ -56,9 +72,11 @@ class MainWindow(qtw.QMainWindow):
         self.tab_sam2 = Tab_SAM2()
         self.tabs.addTab(self.tab_sam2, 'SAM2 Tracker')
         
-        file_path = os.path.split(os.path.abspath(__file__))[0]
-        fn_icon = os.path.join(file_path, 'ui_tabs',
-                               'logo', 'Scream_logo.ico')
+        # In a PyInstaller-frozen build, bundled data files (this icon
+        # included) are extracted under sys._MEIPASS, not next to __file__ -
+        # sys._MEIPASS doesn't exist at all in a normal (non-frozen) run.
+        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        fn_icon = os.path.join(base_dir, 'ui_tabs', 'logo', 'Scream_logo.ico')
         self.setWindowIcon(QIcon(fn_icon))
 
         central = qtw.QWidget()
@@ -151,6 +169,25 @@ class MainWindow(qtw.QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    # Must be set before the QApplication is constructed. Without these,
+    # Qt falls back to raw-pixel rendering on a high-DPI (e.g. 4K) display -
+    # every widget (including every setFixedSize/setFixedWidth value used
+    # throughout the tabs) is then sized in *physical* pixels instead of
+    # *logical* ones, which is why it looked either tiny or - if Windows
+    # compensated with its own bitmap stretching instead - blurry with
+    # widgets overlapping. Enabling this makes Qt do the scaling itself, so
+    # every existing fixed pixel size scales consistently with the display.
+    qtw.QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    qtw.QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # Without this, a window dragged between two monitors with different
+    # (non-integer-ratio) scale factors - e.g. a 100% laptop screen and a
+    # 150%/200% external 4K one - gets Qt's *rounded* scale factor per
+    # monitor rather than the exact one, which is what actually produces
+    # visibly wrong/inconsistent widget sizes and overlap right after such
+    # a move. PassThrough uses the real factor instead of rounding it.
+    qtw.QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
     app = qtw.QApplication([])
     window = MainWindow()
     window.show()
