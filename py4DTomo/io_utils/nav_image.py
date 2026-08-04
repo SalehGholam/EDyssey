@@ -18,6 +18,23 @@ from scipy.ndimage import center_of_mass, gaussian_filter
 from .progress import redirect_console_to_logger, LoggingProgressBar
 from .loaders import load_signal, load_hdf5
 
+# "Cover the whole detector" sentinel for an annular virtual detector's outer
+# radius, deliberately far larger than any real detector - used as a default/
+# fallback in place of a literal like 512 (which silently under-covers a
+# larger real detector, or is simply meaningless clipped noise on a smaller
+# one) wherever the caller wants "the full frame" without needing to know the
+# actual detector size. eventem clips the annulus to the frame's real extent
+# internally, so an oversized radius is fine in general - but eventem's vSTEM
+# squares this radius internally using a 32-bit int, so it must stay below
+# sqrt(2**31) (~46340) or that squaring silently overflows/wraps and the
+# "inside the disk" test becomes always-false, zeroing the whole image (this
+# was the actual cause of .tpx3 nav-image "Test File" coming back completely
+# empty whenever "Use Virtual Mask" was off - confirmed by bisecting r_out
+# against real data: 46340 works, 46341 already returns an all-zero image).
+# 1 << 15 keeps a wide safety margin under that limit while still being far
+# larger than any real detector.
+FULL_DETECTOR_RADIUS = 1 << 15
+
 def create_nav_signal_from_haadf(fns, dtype):  #TODO fix
     """Stack a list of HAADF/navigation images into a HyperSpy Signal2D.
 
@@ -50,7 +67,7 @@ def create_nav_signal_from_haadf(fns, dtype):  #TODO fix
 # =============================================================================
     return s
 
-def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=512,
+def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
                            offset=None, repetitions=1, fn_pattern=None, logger=None,
                            n_threads=None):
     """Compute a virtual STEM (vSTEM) navigation image from a .tpx3 file using an annular detector.
@@ -211,7 +228,7 @@ def create_virtual_detector(shape, center, r_out, r_in=0):
         mask_arr[mask_in] = 0
     return mask_arr
 
-def find_dp_center(dp, r_mask=50, det_shape=(512,512), plot=False):
+def find_dp_center(dp, r_mask=50, det_shape=None, plot=False):
     """Estimate the direct-beam center of a diffraction pattern.
 
     Finds the brightest pixel as a first guess, then refines it via the
@@ -221,13 +238,17 @@ def find_dp_center(dp, r_mask=50, det_shape=(512,512), plot=False):
     Args:
         dp: 2-D diffraction pattern (e.g. a summed DP from `get_dp`/`get_sum_dp`).
         r_mask: Radius (pixels) of the circular mask used for the center-of-mass refinement.
-        det_shape: Shape of `dp` (used to build the temporary mask).
+        det_shape: Shape to build the temporary mask at - None (default)
+            uses `dp.shape` itself, which is always correct; only pass this
+            explicitly to mask at a *different* shape than `dp`'s own.
         plot: If True, show a debug figure comparing the masked pattern and the found center.
 
     Returns:
         (y, x) center coordinates (row, column), matching `dp`'s own
         row/column axis order.
     """
+    if det_shape is None:
+        det_shape = dp.shape
     # max value as center of the mask
     idx = np.argmax(dp)# index in flattened array
     cx, cy = np.unravel_index(idx, dp.shape)
@@ -364,8 +385,8 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1,
         if center is not None:
             center = (center[1], center[0])
             return calculate_nav_img_tpx3(fn, scanSize, dwellTime,
-                                          r_in=r_in, r_out=r_out or 512, offset=center,
-                                          fn_pattern=fn_pattern,
+                                          r_in=r_in, r_out=r_out or FULL_DETECTOR_RADIUS,
+                                          offset=center, fn_pattern=fn_pattern,
                                           logger=logger, n_threads=n_threads)
 
     s = load_signal(fn, dtype=dtype, scanSize=scanSize, lazy=True, logger=logger,
@@ -410,7 +431,6 @@ def calculate_nav_img_hdf5(fn, scanSize=None, logger=None):
         if 'dose_image' in f.keys():
             nav_img = f['dose_image'][:]
             return nav_img
-        # print('Navigation images is pre-calculated')
     from .loaders import load_hdf5
     nav_img = load_hdf5(fn, scanSize=scanSize, sum_dp=True, logger=logger)
     return nav_img
@@ -444,7 +464,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
     elif dtype == '.hdf5':
         nav_img = calculate_nav_img_hdf5(fn, scanSize, logger=logger)
     elif dtype in ['.zspy', '.hspy']:
-        nav_img = load_signal(fn, dtype=dtype, scanSize=scanSize, sum_dp=True, logger=logger)
+        nav_img = load_signal(fn, dtype=dtype, scanSize=scanSize, sum_dp=True, logger=logger,
+                              fn_pattern=fn_pattern)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
         nav_img = hs.load(fn).data
     return nav_img

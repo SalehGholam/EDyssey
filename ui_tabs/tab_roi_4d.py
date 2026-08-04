@@ -25,7 +25,7 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
-from .base_tab import TabBase
+from .base_tab import TabBase, compute_left_panel_width
 from .threshold_dialog import ThresholdDialog
 from .worker_thread import ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -47,7 +47,7 @@ class Tab_ROI_on_4D(TabBase):
         self._splitter = qtw.QSplitter(Qt.Horizontal)
         self.layout.addWidget(self._splitter)
         
-        width_userInput = 320
+        width_userInput = compute_left_panel_width()
         self._left_widget = qtw.QWidget()
         self._left_widget.setFixedWidth(width_userInput)
         self._splitter.addWidget(self._left_widget)
@@ -73,8 +73,8 @@ class Tab_ROI_on_4D(TabBase):
         self.button_dir_navSignal = qtw.QPushButton('...')
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
-        #%% input layout, box scan size
-        self.box_scanSize = qtw.QGroupBox('Scan Size')
+        #%% input layout, box input parameters
+        self.box_scanSize = qtw.QGroupBox('Input Parameters')
         layout_box_scanSize = qtw.QVBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
@@ -114,6 +114,71 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_scanSize_row1.addStretch(1)
 
+        # scale bars - moved here, real/reciprocal merged onto one row
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_box_scanSize.addWidget(self.box_scale)
+
+        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_row)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the reciprocal-space rings are re-centered on the '
+            'direct beam automatically (found via a large-sigma blur) after '
+            'every redraw. When unchecked, hold Ctrl and click on the '
+            'diffraction pattern to set the center manually.')
+        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(
+            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
+
+        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
+
+        self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
+        self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
+
+        # detector size (per side, in pixels) - Auto assumes 512x512.
+        layout_detSize = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_detSize)
+        label_detSize = qtw.QLabel('Detector Size')
+        label_detSize.setToolTip(
+            'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.')
+        layout_detSize.addWidget(label_detSize)
+        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
+        self.checkbox_detectorSizeAuto.setChecked(True)
+        self.checkbox_detectorSizeAuto.setToolTip(label_detSize.toolTip())
+        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        self.spinbox_detectorSize_x = qtw.QSpinBox()
+        self.spinbox_detectorSize_x.setFixedWidth(55)
+        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setValue(512)
+        layout_detSize.addWidget(self.spinbox_detectorSize_x)
+        label_detSize_cross = qtw.QLabel('X')
+        layout_detSize.addWidget(label_detSize_cross)
+        self.spinbox_detectorSize_y = qtw.QSpinBox()
+        self.spinbox_detectorSize_y.setFixedWidth(55)
+        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setValue(512)
+        layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        self.activate_detectorSize_spinboxes()
+        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
+        layout_detSize.addStretch(1)
+
         # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file itself.
         layout_scanSize_row2 = qtw.QHBoxLayout()
@@ -129,6 +194,10 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_metadataCount.setRange(0, 99999)
         self.spinbox_metadataCount.setValue(0)
         self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        # Re-reads comment.txt (a cheap text-file parse, not the 4D data
+        # file itself) for the newly-selected block as soon as the value
+        # changes, instead of requiring an extra "Load" click every time.
+        self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
 
         self.button_loadMetadata = qtw.QPushButton('Load')
@@ -148,9 +217,14 @@ class Tab_ROI_on_4D(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
-        # smart-scan (pattern-file) acquisition support
+        #%% box smart scan (pattern-file) acquisition support
+        self.box_smartScan = qtw.QGroupBox('Smart Scan')
+        layout_box_smartScan = qtw.QVBoxLayout()
+        self.box_smartScan.setLayout(layout_box_smartScan)
+        layout_userInput.addWidget(self.box_smartScan)
+
         layout_scanSize_row3 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row3)
+        layout_box_smartScan.addLayout(layout_scanSize_row3)
 
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
@@ -170,49 +244,29 @@ class Tab_ROI_on_4D(TabBase):
         self.button_browsePattern.setDisabled(True)
         layout_scanSize_row3.addWidget(self.button_browsePattern)
         self.button_browsePattern.clicked.connect(self.browse_pattern_file)
-        #%% box for scales
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        # Real/Recip/Auto-center stack as their own rows (not one wide row)
-        # so this box doesn't force the whole left panel wider than intended.
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_userInput.addWidget(self.box_scale)
-        
-        # real space
-        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        layout_scale_real = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_real)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_real.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_real.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        # reciprocal space
-        layout_scale_recip = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_recip)
-        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_recip.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
 
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the '
-            'diffraction pattern to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(
-            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
-
-        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
-
-        self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
-        self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
+        # Detection/acquisition dwell times - a smart-scanned tilt series
+        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
+        # for the dense detection pass, "Scan strategy: Custom" for the
+        # sparse acquisition), each with its own dwelltime - editable here
+        # in case they differ from (or aren't present in) comment.txt.
+        layout_scanSize_dwell = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell)
+        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (\u03BCs)')
+        layout_scanSize_dwell.addWidget(label_dwellTime_detection)
+        self.spinbox_dwellTime_detection = qtw.QSpinBox()
+        self.spinbox_dwellTime_detection.setFixedWidth(70)
+        self.spinbox_dwellTime_detection.setRange(1, 99999999)
+        self.spinbox_dwellTime_detection.setDisabled(True)
+        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_detection)
+        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (\u03BCs)')
+        layout_scanSize_dwell.addWidget(label_dwellTime_acquisition)
+        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
+        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
+        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
+        self.spinbox_dwellTime_acquisition.setDisabled(True)
+        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_scanSize_dwell.addStretch(1)
 
         #%% load button
         layout_load = qtw.QHBoxLayout()
@@ -222,6 +276,12 @@ class Tab_ROI_on_4D(TabBase):
         layout_load.addWidget(self.button_loadNavigation)
         self.button_loadNavigation.clicked.connect(self.get_nav_image)
 
+        # Cancel itself is added to layout_userInput as the panel's last
+        # widget (in init_widget, right after the last box) rather than
+        # here next to Load Signal - it needs to stay reachable regardless
+        # of which background job (segmentation, DP computation, ...) is
+        # running, so a single fixed spot at the bottom is easier to find
+        # than one tucked into whichever box happens to be first.
         self.button_cancel = qtw.QPushButton('Cancel')
         self.button_cancel.setFixedHeight(50)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
@@ -229,7 +289,6 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setToolTip(
             'Stop the running SAM2 segmentation or DP computation. Already-running '
             'background computations finish silently; their results are discarded.')
-        layout_load.addWidget(self.button_cancel)
         self.button_cancel.clicked.connect(self.cancel_running_work)
         #%% SAM2 segmentation
         self.box_segmentation = qtw.QGroupBox('SAM2 Segmentation')
@@ -261,25 +320,61 @@ class Tab_ROI_on_4D(TabBase):
         #%% edge detection (mask post-processing)
         self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
         layout_userInput.addWidget(self.box_edgeDetection)
-        layout_edgeDetection = qtw.QHBoxLayout()
+        layout_edgeDetection = qtw.QVBoxLayout()
         self.box_edgeDetection.setLayout(layout_edgeDetection)
 
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Only')
+        layout_edgeDetection_row1 = qtw.QHBoxLayout()
+        layout_edgeDetection.addLayout(layout_edgeDetection_row1)
+
+        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
         self.checkbox_edgeOnly.setToolTip(
             'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
             'before it is displayed or summed - applies to both mask sources below')
-        layout_edgeDetection.addWidget(self.checkbox_edgeOnly)
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
 
         label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection.addWidget(label_edgeKernel)
+        layout_edgeDetection_row1.addWidget(label_edgeKernel)
         self.spinbox_edgeKernel = qtw.QSpinBox()
         self.spinbox_edgeKernel.setRange(1, 99)
         self.spinbox_edgeKernel.setValue(3)
         self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection.addWidget(self.spinbox_edgeKernel)
+        layout_edgeDetection_row1.addWidget(self.spinbox_edgeKernel)
         self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection.addStretch(1)
+        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
+        self.checkbox_revertMask.setToolTip(
+            'Only applies together with Edge Detection: keep the mask\'s interior '
+            '(and, with "Directional" on, its other sides) but cut out the detected '
+            'edge band, instead of keeping only the edge band')
+        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
+        self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection_row1.addStretch(1)
+
+        layout_edgeDetection_row2 = qtw.QHBoxLayout()
+        layout_edgeDetection.addLayout(layout_edgeDetection_row2)
+
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge band facing one direction (e.g. just the mask\'s '
+            'top edge) instead of the full outline - erosion becomes one-sided, '
+            'along the angle below')
+        layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+
+        label_edgeDirection = qtw.QLabel('Angle (°)')
+        layout_edgeDetection_row2.addWidget(label_edgeDirection)
+        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
+        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setDecimals(1)
+        self.spinbox_edgeDirection.setSingleStep(5)
+        self.spinbox_edgeDirection.setValue(0)
+        self.spinbox_edgeDirection.setDisabled(True)
+        self.spinbox_edgeDirection.setToolTip(
+            '0° = right, increasing clockwise (90° = down/bottom edge, '
+            '180° = left, 270° = up/top edge)')
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
+        self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection_row2.addStretch(1)
 
         #%% Summed DP from threshold
         self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
@@ -295,6 +390,10 @@ class Tab_ROI_on_4D(TabBase):
             'navigation image, then sum diffraction patterns only at the scan '
             'positions above it, instead of a rectangular ROI')
 
+        layout_userInput.addWidget(self.button_cancel)
+        # Absorbs leftover vertical space below Cancel, so the whole panel's
+        # content stays pinned to the top instead of stretching to fill a
+        # taller window.
         layout_userInput.addStretch(1)
         #%% canvas layout
         self._right_widget = qtw.QWidget()
@@ -390,8 +489,15 @@ class Tab_ROI_on_4D(TabBase):
             self.lineEdit_scanSize_x.setEnabled(True)
             self.lineEdit_scanSize_y.setEnabled(True)
 
+    def activate_detectorSize_spinboxes(self):
+        auto = self.checkbox_detectorSizeAuto.isChecked()
+        self.spinbox_detectorSize_x.setDisabled(auto)
+        self.spinbox_detectorSize_y.setDisabled(auto)
+
     def get_scan_size(self):
-        if not self.checkbox_scanSize.isChecked(): # get scan size
+        """Return the (x, y) scan size from the manual entry fields, or
+        None if "Auto" is checked or the fields don't hold valid integers."""
+        if not self.checkbox_scanSize.isChecked():
             try:
                 x = int(self.lineEdit_scanSize_x.text())
                 y = int(self.lineEdit_scanSize_y.text())
@@ -403,14 +509,17 @@ class Tab_ROI_on_4D(TabBase):
         return scanSize
     
     def get_nav_image(self):
+        """Validate the entered scan size (if required) and kick off a
+        background Worker_NavImg to compute the navigation image; see
+        image_handler() for the result slot."""
         self.reset_canvas()
         self.fn = self.lineEdit_dir_signal.text()
         self.scanSize = self.get_scan_size()
         self.dwellTime = self.spinbox_dwellTime.value()
         dtype = os.path.splitext(self.fn)[-1]
-        if dtype == '.tpx3' and self.scanSize == None:
-            self.logger.warning('Cannot load %s: scan size is required for .tpx3 files.', self.fn)
-            self.message_box_tpx3()
+        if self._scan_size_required(dtype) and self.scanSize is None:
+            self.logger.warning('Cannot load %s: scan size is required.', self.fn)
+            self.message_box_scan_size_required(dtype)
             return
 
         self.logger.info('Loading 4D signal from %s...', self.fn)
@@ -418,7 +527,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setEnabled(True)
         worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime, self.get_fn_pattern())
 
-        worker.signals.result.connect(self.image_handler)  # Connect to result signal
+        worker.signals.result.connect(self.image_handler)
         self.threadpool.start(worker)
 
 # =============================================================================
@@ -427,6 +536,8 @@ class Tab_ROI_on_4D(TabBase):
 # =============================================================================
 
     def image_handler(self, result):
+        """Slot for Worker_NavImg's result: store the navigation image and
+        reset the nav axis view/toolbar history to it."""
         self.navImg = result
         self.dp_center = None  # a new signal may have a different DP shape/center
         self.update_canvas('nav')
@@ -453,18 +564,33 @@ class Tab_ROI_on_4D(TabBase):
             self.lineEdit_dir_signal.setText(path[0])
     
     def enable_dwellTime_spinbox(self, txt):
+        """Enable the scan-size/dwell-time widgets only for .tpx3 files
+        (smart-scan controls are handled separately - see
+        activate_lineEdit_patternFile()); auto-loads metadata when enabling."""
         enable = False
         if os.path.isfile(txt):
             dtype = os.path.splitext(txt)[1]
             if dtype == '.tpx3':
                 enable = True
+        # Smart-scan controls (checkbox_smartScan/lineEdit_patternFile/
+        # button_browsePattern) are excluded from this blanket tpx3-only
+        # enable/disable - .mib/.hspy/.zspy can be smart-scanned too, and
+        # this loop used to silently disable them for every non-tpx3 file,
+        # making the pattern-file picker unusable for exactly the formats
+        # (mib/hspy) that need it most. They manage their own enabled state
+        # via activate_lineEdit_patternFile() below instead.
+        smart_scan_widgets = (self.checkbox_smartScan, self.lineEdit_patternFile,
+                              self.button_browsePattern)
         for wid in self.box_scanSize.findChildren(qtw.QWidget):
+            if wid in smart_scan_widgets:
+                continue
             wid.setEnabled(enable)
             # print(e)
         self.checkbox_scanSize.setChecked(not enable)
         self.checkbox_scanSize.setDisabled(enable)
         if enable:
             self.load_metadata(silent=True)
+        self.activate_lineEdit_patternFile()
 
     def browse_metadata_file(self):
         fn = self.lineEdit_dir_signal.text()
@@ -513,9 +639,13 @@ class Tab_ROI_on_4D(TabBase):
                     f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
 
     def activate_lineEdit_patternFile(self):
+        """Enable the pattern-file picker and detection/acquisition
+        dwell-time spinboxes together, only when "Smart Scanned" is checked."""
         enable = self.checkbox_smartScan.isChecked()
         self.lineEdit_patternFile.setEnabled(enable)
         self.button_browsePattern.setEnabled(enable)
+        self.spinbox_dwellTime_detection.setEnabled(enable)
+        self.spinbox_dwellTime_acquisition.setEnabled(enable)
 
     def browse_pattern_file(self):
         fn = self.lineEdit_dir_signal.text()
@@ -526,6 +656,8 @@ class Tab_ROI_on_4D(TabBase):
             self.lineEdit_patternFile.setText(path)
 
     def get_fn_pattern(self):
+        """Return the pattern-file path when smart-scan is enabled and a
+        path is set, else None."""
         if self.checkbox_smartScan.isChecked() and self.lineEdit_patternFile.text():
             return self.lineEdit_patternFile.text()
         return None
@@ -537,10 +669,22 @@ class Tab_ROI_on_4D(TabBase):
         accepted threshold-dialog mask), so both the on-screen overlay and
         the DP extraction that follows see the same, possibly-eroded, mask."""
         if self.checkbox_edgeOnly.isChecked():
-            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value())
+            direction = (self.spinbox_edgeDirection.value()
+                        if self.checkbox_edgeDirectional.isChecked() else None)
+            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
+                                       revert=self.checkbox_revertMask.isChecked())
         return mask
 
+    def _on_edge_directional_toggled(self):
+        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
+        self._refresh_edge_mask()
+
     def on_press(self, event):
+        """Mouse-press dispatch for the nav/DP canvas: manual DP
+        re-centering (Ctrl+Click on the DP axis), removing the last SAM2
+        point (middle click), adding a SAM2 point (Shift+Click), or
+        starting a new ROI rectangle (Ctrl+Drag) - depending on click
+        location and modifiers."""
         if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
                 and 'ctrl' in event.modifiers and not self.checkbox_autoCenterDp.isChecked()
                 and hasattr(self, 'dp')):
@@ -570,7 +714,6 @@ class Tab_ROI_on_4D(TabBase):
             # zoomed into; hold "ctrl" to draw a new ROI instead.
             self.press = None
             return
-        # Mouse press event: record the starting point
         self.press = (event.xdata, event.ydata)
         if self.rect is not None:
             self.rect.remove()
@@ -585,7 +728,8 @@ class Tab_ROI_on_4D(TabBase):
         self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
 
     def on_motion(self, event):
-        # Mouse motion event: update the rectangle size as the mouse moves
+        """Resize the in-progress ROI rectangle as the mouse moves,
+        blitting just the rectangle onto the cached background for speed."""
         if self.press is None or event.inaxes is None:
             return
         x0, y0 = self.press
@@ -622,11 +766,12 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas.draw_idle()
 
     def on_release(self, event):
-        # Mouse release event: finalize the rectangle
+        """Finalize the ROI rectangle on mouse-up, normalize a reversed
+        drag into (x, y, w, h), then kick off a background
+        diffraction-pattern computation for it."""
         if self.press is None or event.inaxes is None:
             return
-        
-        # Finalize the rectangle and store it
+
         x0, y0 = self.press
         width = event.xdata - x0
         height = event.ydata - y0
@@ -644,8 +789,6 @@ class Tab_ROI_on_4D(TabBase):
             height = 1
         self.roi = (int(x0), int(y0), int(width), int(height))
 
-
-        # Set the press attribute to None for future drawings
         self.press = None
         self.canvas.draw()
         self.logger.info('ROI: %s', self.roi)
@@ -663,6 +806,8 @@ class Tab_ROI_on_4D(TabBase):
         self.threadpool.start(worker)
     
     def get_dp(self, result):
+        """Slot for Worker_CalculateDP's result: store the rectangle-ROI
+        diffraction pattern/nav crop and refresh the display."""
 # =============================================================================
 #         s_cut = io.load_signal(self.fn, lazy=False, roi=roi, scanSize=scanSize, dwellTime=dwellTime)
 #         self.navImg_cut = s_cut.sum(axis=(2,3)).data
@@ -769,6 +914,10 @@ class Tab_ROI_on_4D(TabBase):
         self.slider_vmax.setSingleStep(1)
     
     def update_canvas(self, ax='dp', roiUpdate=False):
+        """Refresh the 'dp' or 'nav' image display from current data -
+        roiUpdate=True also refreshes the "ROI Image" crop. Scale bars and
+        reciprocal-space circles are redrawn on every call regardless of
+        `ax`."""
         if ax == 'dp':
             vmax = self.slider_vmax.value()
             self.label_vmax.setText(f'vmax: {vmax:.0f}')
@@ -847,8 +996,36 @@ class Tab_ROI_on_4D(TabBase):
        msg.setIcon(qtw.QMessageBox.Critical)
        retval = msg.exec_()
 
+    def _scan_size_required(self, dtype):
+        """Whether an explicit (non-"Auto") scan size is required for
+        `dtype` - always true for .tpx3 (eventem has no other way to learn
+        it), and also true for any format when "Smart Scanned" is checked:
+        a smart-scanned acquisition's own per-file header (e.g. a .mib's
+        .hdr "Frames in Acquisition"), when one exists at all, reflects the
+        number of frames actually written to disk for that sparse
+        acquisition, not the full scan grid - so "Auto" silently resolves
+        to the wrong shape instead of raising an error. See
+        loaders.get_scan_size_mib_hdr and _reconstruct_smart_scan."""
+        return dtype == '.tpx3' or self.checkbox_smartScan.isChecked()
+
+    def message_box_scan_size_required(self, dtype):
+        reason = ('.tpx3 files' if dtype == '.tpx3' else 'smart-scanned acquisitions')
+        msg = qtw.QMessageBox()
+        msg.setWindowTitle("Scan Size Required")
+        msg.setText(f"Scan size input is required for {reason}.")
+        msg.setInformativeText(
+            '"Auto" can\'t be relied on here - a per-file header, when present, reflects '
+            'the number of frames actually written to disk, not the full scan grid. '
+            'Uncheck "Auto" and enter the scan size (or click "Load" to read it from '
+            'comment.txt), then try again.')
+        msg.setStandardButtons(qtw.QMessageBox.Ok)
+        msg.setIcon(qtw.QMessageBox.Critical)
+        msg.exec_()
+
 #%% SAM2 segmentation
     def add_seg_point(self, event):
+        """Add a SAM2 point prompt at the click location (left = positive,
+        right = negative), plot it, and enable the relevant buttons."""
         if not hasattr(self, 'navImg'):
             self.logger.warning('SAM2 point requested but no image is loaded yet.')
             return
@@ -958,6 +1135,8 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas.draw_idle()
 
     def _get_seg_temp_dir(self):
+        """Return the temp directory used to exchange SAM2 inputs/outputs
+        with the segmentation subprocess, creating it if necessary."""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp', 'roi4d_seg')
         os.makedirs(temp_dir, exist_ok=True)
@@ -1007,6 +1186,8 @@ class Tab_ROI_on_4D(TabBase):
         self._process_sam.start()
 
     def _process_failed_sam(self, error):
+        """Slot for the SAM2 subprocess's QProcess.errorOccurred: report
+        that it failed to start (skipped if the user cancelled)."""
         self.button_segment_image.setEnabled(True)
         self.button_cancel.setDisabled(True)
         if self._cancelling:
@@ -1023,6 +1204,9 @@ class Tab_ROI_on_4D(TabBase):
         self._stderr_buffer.log_info(self._process_sam, self.logger, 'SAM2')
 
     def _handle_finished_sam(self, exit_code=0, exit_status=0):
+        """Slot for the SAM2 subprocess's QProcess.finished: parse its
+        JSON+npz result into self.seg_mask (or report a failure), then
+        refresh the mask overlay/DP via _refresh_edge_mask()."""
         self.button_segment_image.setEnabled(True)
         self.button_cancel.setDisabled(True)
         if self._cancelling:
@@ -1198,12 +1382,13 @@ class Tab_ROI_on_4D(TabBase):
         plt.close(self.figure)
 
 class WorkerSignals(QObject):
-    finished = pyqtSignal()  # Signal to indicate task completion
-    result = pyqtSignal(object)  # Signal to emit the result of the task
+    finished = pyqtSignal()
+    result = pyqtSignal(object)
     error = pyqtSignal(object)  # Formatted traceback string, emitted on failure
 
-# Step 2: Create a WorkerThread class that runs the task in the background
 class Worker_NavImg(QRunnable):
+    """Background QRunnable that computes a 4D signal's navigation image,
+    emitting it via signals.result."""
     def __init__(self, fn, scanSize=None, dwellTime=None, fn_pattern=None):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
@@ -1213,7 +1398,7 @@ class Worker_NavImg(QRunnable):
         self.scanSize = scanSize
         self.dwellTime = dwellTime
         self.fn_pattern = fn_pattern
-        self.signals = WorkerSignals()  # Create an instance of WorkerSignals
+        self.signals = WorkerSignals()
 
     def run(self):
         try:
@@ -1226,13 +1411,15 @@ class Worker_NavImg(QRunnable):
             self.signals.finished.emit()
             return
 
-        # Emit the result when the task is done
         self.signals.result.emit(navImg)
         self.logger.info('Navigation image calculated successfully in %s.',
                           io.format_duration_hms(perf_counter() - self._tic))
-        self.signals.finished.emit()  # Emit the finished signal when done
+        self.signals.finished.emit()
 
 class Worker_CalculateDP(QRunnable):
+    """Background QRunnable that loads a rectangular ROI's diffraction
+    pattern (and its summed nav-image crop), emitting both via
+    signals.result."""
     def __init__(self, fn, roi, scanSize, dwellTime, fn_pattern=None):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')

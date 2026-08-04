@@ -132,6 +132,7 @@ class Pets2AutotaskDialog(qtw.QDialog):
             self.list_tasks.takeItem(self.list_tasks.row(item))
 
     def _move_selected(self, direction):
+        """Move the selected task by `direction` rows (-1 up, +1 down)."""
         row = self.list_tasks.currentRow()
         new_row = row + direction
         if row < 0 or not (0 <= new_row < self.list_tasks.count()):
@@ -141,6 +142,7 @@ class Pets2AutotaskDialog(qtw.QDialog):
         self.list_tasks.setCurrentRow(new_row)
 
     def get_result(self):
+        """Return (tasks, keepautotasks) reflecting the current list/checkbox state."""
         tasks = [self.list_tasks.item(i).text() for i in range(self.list_tasks.count())]
         keepautotasks = 'yes' if self.checkbox_keepautotasks.isChecked() else 'no'
         return tasks, keepautotasks
@@ -158,6 +160,8 @@ class Pets2ParamsDialog(qtw.QDialog):
 
     def __init__(self, parent=None, voltage_kv=None, exposure_s=None, aperpixel=None,
                  center=None):
+        """voltage_kv/exposure_s/aperpixel/center, when given, pre-fill their
+        fields in place of the cached value from the last time this dialog was used."""
         super().__init__(parent)
         self.setWindowTitle('PETS2 Export Parameters')
         cache = io.load_pets2_defaults()

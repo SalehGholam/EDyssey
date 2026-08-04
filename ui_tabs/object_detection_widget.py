@@ -21,6 +21,7 @@ class Object_Detector_Widget(qtw.QWidget):
     final_objects = pyqtSignal(list)
     
     def __init__(self, img, parent=None):
+        """Store `img` and set up a debounced mask-update timer before building the widget."""
         super().__init__(parent)
         self.img = img
         self._debounce_timer = QTimer(self)
@@ -237,6 +238,8 @@ class Object_Detector_Widget(qtw.QWidget):
 # =============================================================================
     
     def extend_canvas(self, state):
+        """Rebuild the figure's axes: an 8-panel pipeline-stage view if `state`
+        is truthy, otherwise the plain 2-panel raw/final-objects view."""
         size_x, size_y = self.img.shape
         img_zero = np.zeros((size_x, size_y), dtype='int8')
         self.figure.clf()
@@ -289,6 +292,7 @@ class Object_Detector_Widget(qtw.QWidget):
             
    
     def normalize_image(self, img):
+        """Min-max scale `img` to uint8 [0, 255]; no-op if already uint8."""
         if img.dtype != 'uint8': # TODO not sure if necessary
             img_8bit = deepcopy(img)
             # img_8bit[img_8bit < 0] = 0
@@ -303,10 +307,13 @@ class Object_Detector_Widget(qtw.QWidget):
 # =============================================================================
     
     def gaussian_blur(self, img, kernel_size=3):
+        """Blur `img`; the `kernel_size` argument is ignored, the kernel is
+        always read from the Blurring combo box."""
         kernel_size = int(self.combo_blurKernel.currentText())
         return cv2.GaussianBlur(img, (kernel_size,kernel_size), 0)
     
     def binarize_image(self, img):
+        """Threshold `img` using the selected method, offset by the Deviation slider."""
         thresh_method = self.combo_threshMethod.currentText()
         threshold_methods = {
         'otsu': threshold_otsu,
@@ -323,6 +330,8 @@ class Object_Detector_Widget(qtw.QWidget):
         return img_mask
     
     def morphological_transformation(self, mask, kernel_size=3):
+        """Apply a closing then an opening to `mask`; the `kernel_size` argument
+        is ignored, kernel sizes are always read from the Opening/Closing spinboxes."""
         kernel_size = self.spinbox_morph_closeKernel.value()
         kernel_close = np.ones((kernel_size,kernel_size), np.uint8)
 
@@ -334,6 +343,9 @@ class Object_Detector_Widget(qtw.QWidget):
         return mask_opened
     
     def find_contours(self, mask, min_area=5):
+        """Find external contours in `mask` and rasterize the ones passing the
+        area filter into a new mask. `min_area` is ignored - always read from
+        the Min Area spinbox - and a Max Area filter is applied too if checked."""
         min_area = self.spinbox_contourMinArea.value()
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours_selected = [cnt for cnt in contours if cv2.contourArea(cnt) >= min_area]
@@ -346,6 +358,8 @@ class Object_Detector_Widget(qtw.QWidget):
         return contour_mask, contours_selected
     
     def dilate_mask(self, mask, kernel_size=3):
+        """Dilate `mask`; the `kernel_size` argument is ignored, the kernel is
+        always read from the Dilation spinbox (0 means no dilation)."""
         kernel_size = self.spinbox_dilateKernel.value()
         if kernel_size == 0:
             return mask
@@ -353,9 +367,12 @@ class Object_Detector_Widget(qtw.QWidget):
         return cv2.dilate(mask, kernel, iterations=1)
     
     def update_mask(self):
+        """(Re)start the debounce timer; the actual pipeline runs in _do_update_mask."""
         self._debounce_timer.start()
 
     def _do_update_mask(self):
+        """Run the full detection pipeline (normalize -> blur -> binarize ->
+        morph -> contours -> dilate -> detect) and redraw the canvas."""
         self.img_8bit = self.normalize_image(self.img)
         if self.checkbox_convert.isChecked():
             self.img_8bit = 255 - self.img_8bit
@@ -371,6 +388,8 @@ class Object_Detector_Widget(qtw.QWidget):
         self.update_canvas()
     
     def update_canvas(self):
+        """Push self.masks into the displayed image panels and refresh the
+        final-objects-count title."""
         for k in self.img_disp.keys():
             img = self.masks[k]
             self.img_disp[k].set_data(img)
@@ -380,16 +399,16 @@ class Object_Detector_Widget(qtw.QWidget):
         self.canvas.draw()
         
     def detect_objects(self):
+        """Return (annotated 8-bit image, list of (x, y, w, h) boxes) for every
+        contour found in self.mask_dilated."""
         boxes = []
         idx = 1
         img = deepcopy(self.img_8bit)
         contours, _ = cv2.findContours(self.mask_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         # for _, cnt in enumerate(self.contours):
         for _, cnt in enumerate(contours):
-            # Get the bounding rectangle of the contour
             x, y, w, h = cv2.boundingRect(cnt)
             boxes.append((x,y,w,h))
-            # Draw the bounding box on the image
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(img, f"{idx}", (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -400,6 +419,7 @@ class Object_Detector_Widget(qtw.QWidget):
         return img, boxes
     
     def finish_widget(self, ret=True):
+        """Emit the detected boxes (or None if cancelled) via final_objects, then close."""
         if ret:
             self.final_objects.emit(self.boxes)
         else:

@@ -17,6 +17,27 @@ from PyQt5.QtCore import QThreadPool
 from .logging_utils import get_tab_logger
 
 
+def compute_left_panel_width(base=320, min_width=280, max_width=380, fraction=0.18):
+    """Left input panel width (px) for the current primary screen - a fixed
+    (non-draggable) value like the `width_userInput` constant every tab used
+    to hard-code, but scaled to the display instead of being the same
+    literal number on a small laptop screen and a large monitor alike.
+
+    `base` is returned unchanged if no screen can be queried (e.g. running
+    headless) - the previous hard-coded behaviour. Otherwise the panel is
+    sized to `fraction` of the primary screen's available width, clamped to
+    [`min_width`, `max_width`] so it neither eats most of a small screen nor
+    goes needlessly wide on a large one.
+    """
+    screen = qtw.QApplication.primaryScreen()
+    if screen is None:
+        return base
+    avail_width = screen.availableGeometry().width()
+    if avail_width <= 0:
+        return base
+    return max(min_width, min(max_width, int(avail_width * fraction)))
+
+
 class TabBase(qtw.QWidget):
     def __init__(self, tab_name, parent=None, own_threadpool=True):
         """

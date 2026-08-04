@@ -5,6 +5,9 @@ import os
 
 class LoadingSpinner(QLabel):
     def __init__(self, parent=None):
+        """Build the overlay: a translucent background, the "scream_loading"
+        GIF animation, and a "LOADING..." text label on top - hidden until
+        start() is called."""
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background-color: rgba(0, 0, 0, 100); border-radius: 10px;")
@@ -22,8 +25,7 @@ class LoadingSpinner(QLabel):
         # Remove fixed size so the QLabel matches the GIF
         # self.movie.jumpToFrame(0)  # Load first frame to get size
         # gif_size = self.movie.currentPixmap().size()
-        
-        # Add "LOADING..." text as overlay
+
         self.text_label = QLabel("LOADING...", self)
         self.text_label.setStyleSheet("""
             color: white;

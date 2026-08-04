@@ -32,9 +32,10 @@ from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
-from .base_tab import TabBase
+from .base_tab import TabBase, compute_left_panel_width
 from .pets2_dialog import Pets2ParamsDialog
 from .smart_scan_dialog import SmartScanCheckDialog
+from .mask_edit_dialog import MaskEditDialog
 from worker_extract_frame import load_dp
 from glob import glob
 from matplotlib.colors import SymLogNorm
@@ -83,7 +84,7 @@ class Tab_SAM2(TabBase):
         button_h_sml = 30
         button_h_lrg = 50
         # height_layout_top = 200
-        width_userInput = 320
+        width_userInput = compute_left_panel_width()
 
         self._left_widget = qtw.QWidget()
         self._left_widget.setFixedWidth(width_userInput)
@@ -143,48 +144,11 @@ class Tab_SAM2(TabBase):
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
-        #%% box for scales
+        #%% load buttons (scale bars now live in the Input Parameters box below)
         layout_loadSignal = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_loadSignal)
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_loadSignal.addWidget(self.box_scale)
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        
-        # real space
-        layout_scale_real = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_real)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_real.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_real.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        # reciprocal space
-        layout_scale_recip = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_recip)
-        label_scale_recip = qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_recip.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_recip.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
 
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the DP '
-            'plot to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(self.add_scalebar)
-        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
-
-        self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
-        self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
-        
         layout_load_buttons = qtw.QVBoxLayout()
         layout_loadSignal.addLayout(layout_load_buttons)
 
@@ -198,8 +162,10 @@ class Tab_SAM2(TabBase):
         layout_load_buttons.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
-        #%% box scan size (raw scan dims used to extract DPs for 3DED)
-        self.box_scanSize = qtw.QGroupBox('Scan Size')
+        #%% box input parameters (scan dims, scale bars, detector size, dwell
+        # time, metadata block - everything needed to extract DPs for 3DED,
+        # except smart-scan-specific inputs, which get their own box below)
+        self.box_scanSize = qtw.QGroupBox('Input Parameters')
         layout_box_scanSize = qtw.QVBoxLayout()
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
@@ -242,6 +208,73 @@ class Tab_SAM2(TabBase):
             layout_scanSize_row1.addWidget(wid)
         layout_scanSize_row1.addStretch(1)
 
+        # scale bars - moved out of Directories, real/reciprocal merged onto one row
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_box_scanSize.addWidget(self.box_scale)
+
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_row)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the reciprocal-space rings are re-centered on the '
+            'direct beam automatically (found via a large-sigma blur) after '
+            'every redraw. When unchecked, hold Ctrl and click on the DP '
+            'plot to set the center manually.')
+        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(self.add_scalebar)
+        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
+
+        self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
+        self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
+
+        # detector size (per side, in pixels) - only truly needed for .tpx3
+        # (see get_detector_shape); Auto keeps the 512x512 default other
+        # formats auto-detect for free anyway.
+        layout_detSize = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_detSize)
+        label_detSize = qtw.QLabel('Detector Size')
+        label_detSize.setToolTip(
+            'Detector (diffraction pattern) size in pixels - used to size the extracted '
+            'DP array. Auto-detected from the 4D signal files for most formats; .tpx3 '
+            'needs this set explicitly (auto-detecting it would mean fully parsing a '
+            'file just to learn its shape) - Auto assumes 512x512.')
+        layout_detSize.addWidget(label_detSize)
+        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
+        self.checkbox_detectorSizeAuto.setChecked(True)
+        self.checkbox_detectorSizeAuto.setToolTip(label_detSize.toolTip())
+        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        self.spinbox_detectorSize_x = qtw.QSpinBox()
+        self.spinbox_detectorSize_x.setFixedWidth(55)
+        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setValue(512)
+        layout_detSize.addWidget(self.spinbox_detectorSize_x)
+        label_detSize_cross = qtw.QLabel('X')
+        layout_detSize.addWidget(label_detSize_cross)
+        self.spinbox_detectorSize_y = qtw.QSpinBox()
+        self.spinbox_detectorSize_y.setFixedWidth(55)
+        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setValue(512)
+        layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        self.activate_detectorSize_spinboxes()
+        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
+        layout_detSize.addStretch(1)
+
         # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file(s).
         layout_scanSize_row2 = qtw.QHBoxLayout()
@@ -257,6 +290,10 @@ class Tab_SAM2(TabBase):
         self.spinbox_metadataCount.setRange(0, 99999)
         self.spinbox_metadataCount.setValue(0)
         self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        # Re-reads comment.txt (a cheap text-file parse, not the 4D data
+        # file itself) for the newly-selected block as soon as the value
+        # changes, instead of requiring an extra "Load" click every time.
+        self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
 
         self.button_loadMetadata = qtw.QPushButton('Load')
@@ -276,12 +313,17 @@ class Tab_SAM2(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
-        # smart-scan (pattern-file) support: the 4D signals folder holds a
+        #%% box smart scan (pattern-file) support: the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
         # its matching pattern file - see py4DTomo/io_utils/smart_scan.py.
+        self.box_smartScan = qtw.QGroupBox('Smart Scan')
+        layout_box_smartScan = qtw.QVBoxLayout()
+        self.box_smartScan.setLayout(layout_box_smartScan)
+        layout_userInput.addWidget(self.box_smartScan)
+
         layout_scanSize_row3 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row3)
+        layout_box_smartScan.addLayout(layout_scanSize_row3)
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
             'The 4D signals folder holds a smart-scanned tomography series - 3DED '
@@ -301,8 +343,50 @@ class Tab_SAM2(TabBase):
         self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
         layout_scanSize_row3.addWidget(self.button_browsePatternDir)
 
+        layout_scanSize_row3b = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_row3b)
+        label_detectionDir = qtw.QLabel('Detect. Dir.')
+        layout_scanSize_row3b.addWidget(label_detectionDir)
+        self.lineEdit_detectionDir = qtw.QLineEdit()
+        self.lineEdit_detectionDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_detectionDir.setDisabled(True)
+        self.lineEdit_detectionDir.setToolTip(
+            'Folder to look for detection files in, if they live somewhere other than the '
+            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
+            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
+            'each in their own folder)')
+        layout_scanSize_row3b.addWidget(self.lineEdit_detectionDir)
+        self.button_browseDetectionDir = qtw.QPushButton('...')
+        self.button_browseDetectionDir.setFixedWidth(30)
+        self.button_browseDetectionDir.setDisabled(True)
+        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
+        layout_scanSize_row3b.addWidget(self.button_browseDetectionDir)
+
+        # Detection/acquisition dwell times - a smart-scanned tilt series
+        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
+        # for the dense detection pass, "Scan strategy: Custom" for the
+        # sparse acquisition), each with its own dwelltime - editable here
+        # in case they differ from (or aren't present in) comment.txt.
+        layout_scanSize_dwell = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell)
+        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (μs)')
+        layout_scanSize_dwell.addWidget(label_dwellTime_detection)
+        self.spinbox_dwellTime_detection = qtw.QSpinBox()
+        self.spinbox_dwellTime_detection.setFixedWidth(70)
+        self.spinbox_dwellTime_detection.setRange(1, 99999999)
+        self.spinbox_dwellTime_detection.setDisabled(True)
+        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_detection)
+        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (μs)')
+        layout_scanSize_dwell.addWidget(label_dwellTime_acquisition)
+        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
+        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
+        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
+        self.spinbox_dwellTime_acquisition.setDisabled(True)
+        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_scanSize_dwell.addStretch(1)
+
         layout_scanSize_row4 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row4)
+        layout_box_smartScan.addLayout(layout_scanSize_row4)
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
         self.button_checkSmartScanFiles.setToolTip(
             'Review the automatic per-frame detection/acquisition/pattern-file match '
@@ -392,7 +476,24 @@ class Tab_SAM2(TabBase):
         layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
         self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
         self.button_runSeg_clip.setEnabled(False)
-        
+
+        self.button_duplicateObject = qtw.QPushButton('Duplicate', self)
+        self.button_duplicateObject.setToolTip(
+            'Copy the selected object into a new row - points, tracked masks, '
+            'extracted DPs, everything - so you can branch off it (e.g. tweak the '
+            'ROI/points and re-track) without losing the original')
+        layout_sam_buttons_1.addWidget(self.button_duplicateObject)
+        self.button_duplicateObject.clicked.connect(self.duplicate_object)
+        self.button_duplicateObject.setDisabled(True)
+
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
+        self.button_fineTuneMask.setToolTip(
+            'Manually edit the selected object\'s tracked mask, frame by frame - '
+            'grow/shrink it directionally or apply edge detection to one frame')
+        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+
         self.button_stop_tr = qtw.QPushButton('Stop')
         layout_sam_buttons_2.addWidget(self.button_stop_tr)
         self.button_stop_tr.clicked.connect(self.stop_processes)
@@ -411,7 +512,9 @@ class Tab_SAM2(TabBase):
             wid.setDisabled(True)
         # Deliberately kept outside box_3ded/box_table (whose contents are
         # disabled/enabled together elsewhere) so it stays clickable
-        # regardless of tracking/segmentation/extraction state.
+        # regardless of tracking/segmentation/extraction state. Added to
+        # layout_userInput as the panel's last widget (in init_widget,
+        # right after box_3ded), directly below it with no extra gap.
         self.button_cancel = qtw.QPushButton('Cancel')
         # Matches the height of the tab's other action buttons (Extract!,
         # Save Results) rather than the shorter button_h_sml - a narrower
@@ -425,7 +528,6 @@ class Tab_SAM2(TabBase):
         self.button_cancel.setToolTip(
             'Stop the running SAM2 tracking/segmentation or 3DED extraction. '
             'Already-running background computations finish silently; their results are discarded.')
-        layout_userInput.addWidget(self.button_cancel)
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
         #%% extract 3DED
@@ -457,16 +559,16 @@ class Tab_SAM2(TabBase):
         self.spinbox_fps.setValue(5)
         self.spinbox_fps.setToolTip('Frames per second for saved video clips')
 
+        self.checkbox_autosave = qtw.QCheckBox('Autosave')
+        layout_threadNum.addWidget(self.checkbox_autosave)
+
         layout_threadNum.addSpacerItem(spacer)
 
-        # Own row (rather than sharing layout_threadNum with the CPU/FPS
-        # labels+spinboxes above) so the checkbox labels have enough room
-        # and don't get clipped by the left panel's fixed width.
+        # Own row (rather than sharing layout_threadNum with the CPU/FPS/
+        # Autosave row above) so the checkbox label has enough room and
+        # doesn't get clipped by the left panel's fixed width.
         layout_saveOptions = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_saveOptions)
-
-        self.checkbox_autosave = qtw.QCheckBox('Autosave')
-        layout_saveOptions.addWidget(self.checkbox_autosave)
 
         self.checkbox_makePets2 = qtw.QCheckBox('Make *.pts2')
         layout_saveOptions.addWidget(self.checkbox_makePets2)
@@ -475,33 +577,73 @@ class Tab_SAM2(TabBase):
 
         layout_saveOptions.addStretch()
 
-        layout_edgeDetection = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_edgeDetection)
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Only')
+        self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
+        layout_box_3ded.addWidget(self.box_edgeDetection)
+        layout_edgeDetection = qtw.QVBoxLayout()
+        self.box_edgeDetection.setLayout(layout_edgeDetection)
+
+        layout_edgeDetection_row1 = qtw.QHBoxLayout()
+        layout_edgeDetection.addLayout(layout_edgeDetection_row1)
+        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
         self.checkbox_edgeOnly.setToolTip(
             'Reduce each frame\'s SAM2 mask to just its outline (via binary erosion) '
             'before it is displayed, extracted, or saved')
-        layout_edgeDetection.addWidget(self.checkbox_edgeOnly)
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
         label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection.addWidget(label_edgeKernel)
+        layout_edgeDetection_row1.addWidget(label_edgeKernel)
         self.spinbox_edgeKernel = qtw.QSpinBox()
         self.spinbox_edgeKernel.setRange(1, 99)
         self.spinbox_edgeKernel.setValue(3)
         self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection.addWidget(self.spinbox_edgeKernel)
+        layout_edgeDetection_row1.addWidget(self.spinbox_edgeKernel)
         self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
-        layout_edgeDetection.addStretch(1)
+        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
+        self.checkbox_revertMask.setToolTip(
+            'Only applies together with Edge Detection: keep the mask\'s interior '
+            '(and, with "Directional" on, its other sides) but cut out the detected '
+            'edge band, instead of keeping only the edge band')
+        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
+        self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
+        layout_edgeDetection_row1.addStretch(1)
+
+        layout_edgeDetection_row2 = qtw.QHBoxLayout()
+        layout_edgeDetection.addLayout(layout_edgeDetection_row2)
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge band facing one direction (e.g. just the mask\'s '
+            'top edge) instead of the full outline - erosion becomes one-sided, '
+            'along the angle below')
+        layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        label_edgeDirection = qtw.QLabel('Angle (°)')
+        layout_edgeDetection_row2.addWidget(label_edgeDirection)
+        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
+        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setDecimals(1)
+        self.spinbox_edgeDirection.setSingleStep(5)
+        self.spinbox_edgeDirection.setValue(0)
+        self.spinbox_edgeDirection.setDisabled(True)
+        self.spinbox_edgeDirection.setToolTip(
+            '0° = right, increasing clockwise (90° = down/bottom edge, '
+            '180° = left, 270° = up/top edge)')
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
+        self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
+        layout_edgeDetection_row2.addStretch(1)
 
         layout_extract_button = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract_button)
+        # Natural (content-sized) width, not Expanding - lets the 3 buttons
+        # form a compact cluster centered in the row via the stretches
+        # below, instead of stretching edge-to-edge across the panel.
+        layout_extract_button.addStretch(1)
         self.button_3ded = qtw.QPushButton('Extract!')
-        self.button_3ded.setFixedSize(button_w, button_h_lrg)
+        self.button_3ded.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_3ded)
         self.button_3ded.clicked.connect(self.extract_3ded)
 
         self.button_extractCurrentFrame = qtw.QPushButton('Extract DP\n(Current Frame)')
-        self.button_extractCurrentFrame.setFixedSize(button_w, button_h_lrg)
+        self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setToolTip(
             'Compute the diffraction pattern for just the selected object at the frame the '
@@ -509,13 +651,17 @@ class Tab_SAM2(TabBase):
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
 
         self.button_save_results = qtw.QPushButton('Save Results')
-        # self.button_save_results.setFixedHeight(35)
-        self.button_save_results.setFixedSize(button_w, button_h_lrg)
+        self.button_save_results.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_save_results)
         self.button_save_results.clicked.connect(self.save_results)
-        
+        layout_extract_button.addStretch(1)
+
         self.disable_3ded_widgets(True)
-        # layout_userInput.addItem(spacer)
+        layout_userInput.addWidget(self.button_cancel)
+        # Absorbs leftover vertical space below Cancel, so the whole panel's
+        # content stays pinned to the top instead of stretching to fill a
+        # taller window.
+        layout_userInput.addStretch(1)
         #%% canvas
         self._right_widget = qtw.QWidget()
         self._splitter.addWidget(self._right_widget)
@@ -531,6 +677,12 @@ class Tab_SAM2(TabBase):
         self.ax_seg = self.figure.add_subplot(132)
         self.ax_dp = self.figure.add_subplot(133)
         self.img_zero = np.zeros((512,512), dtype='int16')
+        # One-off "Extract DP (Current Frame)" result - only shown while the
+        # slider/selection still matches the (obj_id, imgNo) it was computed
+        # for; update_canvas() clears it and falls back to the normal
+        # per-object dp display as soon as either changes. See
+        # extract_dp_current_frame()/_on_current_frame_dp().
+        self._current_frame_dp_preview = None
         self.img_display = {}
         self.img_display['nav'] = self.ax_nav.imshow(self.img_zero, cmap='gray')
         self.ax_nav.set_title('Navigation')
@@ -692,6 +844,9 @@ class Tab_SAM2(TabBase):
                   lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() - 1))
 #%% load data
     def show_dialog(self, f):
+        """Open the file/folder dialog matching whichever of the three
+        directory buttons was clicked (identified via self.sender()) and
+        fill in the corresponding line edit."""
         sender = self.sender()
         if sender == self.button_dir_navSignal:
             file_filter = "supported signals (*.zspy *.hspy);;All Files (*)"
@@ -725,6 +880,11 @@ class Tab_SAM2(TabBase):
             self.lineEdit_scanSize_x.setEnabled(True)
             self.lineEdit_scanSize_y.setEnabled(True)
 
+    def activate_detectorSize_spinboxes(self):
+        auto = self.checkbox_detectorSizeAuto.isChecked()
+        self.spinbox_detectorSize_x.setDisabled(auto)
+        self.spinbox_detectorSize_y.setDisabled(auto)
+
     def get_scan_size(self):
         """Manual scan size override, or None to fall back to the loaded
         navigation signal's own shape (the "Auto" behavior)."""
@@ -737,6 +897,21 @@ class Tab_SAM2(TabBase):
         except Exception:
             return None
 
+    def get_detector_shape(self, fn):
+        """(shape_x, shape_y) of the detector/diffraction-pattern for `fn` -
+        auto-detected from the file for formats that report it cheaply
+        (io.get_det_size opens the file lazily, no full read), or the
+        manual "Detector Size" X/Y spinboxes for .tpx3 (auto-detecting that
+        would mean fully parsing the file - eventem has no cheaper
+        metadata-only query - just to learn its shape; "Auto" here keeps
+        the previous default of 512x512)."""
+        dtype = os.path.splitext(fn)[-1]
+        if dtype == '.tpx3':
+            if self.checkbox_detectorSizeAuto.isChecked():
+                return 512, 512
+            return self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()
+        return io.get_det_size(fn)
+
     def apply_edge_mask(self, mask):
         """Reduce a single 2-D mask to just its edge/outline when "Edge
         Only" is checked (see io.erode_mask_edge) - a no-op otherwise.
@@ -747,15 +922,27 @@ class Tab_SAM2(TabBase):
         of destructively baking erosion into the stored mask (which would
         make it impossible to undo by unchecking the box again)."""
         if self.checkbox_edgeOnly.isChecked():
-            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value())
+            direction = (self.spinbox_edgeDirection.value()
+                        if self.checkbox_edgeDirectional.isChecked() else None)
+            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
+                                       revert=self.checkbox_revertMask.isChecked())
         return mask
 
     def apply_edge_mask_stack(self, mask_stack):
         """`apply_edge_mask`, applied per-frame to a (N, H, W) mask stack."""
         if self.checkbox_edgeOnly.isChecked():
             kernel = self.spinbox_edgeKernel.value()
-            return np.stack([io.erode_mask_edge(m, kernel) for m in mask_stack])
+            direction = (self.spinbox_edgeDirection.value()
+                        if self.checkbox_edgeDirectional.isChecked() else None)
+            revert = self.checkbox_revertMask.isChecked()
+            return np.stack([io.erode_mask_edge(m, kernel, direction=direction, revert=revert)
+                             for m in mask_stack])
         return mask_stack
+
+    def _on_edge_directional_toggled(self):
+        """Enable the edge-angle spinbox only while "Directional" is checked, then redraw."""
+        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
+        self.update_canvas()
 
     def browse_metadata_file(self):
         start_dir = self.lineEdit_dir_4d.text()
@@ -859,10 +1046,14 @@ class Tab_SAM2(TabBase):
     def activate_smartScan_widgets(self):
         enable = self.checkbox_smartScan.isChecked()
         for wid in (self.lineEdit_patternDir, self.button_browsePatternDir,
-                    self.button_checkSmartScanFiles):
+                    self.lineEdit_detectionDir, self.button_browseDetectionDir,
+                    self.button_checkSmartScanFiles, self.spinbox_dwellTime_detection,
+                    self.spinbox_dwellTime_acquisition):
             wid.setEnabled(enable)
 
     def browse_pattern_dir(self):
+        """Browse for the smart-scan pattern-files folder; picking a new one
+        invalidates the cached file match (_smart_scan_rows)."""
         start_dir = self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
         path = qtw.QFileDialog.getExistingDirectory(self, "Select Pattern Files Folder", start_dir)
         if path:
@@ -871,9 +1062,28 @@ class Tab_SAM2(TabBase):
             self.label_smartScanSummary.setText('')
 
     def get_pattern_dir(self):
+        """Pattern-files directory override, or the 4D signals folder if unset."""
         return self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
 
+    def browse_detection_dir(self):
+        """Browse for the smart-scan detection-files folder; picking a new one
+        invalidates the cached file match (_smart_scan_rows)."""
+        start_dir = self.lineEdit_detectionDir.text() or self.lineEdit_dir_4d.text()
+        path = qtw.QFileDialog.getExistingDirectory(self, "Select Detection Files Folder", start_dir)
+        if path:
+            self.lineEdit_detectionDir.setText(path)
+            self._smart_scan_rows = None
+            self.label_smartScanSummary.setText('')
+
+    def get_detection_dir(self):
+        """Detection-files directory override, or None if unset (unlike
+        get_pattern_dir, this does not fall back to the 4D signals folder)."""
+        return self.lineEdit_detectionDir.text() or None
+
     def open_smart_scan_check_dialog(self):
+        """Open SmartScanCheckDialog to review/edit the per-angle detection/
+        acquisition/pattern file match for the 4D signals folder; the
+        confirmed rows are cached in _smart_scan_rows."""
         directory = self.lineEdit_dir_4d.text()
         if not os.path.isdir(directory):
             qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
@@ -889,6 +1099,7 @@ class Tab_SAM2(TabBase):
                 'data only.')
             return
         dlg = SmartScanCheckDialog(self, directory, dtype, pattern_dir=self.get_pattern_dir(),
+                                   detection_dir=self.get_detection_dir(),
                                    rows=self._smart_scan_rows)
         if dlg.exec_() == qtw.QDialog.Accepted:
             self._smart_scan_rows = dlg.rows
@@ -937,6 +1148,8 @@ class Tab_SAM2(TabBase):
         self.spinner.start()
 
     def load_navSignal(self):
+        """Validate the nav-signal path, reset any existing analysis, and load
+        it (hs.load()) in a background worker; _on_navSignal_loaded applies the result."""
         fn = self.lineEdit_dir_navSignal.text()
         if not os.path.isfile(fn):
             self.logger.error('Cannot find navigation signal at: %s', fn)
@@ -956,6 +1169,8 @@ class Tab_SAM2(TabBase):
         self.threadpool.start(worker)
 
     def _on_navSignal_loaded(self, result, index):
+        """WorkerThread_General callback for load_navSignal(): apply the
+        loaded signal and its 8-bit render to the UI."""
         s, imgs = result
         self.spinner.stop()
         self.fn_navSignal = self.lineEdit_dir_navSignal.text()
@@ -1005,6 +1220,8 @@ class Tab_SAM2(TabBase):
         self.slider_imgNo.setRange(0, len(self.imgs) - 1)
         self.button_runSeg_clip.setEnabled(True)
         self.button_runSeg_img.setEnabled(True)
+        self.button_duplicateObject.setEnabled(True)
+        self.button_fineTuneMask.setEnabled(True)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
         # Scale fields may already hold a value from a previous session/load -
@@ -1034,6 +1251,8 @@ class Tab_SAM2(TabBase):
                                         on_done=self._on_nav_signal_rescaled)
 
     def _on_nav_signal_rescaled(self, s_8bit):
+        """ContrastScalingBox.rescale_async callback: apply the fully-rescaled
+        8-bit stack once the background recompute finishes."""
         self.imgs_8bit = s_8bit.data
         self.img_display['nav'].set_clim(vmin=self.imgs_8bit.min(), vmax=self.imgs_8bit.max())
         self.update_canvas()
@@ -1085,6 +1304,9 @@ class Tab_SAM2(TabBase):
         self.threadpool.start(worker)
 
     def _load_saved_analysis_worker(self, path, fn_nav):
+        """Background-thread body for load_saved_analysis(): load the nav
+        signal and every object's saved points/rois/mask/dp from `path`,
+        returning them for _on_saved_analysis_loaded to apply on the main thread."""
         s = hs.load(fn_nav)
         imgs = s.data.copy()
 
@@ -1122,6 +1344,8 @@ class Tab_SAM2(TabBase):
         return s, imgs, objects, path, fn_nav
 
     def _on_saved_analysis_loaded(self, result, index):
+        """WorkerThread_General callback for load_saved_analysis(): apply the
+        loaded signal and repopulate df_obj/tree_objects from each restored object."""
         s, imgs, objects, path, fn_nav = result
         self.spinner.stop()
         self.fn_navSignal = fn_nav
@@ -1151,7 +1375,9 @@ class Tab_SAM2(TabBase):
         self.logger.info('Loaded saved analysis from %s (%d object(s)).', path, len(objects))
 
     def create_main_dataframe(self):
-        self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end', 
+        """(Re)create the empty per-object dataframe (df_obj) with its column
+        schema, and reset the added-points history."""
+        self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end',
                         'single_mask', 'mask', 'rois', 'dp']
         self.df_obj = pd.DataFrame([], columns=self.cols_df)
         self.df_obj = self.df_obj.astype({'use': int, 'idx': int,'frame_idx': object, 
@@ -1161,6 +1387,8 @@ class Tab_SAM2(TabBase):
         self.initiate_adding_points()
         
     def reset_data(self):
+        """Clear all objects, points, and plotted markers, and drop any
+        cached PETS2 params - called before loading a new signal or saved analysis."""
         for p in self.scatter_plots:
             p.remove()
         self.scatter_plots.clear()
@@ -1177,28 +1405,33 @@ class Tab_SAM2(TabBase):
         self.checkbox_makePets2.setChecked(False)
     
     def initiate_adding_points(self):
+        """Reset the point-addition history (df_added_points) used by
+        delete_last_point() to undo the most recent click."""
         cols = ['new', 'idx', 'point', 'frame']
         self.df_added_points = pd.DataFrame(data=[], columns=cols)
         self.df_added_points = self.df_added_points.astype({'point': object})
     
     def delete_tree_item(self, col:str):
+        """Remove the tree row whose "Idx" column matches `col` (an object id
+        string, despite the parameter name)."""
         for i in reversed(range(self.tree_objects.topLevelItemCount())):
             item = self.tree_objects.topLevelItem(i)
             if item.text(1) == col:
                 self.tree_objects.takeTopLevelItem(i)
 #%% object tree and funcs
     def add_item_tree(self, idx, fr_idx=[0], end=None, use=1):
+        """Add a row to tree_objects for object `idx`: use checkbox, idx/frame
+        labels, an end-frame spinbox, tracked/extracted status icons, and a
+        delete button; selects the new row."""
         cols = {col: i for i,col in enumerate(self.cols_tree)}
         item = qtw.QTreeWidgetItem()
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setCheckState(cols['use'], Qt.Checked if use else Qt.Unchecked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['fr_idx'], f"{fr_idx}")
-        # set as selected item
         self.tree_objects.itemChanged.connect(self.on_item_check_changed)
         self.tree_objects.addTopLevelItem(item)
 
-        # end frame
         spinbox = qtw.QSpinBox()
         spinbox.setRange(0, len(self.imgs))
         spinbox.setValue(end if end is not None else len(self.imgs))
@@ -1208,16 +1441,13 @@ class Tab_SAM2(TabBase):
         
         # self.tree_objects.addTopLevelItem(item)
         
-        # tracked
         cancel_icon = self.style().standardIcon(self.style().SP_DialogCancelButton)
         item.setIcon(cols['trk'], cancel_icon)
         item.setData(cols['trk'], Qt.UserRole, False)  # Store status boolean (False = not checked)
-        
-        # extracted
+
         item.setIcon(cols['ext'], cancel_icon)
         item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
-        
-        # delete
+
         delete_button = qtw.QPushButton()
         delete_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_TrashIcon))
         delete_button.setFixedSize(30, 30)
@@ -1243,7 +1473,6 @@ class Tab_SAM2(TabBase):
         container.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
         self.tree_objects.setItemWidget(item, cols['del'], container)
 
-        # Later: select it
         self.tree_objects.setCurrentItem(item)
         item.setSelected(True)  # optional: highlight
 
@@ -1260,7 +1489,72 @@ class Tab_SAM2(TabBase):
     
     def on_spinboxEnd_changed(self, idx, value):
         self.df_obj.at[idx, 'end'] = value
-    
+
+    def duplicate_object(self):
+        """Clone the selected object into a new row - deep-copying every
+        column (points, tracked masks, extracted DPs, ROIs) rather than
+        just the object reference, so editing the duplicate (e.g. adding a
+        point and re-tracking) can never silently mutate the original too.
+        If the original was already tracked/extracted, the duplicate starts
+        out fully tracked/extracted as well, with its "Tracked"/"Extracted"
+        tree icons set to match - re-running Track/Extract! isn't needed
+        unless the duplicate is then changed."""
+        selected_items = self.tree_objects.selectedItems()
+        if not selected_items:
+            qtw.QMessageBox.warning(self, 'No Object Selected',
+                'Select an object in the list to duplicate first.')
+            return
+        old_idx = int(selected_items[0].text(1))
+
+        new_idx = 1
+        while new_idx in self.df_obj.index:
+            new_idx += 1
+
+        # deepcopy() on a whole pandas Series does NOT deep-copy
+        # object-dtype cell contents (a well-known pandas gotcha - it only
+        # copies the references) - each column has to be deep-copied
+        # individually instead, or the "duplicate" would still share the
+        # exact same mask/dp arrays as the original underneath.
+        row = self.df_obj.loc[old_idx]
+        self.df_obj.loc[new_idx] = [deepcopy(row[col]) for col in self.cols_df]
+        self.df_obj.at[new_idx, 'idx'] = new_idx
+
+        fr_idx = deepcopy(self.df_obj.at[old_idx, 'frame_idx'])
+        end = int(self.df_obj.at[old_idx, 'end'])
+        use = int(self.df_obj.at[old_idx, 'use'])
+        self.add_item_tree(new_idx, fr_idx, end=end, use=use)
+
+        row_index = self.tree_objects.topLevelItemCount() - 1
+        if not np.all(pd.isna(self.df_obj.at[new_idx, 'mask'])):
+            self.toggle_tree_icon(row_index, 'trk', True)
+        if not np.all(pd.isna(self.df_obj.at[new_idx, 'dp'])):
+            self.toggle_tree_icon(row_index, 'ext', True)
+
+        self.logger.info('Duplicated object %d as new object %d.', old_idx, new_idx)
+        self.update_canvas()
+
+    def open_fine_tune_mask_dialog(self):
+        """Open MaskEditDialog on the selected object's tracked mask stack,
+        seeded at the frame the slider is currently on; writes the edited
+        stack back on Save & Close."""
+        selected_items = self.tree_objects.selectedItems()
+        if not selected_items:
+            qtw.QMessageBox.warning(self, 'No Object Selected',
+                'Select an object in the list to fine-tune its mask first.')
+            return
+        obj_id = int(selected_items[0].text(1))
+        mask_stack = self.df_obj.at[obj_id, 'mask']
+        if np.all(pd.isna(mask_stack)):
+            qtw.QMessageBox.warning(self, 'Not Tracked Yet',
+                'This object has no tracked mask yet - run "Track" or "Seg Image" first.')
+            return
+        dialog = MaskEditDialog(self, mask_stack, bg_stack=self.imgs_8bit,
+                                start_frame=self.slider_imgNo.value(), logger=self.logger)
+        if dialog.exec_() == qtw.QDialog.Accepted:
+            self.df_obj.at[obj_id, 'mask'] = dialog.get_mask_stack()
+            self.logger.info('Fine-tuned mask saved for object %d.', obj_id)
+            self.update_canvas()
+
     def on_item_check_changed(self, item, column):
         use_col = self.cols_tree.index('use')  # or `cols['use']` if accessible
         idx_col = self.cols_tree.index('idx')
@@ -1271,6 +1565,11 @@ class Tab_SAM2(TabBase):
             self.df_obj.at[idx, 'use'] = 0
 #%% canvas
     def on_click(self, event):
+        """Canvas mouse-click handler: middle-click deletes the last added
+        point; Ctrl+click on the DP plot (only while auto-centering is off)
+        sets a manual diffraction-pattern center; Ctrl+click on the nav image
+        adds a positive (left) or negative (right) point to the selected
+        object, starting a new object unless Shift is held."""
         if event.button == 2: # middle click:
             self.delete_last_point()
             return
@@ -1346,6 +1645,8 @@ class Tab_SAM2(TabBase):
         self.canvas.draw_idle()
 
     def delete_last_point(self):
+        """Undo the most recently added point (see on_click): drops the whole
+        object if it was a new one, otherwise just pops its last point/label/frame."""
         try:
             i = self.df_added_points.index[-1]
         except IndexError: # no point to delete
@@ -1369,6 +1670,10 @@ class Tab_SAM2(TabBase):
         self.slider_imgNo.setValue(num)
     
     def update_canvas(self, imgNo=None, obj_id=None):
+        """Redraw the nav/segmentation/DP panels for `imgNo` (default: slider
+        value) and `obj_id` (default: selected object): shows the nav frame,
+        the object's mask (tracked or single-frame) and diffraction pattern
+        if present, then draws the canvas."""
         if imgNo is None:
             imgNo = self.slider_imgNo.value()
         if obj_id is None:
@@ -1405,10 +1710,21 @@ class Tab_SAM2(TabBase):
                     self.img_display['seg'].set_data(self.img_zero)
             
             # diffraction pattern
-            if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'dp']))):
-                try:
-                    self.plot_dp(obj_id=obj_id, imgNo=imgNo)
-                except Exception:
+            preview = self._current_frame_dp_preview
+            if preview is not None and preview['obj_id'] == obj_id and preview['imgNo'] == imgNo:
+                dp = preview['dp']
+                self.img_display['dp'].set_data(dp)
+                self.img_display['dp'].set_clim(vmin=dp.min(), vmax=dp.max())
+                shape_x, shape_y = dp.shape
+                self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+            else:
+                self._current_frame_dp_preview = None
+                if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'dp']))):
+                    try:
+                        self.plot_dp(obj_id=obj_id, imgNo=imgNo)
+                    except Exception:
+                        self.img_display['dp'].set_data(self.img_zero)
+                else:
                     self.img_display['dp'].set_data(self.img_zero)
 
         if not self._layout_frozen:
@@ -1422,6 +1738,9 @@ class Tab_SAM2(TabBase):
             self.canvas.draw_idle()
 
     def add_scalebar(self):
+        """Redraw the real-space scale bar (nav/seg axes) and the
+        reciprocal-space calibration rings (DP axis), re-finding the
+        auto-center first if enabled."""
         scale_real = self.lineEdit_scale_real.text()
         try:
             scale_real = float(scale_real)
@@ -1459,6 +1778,8 @@ class Tab_SAM2(TabBase):
         self.canvas.draw()
     
     def show_mask(self, mask, cmap_idx=0):
+        """Render `mask` as a translucent RGBA overlay on the segmentation
+        axis, colored by `cmap_idx` (tab10)."""
         cmap = plt.get_cmap("tab10")
         color = np.array([*cmap(cmap_idx)[:3], 0.6])
         h, w = mask.shape[-2:]
@@ -1475,6 +1796,8 @@ class Tab_SAM2(TabBase):
         self.scatter_plots.clear()
         
     def plot_points(self, imgNo, obj_id):
+        """Scatter object `obj_id`'s annotated points on frame `imgNo` onto
+        the nav axis (green = positive, red = negative)."""
         if imgNo not in self.df_obj.loc[obj_id, 'frame_idx']: # no point for this image and object id
             return
         frames = np.array(self.df_obj.loc[obj_id, 'frame_idx'])
@@ -1508,7 +1831,6 @@ class Tab_SAM2(TabBase):
         shifted by the object's earliest frame_idx so objects that don't start at frame 0
         are handled correctly.
         """
-        # Clear previous buttons
         while self._stack_buttons_layout.count():
             item = self._stack_buttons_layout.takeAt(0)
             w = item.widget()
@@ -1545,6 +1867,12 @@ class Tab_SAM2(TabBase):
             self.label_stack.setText('')
 
     def initiate_video_segmentation(self):
+        """Kick off SAM2 tracking for every "used" object: split each
+        object's frame range into stack_num-sized chunks, export each
+        chunk's frames as JPGs in the background, and record the per-chunk
+        points/labels needed to seed segmentation (df_toSegment).
+        run_video_segmentation() launches the actual SAM2 subprocesses once
+        JPG export finishes."""
         # self.button_runSeg_img.setDisabled(True)
         self.button_runSeg_clip.setDisabled(True)
         self._track_tic = perf_counter()
@@ -1552,7 +1880,6 @@ class Tab_SAM2(TabBase):
         self._cancelling = False
         self.button_cancel.setEnabled(True)
 
-        # jpg path
         pathSave = self.lineEdit_dir_save.text()
         if not (os.path.isdir(pathSave)):
             os.mkdir(pathSave)
@@ -1571,7 +1898,6 @@ class Tab_SAM2(TabBase):
         self.logger.info('Starting SAM2 tracking for %d object(s) (stack size %d frames)...',
                           len(df), self.stack_num)
 
-        # count the total number of workers for creating jpg
         self.total_threads_jpg = 0
         for idx in df.index:
             st = min(df.loc[idx, 'frame_idx'])
@@ -1650,6 +1976,8 @@ class Tab_SAM2(TabBase):
             self.run_video_segmentation()
         
     def run_video_segmentation(self):
+         """Launch the first stack's SAM2 subprocess; handle_finished_sam()
+         chains the rest sequentially as each one finishes."""
          self.running_processes_sam = {}
          self.running_processes_sam_total = len(self.df_toSegment.index)
          idx = self.df_toSegment.index.sort_values()[0]
@@ -1657,6 +1985,8 @@ class Tab_SAM2(TabBase):
          self.launch_next_video_seg(path, idx)
                 
     def launch_next_video_seg(self, path, idx):
+        """Start one stack's SAM2 video-tracking subprocess for `idx` and
+        wire up its signal handlers."""
         self.logger.info("Next project: %s %s", idx, path)
         program, arguments = worker_command('sam', ['video', path, str(idx)])
         process_sam = QProcess(self)
@@ -1706,6 +2036,10 @@ class Tab_SAM2(TabBase):
 # =============================================================================
 
     def handle_finished_sam(self, process, idx, exit_code, exit_status):
+        """SAM2 video-tracking subprocess completion handler: load the
+        stack's output mask, launch the next queued stack if any remain, and
+        once every stack for every object has returned, stitch each object's
+        per-stack masks into its full-length mask array and mark it tracked."""
         if self._cancelling:
             return
         self.logger.info("[%s] Process finished with exit code %s, status %s",
@@ -1756,7 +2090,6 @@ class Tab_SAM2(TabBase):
                         # SAM2 result. See apply_edge_mask()/apply_edge_mask_stack().
                         self.df_obj.at[i_ref, 'mask'][
                             start : start + frame_num] = df.loc[idx, 'mask']
-                    # toggling tracking icons
                     row_index = self.df_obj.index.get_loc(i_ref)
                     self.toggle_tree_icon(row_index, 'trk', True)
 
@@ -1860,6 +2193,9 @@ class Tab_SAM2(TabBase):
                            obj_id, error)
 
     def handle_finished_image_sam(self, process, obj_id, imgNo, exit_code, exit_status):
+        """SAM2 single-image subprocess completion handler: load the
+        resulting mask into `single_mask` at `imgNo` for `obj_id` and
+        refresh the canvas."""
         self.running_processes_sam.pop(f'img_{obj_id}_{imgNo}', None)
         self.button_runSeg_img.setEnabled(True)
         self.logger.info(
@@ -1895,6 +2231,9 @@ class Tab_SAM2(TabBase):
                 wid.setEnabled(state)
     
     def make_rois(self):
+        """Compute a bounding-box ROI (x, y, w, h) per frame from each
+        object's tracked mask, storing them in df_obj['rois']; frames with no
+        True pixels get a (0, 0, 0, 0) placeholder."""
         for obj_id in self.df_obj.index:
             rois = []
             for i_img, mask in enumerate(self.df_obj.loc[obj_id, 'mask']):
@@ -1917,11 +2256,14 @@ class Tab_SAM2(TabBase):
             self.df_obj.at[obj_id, 'rois'] = rois
     
     def extract_3ded(self):
+        """Kick off background 3DED extraction for every "used" object:
+        resolve the 4D signal files (plain folder listing, or the smart-scan
+        match), build one extraction task per (object, frame), and launch
+        them via launch_initial_tasks()."""
         self.make_rois()
         
         path_4d = self.lineEdit_dir_4d.text()
-        # check path
-        if path_4d == '': # no entry in 4D signals path
+        if path_4d == '':
             self.logger.error('3DED extraction cancelled: no 4D signals path entered.')
             qtw.QMessageBox.critical(self, 'No 4D path', 'Please enter a valid path for 4D signals.')
             return
@@ -1945,8 +2287,7 @@ class Tab_SAM2(TabBase):
             qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
             return
         dtype = os.path.splitext(fns_4d[0])[1]
-        
-        # check if num of files with num of images
+
         if len(self.imgs) != len(fns_4d):
             self.logger.warning(
                 'Number of 4D signal files (%d) does not match the number of '
@@ -1956,11 +2297,7 @@ class Tab_SAM2(TabBase):
             if reply == qtw.QMessageBox.No:
                 self.logger.info('3DED extraction cancelled by user after mismatch warning.')
                 return
-        # set detector size for tpx3
-        if dtype in ['.tpx3', '.hdf5']: # TODO not good
-            shape_d_x, shape_d_y = 512, 512
-        else:
-            shape_d_x, shape_d_y = io.get_det_size(fns_4d[0])
+        shape_d_x, shape_d_y = self.get_detector_shape(fns_4d[0])
         scanSize = self.get_scan_size()
         if scanSize is None:  # "Auto": fall back to the loaded nav signal's own shape
             scanSize = tuple(self.imgs.shape[1:])
@@ -2085,14 +2422,23 @@ class Tab_SAM2(TabBase):
         self.threadpool.start(worker)
 
     def _on_current_frame_dp(self, dp, obj_id, imgNo):
+        """WorkerThread_General callback for extract_dp_current_frame(): show
+        the one-off DP via update_canvas(), then re-run auto-centering."""
         self.button_extractCurrentFrame.setEnabled(True)
         if hasattr(dp, 'compute'):
             dp = dp.compute()
-        self.img_display['dp'].set_data(dp)
-        self.img_display['dp'].set_clim(vmin=dp.min(), vmax=dp.max())
-        shape_x, shape_y = dp.shape
-        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-        self.canvas.draw_idle()
+        # Routed through update_canvas() (rather than drawn directly here)
+        # so it's shown/cleared the exact same way as every other frame -
+        # moving the slider (or changing the object selection) away from
+        # (obj_id, imgNo) then correctly reverts to whatever update_canvas
+        # would normally show, instead of this one-off result staying
+        # plotted indefinitely.
+        self._current_frame_dp_preview = {'obj_id': obj_id, 'imgNo': imgNo, 'dp': dp}
+        self.update_canvas(imgNo=imgNo, obj_id=obj_id)
+        # This is freshly-computed data the auto-centering circles have
+        # never seen - re-run it now if enabled, same as after a full
+        # "Extract!" (see handle_finished_3ded's identical pair of calls).
+        self.add_scalebar()
         self.logger.info('Current-frame DP extraction complete (object %d, frame %d).',
                          obj_id, imgNo)
 
@@ -2120,6 +2466,8 @@ class Tab_SAM2(TabBase):
             self.launch_next_task()
     
     def launch_next_task(self):
+        """Pop the next queued extraction task (if under max_processes) and
+        launch it as an extract_frame subprocess."""
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
     
@@ -2167,6 +2515,8 @@ class Tab_SAM2(TabBase):
         self._stderr_buffer.log_info(process, self.logger, 'Worker')
 
     def handle_output_3ded(self, process):
+        """Receive one extract_frame subprocess's stdout (a base64-pickled
+        (image, "idx,i_fr") tuple) and store the extracted DP into df_obj."""
         raw_output = process.readAllStandardOutput().data().decode().strip()
         try:
             result_array = pickle.loads(base64.b64decode(raw_output))
@@ -2186,6 +2536,9 @@ class Tab_SAM2(TabBase):
         self.df_obj.at[idx, 'dp'][i_fr] = img
         
     def handle_finished_3ded(self, process, idx):
+        """extract_frame subprocess completion handler: advance the progress
+        bar, and once every task has returned, clean up the temp dir, mark
+        all objects as extracted, refresh the canvas, and autosave if enabled."""
         if process in self.running_processes:
             self.running_processes.remove(process)
         _ = self.process_sam_task_map.pop(process, None)
@@ -2193,7 +2546,6 @@ class Tab_SAM2(TabBase):
         if self._cancelling:
             return
 
-        # progress bar update
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
         
@@ -2237,6 +2589,9 @@ class Tab_SAM2(TabBase):
     
 #%% Save Data
     def on_makePets2_toggled(self, state):
+        """When "Make *.pts2" is checked (unchecking is a no-op here), open
+        the PETS2 params dialog to collect the values needed to write a
+        .pts2 project file on save."""
         if state != Qt.Checked:
             return
         # Opening a modal dialog synchronously from within the checkbox's own
@@ -2249,6 +2604,9 @@ class Tab_SAM2(TabBase):
         QTimer.singleShot(0, self._open_pets2_dialog)
 
     def _open_pets2_dialog(self):
+        """Open Pets2ParamsDialog pre-filled with voltage/exposure/pixel-size
+        read from the current metadata and UI fields; unchecks "Make *.pts2"
+        again if the user cancels."""
         voltage_kv = None
         try:
             path_main = self.metadata_path_override or self.lineEdit_dir_4d.text()
@@ -2270,6 +2628,7 @@ class Tab_SAM2(TabBase):
             self.checkbox_makePets2.setChecked(False)
 
     def save_results(self):
+        """Save results via _save_results_impl, logging success/failure with elapsed time."""
         tic = perf_counter()
         try:
             self._save_results_impl()
@@ -2283,6 +2642,11 @@ class Tab_SAM2(TabBase):
             io.format_duration_hms(perf_counter() - tic))
 
     def _save_results_impl(self):
+        """Write a timestamped analysis folder: per-object tracking data
+        (points/labels/ROIs/masks), extracted diffraction patterns (as .npy
+        and .hspy, plus an optional PETS2 project file), and
+        background-rendered preview clips for each object's DP series and
+        tracked mask."""
         path_save = self.lineEdit_dir_save.text()
         if not os.path.isdir(path_save):
             os.mkdir(path_save)
@@ -2307,7 +2671,10 @@ class Tab_SAM2(TabBase):
             df = self.df_obj.loc[idx, ['use', 'idx', 'frame_idx', 'points', 'labels',
                                        'end']]
             df['edge_detection'] = [('enabled', self.checkbox_edgeOnly.isChecked()),
-                                    ('kernel_size', self.spinbox_edgeKernel.value())]
+                                    ('kernel_size', self.spinbox_edgeKernel.value()),
+                                    ('directional', self.checkbox_edgeDirectional.isChecked()),
+                                    ('direction_deg', self.spinbox_edgeDirection.value()),
+                                    ('revert', self.checkbox_revertMask.isChecked())]
             df.to_json(os.path.join(path_save_objID, f'roi No {idx}.json'), orient='index', indent=4)
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
                 np.save(os.path.join(path_save_objID, 'rois.npy'),

@@ -23,6 +23,11 @@ class ThresholdDialog(qtw.QDialog):
     its own small window instead."""
 
     def __init__(self, parent, img, fn):
+        """
+        Args:
+            img: Navigation-image array to display and threshold.
+            fn: Source file path, used only for the window title (basename).
+        """
         super().__init__(parent)
         self.setWindowTitle('Summed DP from Threshold')
         self.resize(600, 650)
@@ -86,6 +91,8 @@ class ThresholdDialog(qtw.QDialog):
         self.update_preview()
 
     def update_preview(self):
+        """Recompute the mask from the current threshold/blur/deviation
+        settings and refresh the overlay on the displayed image."""
         method = self.combo_threshMethod.currentText()
         threshold_funcs = {'otsu': threshold_otsu, 'li': threshold_li, 'yen': threshold_yen}
         dev = self.slider_threshDev.value()
@@ -95,7 +102,7 @@ class ThresholdDialog(qtw.QDialog):
         # int64 a summed navigation image often comes back as) - casting to
         # float32 keeps this working regardless of the source format.
         img_blur = io.gaussian_blur(self.img.astype(np.float32), blur_kernel)
-        thresh = threshold_funcs[method](img_blur) * (dev / 100)
+        thresh = io.threshold_ignore_zero(threshold_funcs[method], img_blur) * (dev / 100)
         self.mask = img_blur >= thresh
 
         color = np.array([*mcolors.to_rgb('tab:orange'), 0.45])
@@ -104,6 +111,8 @@ class ThresholdDialog(qtw.QDialog):
         self.canvas.draw_idle()
 
     def conditional_accept(self):
+        """Accept the dialog unless the current mask is empty, in which case
+        warn instead of closing."""
         if self.mask is None or not self.mask.any():
             qtw.QMessageBox.warning(self, 'Empty Mask',
                 'The current threshold selects no scan positions - adjust the '

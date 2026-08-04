@@ -135,6 +135,8 @@ class Tab_Converter(qtw.QWidget):
         self.progress_bar.setRange(0, 100)
     #%% functions
     def show_dialog(self, f):
+        """Slot for both directory-picker buttons; distinguishes them via
+        self.sender() and fills the corresponding line edit."""
         sender = self.sender()
         if sender == self.button_dir:
             file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.tpx3);;All Files (*)"
@@ -149,14 +151,14 @@ class Tab_Converter(qtw.QWidget):
                 self.lineEdit_dir_save.setText(path)
                 
     def populate_file_list(self): # TODO
+        """List files with a supported extension found in the signals
+        directory into the file list widget, then refresh the save directory."""
         ext_filter = ['.tpx3', '.hdf5', '.zspy', '.hspy', '.pmf']
         directory = self.lineEdit_dir_signal.text()
         # print(directory)
-        # Clear the current list
         if os.path.isdir(directory):
             self.file_list_widget.clear()
-            
-            # List all files in the directory
+
             for f in os.listdir(directory):
                 if os.path.splitext(f)[1] in ext_filter:
                     self.file_list_widget.addItem(f)
@@ -164,6 +166,9 @@ class Tab_Converter(qtw.QWidget):
             self.set_save_directory()
 
     def convert_datasets(self):
+        """Read conversion parameters from the UI, build the per-file
+        argument list, and dispatch tpx3-to-signal conversion across a
+        multiprocessing pool."""
         path_from = self.lineEdit_dir_signal.text()
         path_to = self.lineEdit_dir_save.text()
         det_size = int(self.combo_detSize.currentText())
@@ -208,16 +213,20 @@ class Tab_Converter(qtw.QWidget):
                              error_callback=self._on_convert_error)
 
     def _on_convert_success(self, results):
+        """Pool.map_async success callback: log completion time and file count."""
         duration = perf_counter() - self._tic_convert
         self.logger.info('tpx3 conversion completed successfully for %d file(s) in %s.',
                           len(results), format_duration_hms(duration))
 
     def _on_convert_error(self, exc):
+        """Pool.map_async error callback: log the failure and elapsed time."""
         duration = perf_counter() - self._tic_convert
         self.logger.error('tpx3 conversion failed after %s: %s', format_duration_hms(duration), exc)
 
     def process_file(self, in_file, out_file, scan_size, bitdepth=8, chunksize=8,
                      det_size=512, det_bin=1, scan_bin=1, compression_factor=4, counter=0):
+        """Convert one tpx3 file to `out_file` via eventem's FourD8/16/32
+        pipeline (selected by `bitdepth`)."""
         # Runs inside a multiprocessing.Pool worker process, not the main
         # process, so self.logger (backed by an open file handle) can't
         # safely be used here; kept as print() for that reason.
@@ -231,23 +240,24 @@ class Tab_Converter(qtw.QWidget):
             FourD = pyLP.FourD16
         elif bitdepth == 32:
             FourD = pyLP.FourD32
-        fourD = FourD(output_filename = out_file,repetitions = 1, bitdepth=bitdepth, compression_factor=compression_factor) # create a new instance of the FourD class with the output file name
-        fourD.set_file(in_file) # set the input file
+        fourD = FourD(output_filename = out_file,repetitions = 1, bitdepth=bitdepth, compression_factor=compression_factor)
+        fourD.set_file(in_file)
         fourD.detector_size = det_size
-        fourD.det_bin = det_bin 
-        fourD.chunksize = chunksize 
+        fourD.det_bin = det_bin
+        fourD.chunksize = chunksize
         fourD.nx = scan_size_x
         fourD.ny = scan_size_y
-        fourD.allocate_chunk() # allocate the memory for the 4D array
-        fourD.init_4D_file() # initialize the hdf5 file writing
-        fourD.run() # run the processing
-        fourD.save_dose_image() # save the dose image
+        fourD.allocate_chunk()
+        fourD.init_4D_file()
+        fourD.run()
+        fourD.save_dose_image()
         return 'DONE'
-    
+
     def onFinished(self, message):
         self.logger.info(message)
-    
+
     def update_progressbar(self, result):
+        """Update the progress bar from a (completed, total) `result` tuple."""
         no, total = result
         value = no / total * 100
         value = int(value)
@@ -275,6 +285,8 @@ class WorkerThread_processing(QRunnable):
 
     def __init__(self, path_tpx3, path_save, N_processes=3, det_size=512,
                  bitdepth=8, scan_size=(512,512)):
+        """Build the per-file conversion argument list for every tpx3 file
+        found under `path_tpx3`."""
         super(WorkerThread_processing, self).__init__()
         self.logger = get_tab_logger('Tab_Converter')
         self.logger.info('pass_1')
@@ -306,6 +318,8 @@ class WorkerThread_processing(QRunnable):
 
 
     def run(self):
+        """Run `process_file` for every file in `self.args` across a
+        multiprocessing Pool, blocking until all complete."""
         self.logger.info('pass_2')
         # l = len(self.fns)
         pool = Pool(self.N_processes)
@@ -317,6 +331,8 @@ class WorkerThread_processing(QRunnable):
 
     def process_file(self, in_file, out_file, scan_size, bitdepth=8, chunksize=8,
                      det_size=512, det_bin=1, scan_bin=1, compression_factor=4, counter=0):
+        """Convert one tpx3 file to `out_file` via eventem's FourD8/16/32
+        pipeline (selected by `bitdepth`)."""
         # Runs inside a multiprocessing.Pool worker process, not the main
         # process, so self.logger (backed by an open file handle) can't
         # safely be used here; kept as print() for that reason.
@@ -330,17 +346,17 @@ class WorkerThread_processing(QRunnable):
             FourD = pyLP.FourD16
         elif bitdepth == 32:
             FourD = pyLP.FourD32
-        fourD = FourD(output_filename = out_file,repetitions = 1, bitdepth=bitdepth, compression_factor=compression_factor) # create a new instance of the FourD class with the output file name
-        fourD.set_file(in_file) # set the input file
+        fourD = FourD(output_filename = out_file,repetitions = 1, bitdepth=bitdepth, compression_factor=compression_factor)
+        fourD.set_file(in_file)
         fourD.detector_size = det_size
-        fourD.det_bin = det_bin 
-        fourD.chunksize = chunksize 
+        fourD.det_bin = det_bin
+        fourD.chunksize = chunksize
         fourD.nx = scan_size_x
         fourD.ny = scan_size_y
-        fourD.allocate_chunk() # allocate the memory for the 4D array
-        fourD.init_4D_file() # initialize the hdf5 file writing
-        fourD.run() # run the processing
-        fourD.save_dose_image() # save the dose image
+        fourD.allocate_chunk()
+        fourD.init_4D_file()
+        fourD.run()
+        fourD.save_dose_image()
 
 class Communicator(QObject):
     finished = pyqtSignal(str)

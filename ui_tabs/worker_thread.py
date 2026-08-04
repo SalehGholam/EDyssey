@@ -25,6 +25,9 @@ class WorkerThread_General(QRunnable):
         self.is_running = True
     
     def run(self):
+        """Execute `self.func`, emitting `results`/`error` then `finished`
+        via `signals` (or `stopped` instead, if `stop()` was called before
+        this ran)."""
         if self.is_running:
             try:
                 self.result = self.func(*self.args, **self.kwargs)
@@ -45,15 +48,17 @@ class WorkerThread_General(QRunnable):
         self.signals.finished.emit()
 
     def stop(self):
+        """Mark the task as not running; only prevents `run()` from
+        executing `func` if called before `run()` starts - can't interrupt
+        `func` once it's already in progress."""
         self.is_running = False
 #%%
-# Step 1: Create a Worker class that inherits from QRunnable
 class WorkerSignals(QObject):
     # Define custom signals (for communicating between thread and GUI)
-    finished = pyqtSignal()  # Task is done
+    finished = pyqtSignal()
     stopped = pyqtSignal()
     # results = pyqtSignal(object, int)  # Task returns a result
-    results = pyqtSignal(object, object)  # Task returns a result
+    results = pyqtSignal(object, object)
     error = pyqtSignal(object, object)  # (formatted traceback string, index)
 
 # =============================================================================
@@ -94,6 +99,8 @@ class ProcessStderrBuffer:
         self._echo = echo_to_console
 
     def _read(self, process):
+        """Read new stderr bytes from `process`, echoing them to this
+        process's own stderr if enabled, and return them."""
         chunk = bytes(process.readAllStandardError())
         if chunk and self._echo:
             try:

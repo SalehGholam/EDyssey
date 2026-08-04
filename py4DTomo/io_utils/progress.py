@@ -47,6 +47,8 @@ class LoggingProgressBar(ProgressBar):
         self._last_percent = -1
 
     def _draw_bar(self, frac, elapsed):
+        """dask ProgressBar hook invoked periodically with the current
+        fraction/elapsed time; logs only when the rounded percentage changes."""
         if self.logger is None:
             return
         percent = int(100 * frac)
@@ -102,6 +104,9 @@ def _capture_fd(fd, on_line):
         last_line = [None]
 
         def _pump():
+            """Read chunks from `read_fd`, tee them to `original_fd`, and call
+            `on_line` once per completed \\n/\\r-terminated line (deduping
+            consecutive repeats)."""
             buf = b''
             try:
                 while True:

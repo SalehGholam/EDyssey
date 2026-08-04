@@ -35,11 +35,8 @@ def select_roi(img):
     Returns:
         Tuple (x, y, w, h) of the selected bounding box in pixel coordinates.
     """
-    # cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.namedWindow('ROI Selection', cv2.WINDOW_KEEPRATIO)
     cv2.resizeWindow('ROI Selection', img.shape[1]*4, img.shape[0]*4)
-    # img = ((img - img.min()) / (img.max() - img.min())) * 255.0
-    # img = img.astype(np.uint8)
     img = cv2.applyColorMap(img, cv2.COLORMAP_VIRIDIS)
     cv2.imshow('ROI Selection', img)
     box = cv2.selectROI('ROI Selection', img)
@@ -61,10 +58,7 @@ def select_rois(img):
     rois = []
     img = deepcopy(img)
     img = cv2.applyColorMap(img, cv2.COLORMAP_VIRIDIS)
-    # Create a window with a specific name
     cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL)
-
-    # Resize the window to the image size
     cv2.resizeWindow('ROI Selection', 1024, 1024)
 
     # font for writing the rectangular number
@@ -74,23 +68,15 @@ def select_rois(img):
     font_color = (255, 255, 255)  # BGR color format (blue, green, red)
     count = 1
     while True:
-        # Select ROI
-        # roi = cv2.selectROI('Frame', self.img)
         roi = cv2.selectROI('ROI Selection', img)
 
-        # Check if a valid ROI was selected
         if roi[2] > 0 and roi[3] > 0:
-            # Append the ROI to the list
             rois.append(roi)
 
-            # Draw the selected ROI on the image
             cv2.rectangle(img, (int(roi[0]), int(roi[1])),
                           (int(roi[0] + roi[2]), int(roi[1] + roi[3])), (0, 255, 0), 1)
             cv2.putText(img, str(count), (roi[0]-5, roi[1]-5), font, font_scale, font_color, font_thickness)
 
-            # Update the displayed image
-            # self.ax.imshow(self.img)
-            # self.canvas.draw()
             count += 1
         else:
             break
@@ -118,9 +104,8 @@ def select_rois_manual(s):
         roisTemp = []
         img = deepcopy(img)
         img = cv2.applyColorMap(img, cv2.COLORMAP_VIRIDIS)
-        # Create a window with a specific name
         cv2.namedWindow('ROI Selection', cv2.WINDOW_NORMAL)
-        
+
         # Resize the window to have a large window
         imgSize = img.shape
         scaler = 1
@@ -137,27 +122,18 @@ def select_rois_manual(s):
         font_color = (255, 255, 255)  # BGR color format (blue, green, red)
         count = 1
         while True:
-            # Select ROI
-            # roi = cv2.selectROI('Frame', self.img)
             roi = cv2.selectROI('ROI Selection', img)
-        
-            # Check if a valid ROI was selected
+
             if roi[2] > 0 and roi[3] > 0:
-                # Append the ROI to the list
                 roisTemp.append(roi)
-        
-                # Draw the selected ROI on the image
+
                 cv2.rectangle(img, (int(roi[0]), int(roi[1])),
                               (int(roi[0] + roi[2]), int(roi[1] + roi[3])), (0, 255, 0), 1)
                 cv2.putText(img, str(count), (roi[0]-5, roi[1]-5), font, font_scale, font_color, font_thickness)
-        
-                # Update the displayed image
-                # self.ax.imshow(self.img)
-                # self.canvas.draw()
+
                 count += 1
             else:
                 break
-        # print("Selected ROIs:", rois)
         rois.append(roisTemp)
         tracked_imgs.append(img)
     rois = np.swapaxes(rois, 0, 1) # swap so: [roiNo, imgNo, roiCoords]
@@ -225,20 +201,16 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     tracked_rois = []
     for i_c, _ in enumerate(init[:-1]):
         imgs_temp = imgs[init[i_c]:init[i_c+1]]
-        # tracked_rois.append(rois[i_c])
         if len(imgs_temp) > 1:
-            # roi = rois[init[i_c]]
             roi = rois[i_c]
             if tracking_method in _XCORR_METHODS:
                 tracked_rois.extend(track_roi_xcorr(imgs_temp, roi, tracking_method))
                 continue
             x,y,w,h = roi
             # y = imgs_temp[0].shape[1] - y - h # origin is top left in cv2 and bottom left in mpl
-            # roi = convert_roi_to_int((x,y,w,h))
             img_0 = imgs_temp[0]
             if flag_3ch_cvt:
                 img_0 = cv2.cvtColor(img_0, cv2.COLOR_GRAY2BGR)
-            # print(roi)
             tracker.init(img_0, roi)
             tracked_rois.append(roi)
             for img in imgs_temp[1:]:
@@ -739,7 +711,7 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
             img = io.convert_img_to_8bit(img)
             img = io.gaussian_blur(img, blur_kernel)
         masks[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
-        th = threshold_func(img[x:x+w, y:y+h])
+        th = io.threshold_ignore_zero(threshold_func, img[x:x+w, y:y+h])
         th *= thresh_offset
         
         masks[i] = masks[i] >= th

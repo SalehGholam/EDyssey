@@ -41,7 +41,7 @@ def load_signal(fn, **kwargs):
     return result
 
 def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
-              det_shape=512, repetitions=1, sum_dp=False, logger=None,
+              repetitions=1, sum_dp=False, logger=None,
               n_threads=None, fn_pattern=None, **kwargs):
     """Load a .tpx3 4D-STEM file via eventem; returns a HyperSpy Signal2D or summed nav image.
 
@@ -233,6 +233,13 @@ def _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks=None):
     script's (nx, ny) - so `roi`/`.inav` cropping right after this call
     behaves identically to the non-smart-scan path.
     """
+    if scanSize is None:
+        raise ValueError(
+            "scanSize is required to reconstruct a smart-scanned acquisition (fn_pattern was "
+            f"given for {fn!r}, but scanSize was None) - a per-file header, when one exists, "
+            "reflects the number of frames actually written to disk for this sparse "
+            "acquisition, not the full scan grid, so it can't be auto-detected from the file "
+            "itself. Pass the scan size explicitly (e.g. from comment.txt).")
     pattern = np.loadtxt(fn_pattern).astype('int64')
     s_flat = hs.load(fn, lazy=True)  # (n_frames, det, det), acquisition order
     det_shape = s_flat.data.shape[-2:]
@@ -268,15 +275,27 @@ def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
     Returns:
         numpy.ndarray if `sum_dp` is True; otherwise a HyperSpy Signal2D (lazy or computed).
     """
-    if scanSize is None:
-        fld = os.path.split(fn)[0]
-        fn_hdr = os.path.join(fld, 'default.hdr')
-        if os.path.isfile(fn_hdr):
-            scanSize = get_scan_size_mib_hdr(fn_hdr)
-
     if fn_pattern:
+        # Never auto-resolved from a .hdr here (unlike the dense branch
+        # below) - a smart-scanned acquisition's own .hdr "Frames in
+        # Acquisition" reflects the sparse frame count actually written to
+        # disk, not the full scan grid, so it would silently produce the
+        # wrong shape instead of the clear error _reconstruct_smart_scan
+        # raises when scanSize is still None.
         s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks)
     else:
+        if scanSize is None:
+            fld = os.path.split(fn)[0]
+            # Prefer a per-file .hdr matching this exact .mib's own
+            # basename (e.g. "default_0119_-50,00.mib" -> "...-50,00.hdr")
+            # over the generic "default.hdr" - tomography acquisitions like
+            # the smart-scan ones write one .hdr per .mib, not one shared
+            # one, so the generic name never matches them.
+            fn_hdr = os.path.splitext(fn)[0] + '.hdr'
+            if not os.path.isfile(fn_hdr):
+                fn_hdr = os.path.join(fld, 'default.hdr')
+            if os.path.isfile(fn_hdr):
+                scanSize = get_scan_size_mib_hdr(fn_hdr)
         # Passing navigation_shape=(nx, ny) lets the mib reader itself
         # reshape the raw frame stream into a proper 4D array (it reverses
         # the pair internally to (ny, nx, det, det) before returning it) -

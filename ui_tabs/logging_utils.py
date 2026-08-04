@@ -51,6 +51,8 @@ class QtLogHandler(logging.Handler, QObject):
         self.setFormatter(_FORMATTER)
 
     def emit(self, record):
+        """logging.Handler override: format `record` and re-emit it via
+        `log_emitted`, stripping the `_LOGGER_PREFIX` from the logger name."""
         try:
             msg = self.format(record)
         except Exception:
@@ -65,6 +67,7 @@ _qt_log_handler = None
 
 
 def get_qt_log_handler():
+    """Return the process-wide QtLogHandler singleton, creating it on first call."""
     global _qt_log_handler
     if _qt_log_handler is None:
         _qt_log_handler = QtLogHandler()
@@ -106,6 +109,8 @@ class LogConsole(qtw.QPlainTextEdit):
     }
 
     def __init__(self, parent=None, height=140):
+        """Build the console widget (dark theme, 2000-line scrollback) and
+        start listening for log signals."""
         super().__init__(parent)
         self.setReadOnly(True)
         self.setMaximumBlockCount(2000)
@@ -122,6 +127,9 @@ class LogConsole(qtw.QPlainTextEdit):
         get_qt_log_handler().log_emitted.connect(self._append_log)
 
     def _append_log(self, tab_name, msg, levelno, progress_key=''):
+        """Append `msg` as a new console line, colored by level; if
+        `progress_key` matches the line last written for that key, replace
+        that line in place instead of appending a new one."""
         if levelno >= logging.ERROR:
             color = self._LEVEL_COLORS[logging.ERROR]
         elif levelno >= logging.WARNING:
