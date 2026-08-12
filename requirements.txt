@@ -8,7 +8,12 @@ numpy==2.4.4
 PyQt5==5.15.11
 hyperspy==2.4.0
 dask==2026.3.0
-opencv-python==4.13.0.92
+# opencv-contrib-python, not plain opencv-python: tracking_utils_ui.py calls
+# cv2.TrackerCSRT_create()/TrackerMIL_create()/TrackerNano_create()/
+# TrackerDaSiamRPN_create(), which only exist in the contrib build. Do not
+# install opencv-python alongside this - both provide the same `cv2`
+# namespace and conflict.
+opencv-contrib-python==4.13.0.92
 matplotlib==3.10.9
 matplotlib-scalebar==0.9.0
 tifffile==2026.5.2
@@ -23,3 +28,10 @@ Pillow==12.2.0
 # for the wheel matching your CUDA version (or CPU-only) - a blind pip
 # install here would ignore that and often pull the wrong build.
 # torch==2.6.0
+
+# pyxem: optional, not required. tracking_utils_ui.py's 3DED extraction
+# imports it lazily inside a try/except (dodges a ~5s startup cost that
+# isn't worth paying on every launch for one feature) and falls back to a
+# plain array if it's absent. Install it yourself for richer
+# ElectronDiffraction2D output instead of the plain-array fallback:
+# pyxem==0.21.0

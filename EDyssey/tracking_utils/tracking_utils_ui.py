@@ -18,6 +18,7 @@ import os
 # sys.path.append(r'E:\OneDrive - Universiteit Antwerpen\GitHub\Others\4D Tomo\4DSTEM Tomography')
 # import pyLiveProcessing as pyLP
 import io_utils_ui as io
+from . import asset_fetch
 from skimage.filters import threshold_otsu, threshold_li, threshold_yen, threshold_mean
 from EDyssey.io_utils import create_array_from_dissimilar_imgs
 from dask import config
@@ -172,6 +173,15 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
     """
     tracker = None
     if tracking_method not in _XCORR_METHODS:
+        # 'nano'/'dasiamrpn' need external .onnx weight files that aren't
+        # bundled with the app (see THIRD_PARTY_NOTICES.md) - fetch them on
+        # first use rather than shipping ~164MB in every installer. This
+        # runs inside the background WorkerThread_General track_roi_cv2 is
+        # called from, so it blocks that worker (not the GUI thread) while
+        # downloading; a failure raises asset_fetch.AssetDownloadError,
+        # which WorkerThread_General routes to the caller's connected
+        # `.error` signal instead of crashing silently.
+        asset_fetch.ensure_tracker_models(tracking_method)
         path_origin = os.getcwd()
         path_file = os.path.abspath(__file__)
         path_file = os.path.split(path_file)[0]

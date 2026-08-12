@@ -8,15 +8,25 @@ import os
 import sys
 # if using Apple MPS, fall back to CPU for unsupported ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+import json
 import numpy as np
-import torch
-from sam2.build_sam import build_sam2, build_sam2_video_predictor
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+# torch/sam2 are deliberately NOT bundled in a frozen build (huge, and
+# CUDA-version-specific - see INSTALL.md) - guard the import so a missing
+# install produces a tagged JSON error on stdout (caught by tab_sam2.py's
+# handle_finished_sam()/handle_finished_image_sam()) instead of an
+# invisible traceback (this is a windowed app with no console attached).
+try:
+    import torch
+    from sam2.build_sam import build_sam2, build_sam2_video_predictor
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+except ImportError as _exc:
+    print(json.dumps({'error': 'missing_dependency',
+                       'message': f'torch/sam2 not installed: {_exc}'}))
+    sys.exit(0)
 from time import strftime
 import pandas as pd
 from glob import glob
 import pickle
-import json
 import matplotlib.pyplot as plt
 # from sam2.sam2_video_predictor import SAM2VideoPredictor
 #%% funcs
@@ -74,7 +84,15 @@ if __name__ == "__main__":
     sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
     if not os.path.isfile(sam2_checkpoint):
-        raise FileNotFoundError('SAM2 model checkpoints are not found for version 2.1!')
+        # Normally unreachable - tab_sam2.py downloads this checkpoint (via
+        # asset_fetch.ensure_sam2_checkpoint()) before ever launching this
+        # worker. Kept as a defensive backstop, using the same tagged-JSON-
+        # on-stdout convention as the missing-torch/sam2 case above rather
+        # than an uncaught exception, since this is a windowed app with no
+        # console to show a traceback in.
+        print(json.dumps({'error': 'missing_dependency',
+                           'message': 'SAM2 checkpoint not found: ' + sam2_checkpoint}))
+        sys.exit(0)
     
 
     device = check_torch_device()

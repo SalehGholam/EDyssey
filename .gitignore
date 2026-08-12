@@ -41,6 +41,9 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+# ...except EDyssey.spec itself, which is a hand-written, committed build
+# recipe (see its header comment), not an auto-generated one.
+!EDyssey.spec
 
 # Installer logs
 pip-log.txt

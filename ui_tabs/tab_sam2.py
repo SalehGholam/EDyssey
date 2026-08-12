@@ -28,6 +28,7 @@ from copy import deepcopy
 import datetime
 from time import perf_counter
 import EDyssey.io_utils as io
+from EDyssey.tracking_utils import asset_fetch
 from typing import Literal
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -1206,6 +1207,29 @@ class Tab_SAM2(TabBase):
         self.spinner.raise_()
         self.spinner.start()
 
+    def _ensure_sam2_ready(self, on_ready, on_failed):
+        """Ensure the SAM2 checkpoint is present (downloading it first if
+        not - not bundled in the installer, see asset_fetch.py) before
+        calling `on_ready()`. Runs the check/download in a background
+        worker with the loading spinner up, so a first-use ~898MB download
+        doesn't freeze the GUI. Calls `on_failed(error_msg)` instead if the
+        download fails, e.g. no internet connection."""
+        self._load_spinner()
+
+        def _ready(_path, _idx):
+            self.spinner.stop()
+            on_ready()
+
+        def _failed(error_msg, _idx):
+            self.spinner.stop()
+            self.logger.error('SAM2 checkpoint download failed:\n%s', error_msg)
+            on_failed(error_msg)
+
+        worker = WorkerThread_General(asset_fetch.ensure_sam2_checkpoint, 0)
+        worker.signals.results.connect(_ready)
+        worker.signals.error.connect(_failed)
+        self.threadpool.start(worker)
+
     def load_navSignal(self):
         """Validate the nav-signal path, reset any existing analysis, and load
         it (hs.load()) in a background worker; _on_navSignal_loaded applies the result."""
@@ -2107,13 +2131,23 @@ class Tab_SAM2(TabBase):
             self.run_video_segmentation()
         
     def run_video_segmentation(self):
-         """Launch the first stack's SAM2 subprocess; handle_finished_sam()
-         chains the rest sequentially as each one finishes."""
+         """Ensure the SAM2 checkpoint is available, then launch the first
+         stack's SAM2 subprocess; handle_finished_sam() chains the rest
+         sequentially as each one finishes."""
          self.running_processes_sam = {}
          self.running_processes_sam_total = len(self.df_toSegment.index)
          idx = self.df_toSegment.index.sort_values()[0]
          path = self.df_toSegment.loc[idx, 'path_jpg']
-         self.launch_next_video_seg(path, idx)
+
+         def _on_checkpoint_failed(error_msg):
+             self.button_runSeg_clip.setEnabled(True)
+             self.button_cancel.setDisabled(True)
+             qtw.QMessageBox.warning(self, 'SAM2 Checkpoint Download Failed',
+                 'Could not download the SAM2 model checkpoint - check your '
+                 'internet connection and see the log console for details.')
+
+         self._ensure_sam2_ready(lambda: self.launch_next_video_seg(path, idx),
+                                  _on_checkpoint_failed)
                 
     def launch_next_video_seg(self, path, idx):
         """Start one stack's SAM2 video-tracking subprocess for `idx` and
@@ -2166,6 +2200,24 @@ class Tab_SAM2(TabBase):
 #             self.progress_bar.setValue(percent, 100)
 # =============================================================================
 
+    def _show_missing_dependency_dialog(self, message):
+        """worker_sam.py reports this when torch/sam2 aren't importable -
+        deliberately not bundled in a frozen build (huge, CUDA-version-
+        specific, see INSTALL.md). Point at the fix instead of just failing."""
+        self.logger.error('SAM2 worker reported a missing dependency: %s', message)
+        qtw.QMessageBox.warning(self, 'SAM2 Dependencies Not Installed',
+            f'{message}\n\n'
+            'SAM2 needs torch and the sam2 package installed, which this '
+            "app doesn't bundle. Run, from a command prompt with pip "
+            'available:\n\n'
+            'pip install --target "<install_dir>\\_internal" torch '
+            '--index-url https://download.pytorch.org/whl/cu121\n'
+            'pip install --target "<install_dir>\\_internal" '
+            'git+https://github.com/facebookresearch/sam2.git\n\n'
+            '(swap the --index-url per pytorch.org/get-started/locally for '
+            'your GPU, or omit it for CPU-only; "<install_dir>" is where '
+            'EDyssey.exe is installed). See INSTALL.md for details.')
+
     def handle_finished_sam(self, process, idx, exit_code, exit_status):
         """SAM2 video-tracking subprocess completion handler: load the
         stack's output mask, launch the next queued stack if any remain, and
@@ -2183,9 +2235,15 @@ class Tab_SAM2(TabBase):
         # sleep(3)
         try:
             result = json.loads(text.strip())
+            if result.get('error') == 'missing_dependency':
+                self._track_failed = True
+                self._show_missing_dependency_dialog(result['message'])
+                self.button_runSeg_clip.setEnabled(True)
+                self.button_cancel.setDisabled(True)
+                return
             fn_output = result["path"]
             idx = int(result["idx"])
-         
+
             with np.load(fn_output) as f:
                 mask_stack = f['masks']
             self.df_toSegment.at[idx, 'mask'] = mask_stack
@@ -2293,6 +2351,20 @@ class Tab_SAM2(TabBase):
             '%d (%d point(s))...', obj_id, imgNo, len(points))
         self.button_runSeg_img.setDisabled(True)
 
+        def _on_checkpoint_failed(error_msg):
+            self.button_runSeg_img.setEnabled(True)
+            qtw.QMessageBox.warning(self, 'SAM2 Checkpoint Download Failed',
+                'Could not download the SAM2 model checkpoint - check your '
+                'internet connection and see the log console for details.')
+
+        self._ensure_sam2_ready(
+            lambda: self._launch_image_segmentation(obj_id, imgNo, points, labels),
+            _on_checkpoint_failed)
+
+    def _launch_image_segmentation(self, obj_id, imgNo, points, labels):
+        """Build the single-image seg_input.pkl and launch worker_sam.py -
+        split out from initiate_image_segmentation() so it can run only
+        after _ensure_sam2_ready() confirms the checkpoint is present."""
         pathSave = self.lineEdit_dir_save.text()
         if not os.path.isdir(pathSave):
             os.mkdir(pathSave)
@@ -2343,6 +2415,9 @@ class Tab_SAM2(TabBase):
         self.logger.info('text: %s', text)
         try:
             result = json.loads(text.strip())
+            if result.get('error') == 'missing_dependency':
+                self._show_missing_dependency_dialog(result['message'])
+                return
             fn_output = result["path"]
             with np.load(fn_output) as f:
                 mask = f['mask']

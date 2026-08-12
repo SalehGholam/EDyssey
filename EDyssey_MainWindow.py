@@ -9,7 +9,11 @@ Created on Fri Sep 13 11:36:57 2024
 import os
 import sys
 file_path = os.path.abspath(__file__)
-fld_path = os.path.dirname(file_path)
+# In a PyInstaller-frozen build, __file__ resolves next to the bootloader
+# exe, not the actual bundled package tree - sys._MEIPASS is where the
+# real EDyssey/ui_tabs/worker_*.py layout lives instead (same pattern the
+# window icon below already relies on).
+fld_path = getattr(sys, '_MEIPASS', os.path.dirname(file_path))
 os.chdir(fld_path)
 _path_io_utils = os.path.join(fld_path, r'EDyssey\io_utils')
 if _path_io_utils not in sys.path:
@@ -74,7 +78,7 @@ class MainWindow(qtw.QMainWindow):
         # included) are extracted under sys._MEIPASS, not next to __file__ -
         # sys._MEIPASS doesn't exist at all in a normal (non-frozen) run.
         base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-        fn_icon = os.path.join(base_dir, 'ui_tabs', 'logo', 'Scream_logo.ico')
+        fn_icon = os.path.join(base_dir, 'ui_tabs', 'logo', 'EDyssey_logo.ico')
         self.setWindowIcon(QIcon(fn_icon))
 
         central = qtw.QWidget()

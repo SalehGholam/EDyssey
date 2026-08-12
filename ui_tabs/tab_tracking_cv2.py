@@ -2337,12 +2337,30 @@ class Tab_Tracking_CV2(TabBase):
                 self.logger.warning(
                     'ROI-in-ROI translation for ROI %s failed - tracking it with '
                     'untranslated coordinates instead.', ind, exc_info=True)
-            worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in, 
+            worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in,
                                           init, tracking_method)
             worker.signals.results.connect(self.get_tracking_results)  # Connect to result signal
+            worker.signals.error.connect(self._on_track_roi_failed)
             # worker.signals.finished.connect(self.plot_tracking_result)
             self.threadpool.start(worker)
             
+    def _on_track_roi_failed(self, error_msg, index):
+        """WorkerThread_General error callback for a single ROI's tracking
+        worker (e.g. an on-demand tracker-model download failing for
+        'nano'/'dasiamrpn' - see asset_fetch.py). Counts toward completion
+        the same as a successful result, so one failed ROI doesn't leave
+        the spinner/Track button waiting forever for a result that will
+        never arrive."""
+        with self._tracking_lock:
+            self.tracking_counter += 1
+            counter_now = self.tracking_counter
+        self.logger.error('Tracking failed for ROI %s:\n%s', index, error_msg)
+        if counter_now == self.tracking_counter_end:
+            self.spinner.stop()
+            self.button_cancel.setDisabled(True)
+        qtw.QMessageBox.warning(self, 'Tracking Failed',
+            f'Tracking failed for ROI {index} - see log console for details.')
+
     def get_tracking_results(self, result, index):
         """WorkerThread_General callback for a single ROI's tracking result.
         Once every enabled ROI has reported in, re-derives ROI-in-ROI

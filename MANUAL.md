@@ -8,9 +8,10 @@ extracting per-object 3D electron diffraction (3DED) data.
 
 ## Launching
 
-See [INSTALL.md](INSTALL.md) for setting up dependencies first. Then run
-`EDyssey_MainWindow.py`. The main window has four tabs (described below)
-and a live log console along the bottom.
+See [INSTALL.md](INSTALL.md) for installing the app first (Windows
+installer, or run from source). Launch `EDyssey.exe` (installer) or
+`EDyssey_MainWindow.py` (from source). The main window has four tabs
+(described below) and a live log console along the bottom.
 
 If you re-run the script in the same Python console/kernel (e.g. Spyder's
 "Run File") without restarting it, the app reuses the window that's
@@ -78,7 +79,10 @@ with Threshold" panel → **Extract!** to pull the 3DED data for every
 enabled object → **Save Results**.
 
 **Features:**
-- Tracking algorithms: CSRT, MIL, Nano, DaSiamRPN.
+- Tracking algorithms: CSRT, MIL, Nano, DaSiamRPN. The first time you use
+  Nano or DaSiamRPN, their model files (not bundled with the app) download
+  automatically - this needs an internet connection once; see
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for what these are.
 - **Auto Detector**: opens a popup that automatically detects candidate
   objects on the current frame and adds each one as a ROI, instead of
   drawing them by hand one at a time.
@@ -98,6 +102,10 @@ Same overall goal as the CV2 tab, but segmentation is driven by Meta's
 SAM2 AI model via point prompts instead of drawn boxes, and multiple
 objects are tracked together in a single pass — generally more accurate
 masks, especially for irregular shapes.
+
+Needs `torch`/`sam2` installed - see INSTALL.md's "Enabling SAM2" section
+if this tab's buttons show a "SAM2 Dependencies Not Installed" message. The
+SAM2 checkpoint itself (~900MB) downloads automatically on first use.
 
 **Workflow:** **Load Signal** (or **Load Saved Analysis** to resume) →
 Ctrl+left-click to add a positive point (Ctrl+right-click for negative);

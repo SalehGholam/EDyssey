@@ -1,0 +1,47 @@
+name: Build Installer
+
+# Manual trigger only for now - this needs a real Windows runner (the app is
+# Windows-only in practice, see EDyssey/io_utils/*.pyd) and takes
+# significantly longer than ci.yml's Linux test job, so it isn't run on
+# every push/PR.
+#
+# Only builds the "online" variant (installer/EDyssey_online.iss) - the
+# "offline" one (installer/EDyssey_offline.iss) bundles ~1.06GB of model
+# weights that are git-ignored and not present on a fresh checkout, and
+# would land close to/over GitHub Releases' 2GB-per-asset cap anyway. Build
+# that one locally instead (see its header comment) and distribute it
+# yourself.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install app + build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pyinstaller-hooks-contrib
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build frozen app (PyInstaller)
+        run: pyinstaller EDyssey.spec
+
+      - name: Build installer (Inno Setup)
+        run: iscc installer\EDyssey_online.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EDyssey-installer-online
+          path: installer/Output/*.exe
+          if-no-files-found: error
