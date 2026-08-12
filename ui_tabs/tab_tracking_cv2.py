@@ -125,7 +125,18 @@ class Tab_Tracking_CV2(TabBase):
         self.button_dir_4dSignals = qtw.QPushButton('...')
         layout_dir_4dSignals.addWidget(self.button_dir_4dSignals)
         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
-        
+
+        self.combo_dtype_4d = qtw.QComboBox()
+        self.combo_dtype_4d.setMaximumWidth(90)
+        self.combo_dtype_4d.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', 'All Files'])
+        self.combo_dtype_4d.setToolTip(
+            'Data type of the 4D signal files in the folder above - filters out any '
+            "stray non-signal file (comment.txt, pattern .txt files, logs, ...) that "
+            'would otherwise be picked up and cause a false frame-count mismatch. '
+            "Ignored whenever the navigator tab's own recorded file list "
+            '(metadata.json, loaded via "Load Signal") applies to this same folder.')
+        layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
+
         # save dir
         layout_dir_save = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_dir_save)
@@ -284,6 +295,13 @@ class Tab_Tracking_CV2(TabBase):
         layout_scanSize_row2.addStretch(1)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
+
+        # 4D signal file list recorded by the navigator tab's own
+        # metadata.json (see apply_nav_signal_metadata/resolve_4d_files) -
+        # None until a nav signal with a sibling metadata.json is loaded, or
+        # invalidated by a manually-browsed 4D folder.
+        self._nav_4d_files = None
+        self._nav_4d_directory = None
 
         # scale bars - moved out of Directories, real/reciprocal merged onto
         # one row; kept at the bottom of Input Parameters (below scan size/
@@ -942,6 +960,7 @@ class Tab_Tracking_CV2(TabBase):
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_4d.setText(path)
                 self._smart_scan_rows = None  # stale for a different folder
+                self._nav_4d_files = None  # stale navigator file list for a different folder
                 self.label_smartScanSummary.setText('')
                 # Attempted for every format, not just .tpx3 - comment.txt is
                 # written for smart-scanned .mib/.hspy/.zspy acquisitions
@@ -1051,6 +1070,11 @@ class Tab_Tracking_CV2(TabBase):
         if d4d:
             self.lineEdit_dir_4d.setText(d4d)
             applied.append('4D signals directory')
+        dtype = metadata.get('dtype')
+        if dtype:
+            idx = self.combo_dtype_4d.findText(dtype)
+            if idx >= 0:
+                self.combo_dtype_4d.setCurrentIndex(idx)
         scan_size = metadata.get('scan_size')
         if scan_size:
             self.checkbox_scanSize.setChecked(False)
@@ -1088,6 +1112,16 @@ class Tab_Tracking_CV2(TabBase):
             self.label_smartScanSummary.setText(
                 f"{len(self._smart_scan_rows)} angle(s) from navigator metadata")
             applied.append('smart-scan file match')
+        elif d4d and metadata.get('files'):
+            # Plain (non-smart-scan) run: the navigator recorded the exact
+            # ordered file list it used to build this nav signal - reuse it
+            # in resolve_4d_files() instead of re-globbing the folder, so
+            # stray non-signal files (comment.txt, pattern files, logs, ...)
+            # can't cause a false frame-count mismatch. Only valid for this
+            # same folder - see resolve_4d_files.
+            self._nav_4d_files = metadata['files']
+            self._nav_4d_directory = d4d
+            applied.append('4D signal file list')
         if applied:
             self.logger.info(
                 'Applied metadata.json from the navigator tab (%s): %s.',
@@ -2397,13 +2431,57 @@ class Tab_Tracking_CV2(TabBase):
             'revert': self.checkbox_revertMask.isChecked(),
             'directional': self.checkbox_edgeDirectional.isChecked(),
             'direction': self.spinbox_edgeDirection.value()}
+        thresh_settings = {
+            'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_kernel}
         dialog = MaskEditDialog(self, mask_stack, bg_stack=self.nav_imgs,
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
-                                default_mask_stack=default_mask_stack, edge_settings=edge_settings)
+                                default_mask_stack=default_mask_stack, edge_settings=edge_settings,
+                                thresh_settings=thresh_settings,
+                                recompute_thresh_fn=lambda method, offset, blur:
+                                    tr.create_masks(self.nav_imgs, out_rois, method, offset, blur))
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_rois.at[idx, 'mask'] = dialog.get_mask_stack()
+            self._apply_dialog_settings_to_ui(dialog)
             self.logger.info('Fine-tuned mask saved for ROI %d.', idx)
             self.update_canvas()
+
+    def _apply_dialog_settings_to_ui(self, dialog):
+        """Sync MaskEditDialog's Edge Detection and Threshold box values
+        back into this tab's own main controls on Save && Close, so
+        whatever was left set there (not just the returned mask itself) is
+        what "Extract!"/the live preview use next, instead of silently
+        reverting to whatever was set before the dialog was opened."""
+        edge = dialog.get_edge_settings()
+        self.checkbox_edgeOnly.setChecked(edge['enabled'])
+        self.spinbox_edgeKernel.setValue(edge['kernel'])
+        self.checkbox_revertMask.setChecked(edge['revert'])
+        self.checkbox_edgeDirectional.setChecked(edge['directional'])
+        self.spinbox_edgeDirection.setValue(edge['direction'])
+        thresh = dialog.get_thresh_settings()
+        if thresh is not None:
+            self.combo_thresh_method.setCurrentText(thresh['method'])
+            self.combo_blur.setCurrentText(str(thresh['blur']))
+            self.slider_thresh.setValue(thresh['offset_raw'])
+
+    def resolve_4d_files(self, path_4d):
+        """Plain (non-smart-scan) 4D signal file list for `path_4d`.
+
+        Reuses the exact, ordered file list recorded in the navigator tab's
+        metadata.json (self._nav_4d_files/_nav_4d_directory - see
+        apply_nav_signal_metadata) whenever it was recorded for this same
+        folder. Otherwise falls back to globbing the folder filtered to the
+        "Data Type" combo (self.combo_dtype_4d) - fixes the old bare
+        glob(path_4d, '*'), which picked up any stray non-signal file
+        (comment.txt, pattern .txt files, logs, ...) alongside the real 4D
+        signals and produced a false frame-count mismatch (or, for the
+        single-frame preview, silently extracted the wrong file)."""
+        if (self._nav_4d_files is not None and self._nav_4d_directory is not None
+                and os.path.normcase(os.path.normpath(self._nav_4d_directory))
+                    == os.path.normcase(os.path.normpath(path_4d))):
+            return [os.path.join(path_4d, fn) for fn in self._nav_4d_files]
+        ext = self.combo_dtype_4d.currentText()
+        pattern = '*' if ext == 'All Files' else '*' + ext
+        return sorted(glob(os.path.join(path_4d, pattern)))
 
     def extract_3ded(self):
         """Handler for the Extract! button: build each enabled ROI's
@@ -2436,8 +2514,7 @@ class Tab_Tracking_CV2(TabBase):
             fns_4d = [item['file'] for item in resolved]
             fns_pattern_4d = [item['pattern_file'] for item in resolved]
         else:
-            # check if no of files matches with no of images
-            fns_4d = glob(os.path.join(path_4d, '*'))
+            fns_4d = self.resolve_4d_files(path_4d)
         if len(fns_4d) == 0:
             self.spinner.stop()
             qtw.QMessageBox.critical(self, 'Wrong Path',
@@ -2512,6 +2589,7 @@ class Tab_Tracking_CV2(TabBase):
         self.max_processes = self.spinbox_threadNo.value()
         self.running_processes = []
         self.process_task_map = {}
+        self.process_output_buffers = {}
         # self.launch_initial_tasks()
         for _ in range(min(self.max_processes, len(self.tasks))):
             self.launch_next_task()
@@ -2567,7 +2645,7 @@ class Tab_Tracking_CV2(TabBase):
             fn = resolved[i_fr]['file']
             fn_pattern = resolved[i_fr]['pattern_file']
         else:
-            fns_4d = sorted(glob(os.path.join(path_4d, '*')))
+            fns_4d = self.resolve_4d_files(path_4d)
             if i_fr >= len(fns_4d):
                 qtw.QMessageBox.warning(self, 'Frame Out of Range',
                     'The current frame has no matching 4D signal file in the folder.')
@@ -2648,7 +2726,7 @@ class Tab_Tracking_CV2(TabBase):
         process = QProcess()
         process.setProgram(program)
         process.setArguments(arguments)
-        process.readyReadStandardOutput.connect(lambda: self.handle_output(process))
+        process.readyReadStandardOutput.connect(lambda: self._accumulate_output(process))
         process.readyReadStandardError.connect(lambda: self.handle_error(process))
         process.finished.connect(lambda: self.handle_finished(process))
         process.errorOccurred.connect(self.process_failed)
@@ -2656,6 +2734,7 @@ class Tab_Tracking_CV2(TabBase):
 
         self.running_processes.append(process)
         self.process_task_map[process] = args
+        self.process_output_buffers[process] = bytearray()
         process.start()
         
     def process_failed(self, error):
@@ -2683,38 +2762,49 @@ class Tab_Tracking_CV2(TabBase):
             return
         self._stderr_buffer.log_info(process, self.logger, 'Worker')
 
-    def handle_output(self, process):
-        """Handler for QProcess.readyReadStandardOutput: decode the
-        pickled+base64 (frame, mask coords) result and store it into
-        df_rois' dp array at the right (idx, frame) slot."""
-        raw_output = process.readAllStandardOutput().data().decode().strip()
+    def _accumulate_output(self, process):
+        """QProcess.readyReadStandardOutput handler: append this chunk to
+        the process's buffer instead of decoding it directly - the
+        base64+pickle payload for anything but the smallest diffraction
+        pattern routinely spans more than one OS pipe delivery, so decoding
+        straight out of a single readyReadStandardOutput signal (as this
+        used to) intermittently truncated it and failed to unpickle (e.g.
+        "invalid load key"). Actual decoding happens once, in
+        handle_finished, from the complete accumulated buffer."""
+        self.process_output_buffers[process] += process.readAllStandardOutput().data()
+
+    def handle_finished(self, process):
+        """Handler for QProcess.finished: decode the complete accumulated
+        stdout (a base64-pickled (frame, mask coords) result - see
+        _accumulate_output), store it into df_rois' dp array at the right
+        (idx, frame) slot, update extraction progress, and once every
+        queued (ROI, frame) task has finished, clean up the temp mask
+        directory, mark extracted ROIs in the tree, and autosave if enabled
+        - otherwise launch the next queued task."""
+        if process in self.running_processes:
+            self.running_processes.remove(process)
+        task_info = self.process_task_map.pop(process, None)
+        if self._cancelling:
+            self.process_output_buffers.pop(process, None)
+            process.deleteLater()
+            return
+        # drain any remaining bytes not yet signalled
+        self.process_output_buffers[process] += process.readAllStandardOutput().data()
+        raw_output = bytes(self.process_output_buffers.pop(process, b'')).decode(
+            'utf-8', errors='replace').strip()
+        process.deleteLater()
+
         try:
             result_array = pickle.loads(base64.b64decode(raw_output))
         except Exception:
             self.logger.exception('Failed to decode tracking extraction subprocess output.')
-            return
-
-        task_info = self.process_task_map.get(process, None)
-        if task_info is None:
-            self.logger.warning("Unknown process")
-            return
-    
-        # *_ , (r_id, i_fr) = task_info
-        img , i_c = result_array
-        idx, i_fr = ast.literal_eval(i_c)
-        self.df_rois.loc[idx, 'dp'][i_fr] = img
-        
-    def handle_finished(self, process):
-        """Handler for QProcess.finished: update extraction progress, and
-        once every queued (ROI, frame) task has finished, clean up the temp
-        mask directory, mark extracted ROIs in the tree, and autosave if
-        enabled - otherwise launch the next queued task."""
-        if process in self.running_processes:
-            self.running_processes.remove(process)
-        _ = self.process_task_map.pop(process, None)
-        process.deleteLater()
-        if self._cancelling:
-            return
+        else:
+            if task_info is None:
+                self.logger.warning("Unknown process")
+            else:
+                img, i_c = result_array
+                idx, i_fr = ast.literal_eval(i_c)
+                self.df_rois.loc[idx, 'dp'][i_fr] = img
 
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)

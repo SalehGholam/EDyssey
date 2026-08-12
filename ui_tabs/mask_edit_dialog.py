@@ -29,14 +29,50 @@ class MaskEditDialog(qtw.QDialog):
     live, non-destructive preview only (exactly like the main tab) - it is
     never baked into the returned mask, so toggling it never compounds
     across redraws or fine-tuning sessions.
+
+    A Threshold box (method/ROI blur/deviation, mirroring the main tab's own
+    controls) is built too, but only when the caller passes
+    `recompute_thresh_fn` - i.e. only for threshold-derived masks
+    (Tab_Tracking_CV2; SAM2's masks come from the segmentation network, so
+    it never applies there). Unlike Edge Detection, changing it really does
+    overwrite mask_stack - live, for just the current frame, as each control
+    changes; "Apply to All Frames" is the one action that still needs an
+    explicit button, since it discards every other frame's edits at once.
+    `get_edge_settings()`/`get_thresh_settings()` let the caller read back
+    whatever was left set in either box on Save && Close, to sync its own
+    main-tab controls to match.
     """
 
     def __init__(self, parent, mask_stack, bg_stack=None, start_frame=0, logger=None,
-                 default_mask_stack=None, edge_settings=None):
+                 default_mask_stack=None, edge_settings=None,
+                 thresh_settings=None, recompute_thresh_fn=None):
         super().__init__(parent)
         self.setWindowTitle('Fine-Tune Mask')
-        self.resize(720, 760)
+        # Maximize button too (off by default on a QDialog) - the image
+        # needs real screen space to make fine edits legible, and a fixed
+        # initial size can't anticipate every navigation-image resolution.
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint
+                            | Qt.WindowMinimizeButtonHint)
+        screen = qtw.QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            h = int(avail.height() * 0.85)
+            # Single-column layout (canvas stacked over compact control
+            # rows) never needs anywhere near full screen width - tie it to
+            # the height instead so this reads as a tall, roughly square
+            # window rather than a wide, mostly-empty one.
+            w = min(int(avail.width() * 0.55), max(h, 700))
+            self.resize(w, h)
+        else:
+            self.resize(800, 900)
         self.logger = logger
+        # (thresh_method, thresh_offset, blur_kernel) -> (N, H, W) bool mask
+        # stack, re-thresholding the ROI/nav-image data this mask came from
+        # with new settings - only given by callers whose masks are
+        # threshold-derived (Tab_Tracking_CV2; SAM2's masks come from the
+        # segmentation network instead, so it never passes this). None
+        # skips building the Threshold box entirely.
+        self.recompute_thresh_fn = recompute_thresh_fn
         self._original_stack = np.asarray(mask_stack).astype(bool)
         self.mask_stack = self._original_stack.copy()
         # The pristine tracking-derived stack (SAM2 output, or a freshly
@@ -59,7 +95,11 @@ class MaskEditDialog(qtw.QDialog):
 
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+        self.canvas.setMinimumSize(480, 480)
+        # Stretch factor 1 (every other widget in this column defaults to
+        # 0/fixed-height) - the image is what needs the extra space when
+        # the dialog is resized/maximized, not the controls below it.
+        layout.addWidget(self.canvas, 1)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
@@ -121,6 +161,68 @@ class MaskEditDialog(qtw.QDialog):
         label_center = qtw.QLabel('Mask')
         label_center.setAlignment(Qt.AlignCenter)
         grid.addWidget(label_center, 1, 1)
+
+        #%% threshold - rebuilds the base mask itself from the ROI. Changing
+        # method/blur/deviation applies live to just the current frame (like
+        # Edge Detection below, minus the "never baked in" part - a fresh
+        # re-threshold from raw ROI data is idempotent w.r.t. its own
+        # parameters, so overwriting mask_stack[frame] outright each change
+        # doesn't compound); only propagating that to every frame is a
+        # deliberate, explicit "Apply to All Frames" action. Mirrors the main
+        # tab's own Threshold/ROI Blur/Deviation controls, only shown when
+        # the caller's masks are actually threshold-derived
+        # (recompute_thresh_fn given - see class docstring)
+        if self.recompute_thresh_fn is not None:
+            thresh_settings = thresh_settings or {}
+            box_thresh = qtw.QGroupBox('Threshold (rebuild mask from ROI)')
+            layout.addWidget(box_thresh)
+            layout_thresh = qtw.QVBoxLayout()
+            box_thresh.setLayout(layout_thresh)
+
+            row_t1 = qtw.QHBoxLayout()
+            layout_thresh.addLayout(row_t1)
+            row_t1.addWidget(qtw.QLabel('Threshold'))
+            self.combo_threshMethod = qtw.QComboBox()
+            self.combo_threshMethod.addItems(['li', 'otsu', 'yen', 'mean'])
+            self.combo_threshMethod.setCurrentText(thresh_settings.get('method', 'li'))
+            row_t1.addWidget(self.combo_threshMethod)
+            row_t1.addWidget(qtw.QLabel('ROI Blur'))
+            self.combo_threshBlur = qtw.QComboBox()
+            self.combo_threshBlur.addItems([str(i) for i in range(1, 23, 2)])
+            self.combo_threshBlur.setCurrentText(str(thresh_settings.get('blur', 1)))
+            row_t1.addWidget(self.combo_threshBlur)
+            row_t1.addStretch(1)
+
+            row_t2 = qtw.QHBoxLayout()
+            layout_thresh.addLayout(row_t2)
+            row_t2.addWidget(qtw.QLabel('Deviation'))
+            self.slider_threshDev = qtw.QSlider(Qt.Horizontal)
+            self.slider_threshDev.setRange(0, 200)
+            self.slider_threshDev.setValue(int(thresh_settings.get('offset_raw', 100)))
+            row_t2.addWidget(self.slider_threshDev)
+            self.button_threshReset = qtw.QPushButton('Reset')
+            self.button_threshReset.clicked.connect(lambda: self.slider_threshDev.setValue(100))
+            row_t2.addWidget(self.button_threshReset)
+
+            for signal in (self.combo_threshMethod.currentIndexChanged,
+                          self.combo_threshBlur.currentIndexChanged,
+                          self.slider_threshDev.valueChanged):
+                signal.connect(self._threshold_live_update)
+
+            row_t3 = qtw.QHBoxLayout()
+            layout_thresh.addLayout(row_t3)
+            row_t3.addStretch(1)
+            self.button_applyThreshAll = qtw.QPushButton('Apply to All Frames')
+            self.button_applyThreshAll.setToolTip(
+                'Recompute every frame\'s mask from its ROI using the threshold '
+                'settings above, replacing the whole stack (edits included) - '
+                'Reset to Tracking still restores the original')
+            self.button_applyThreshAll.clicked.connect(self._apply_threshold_all)
+            row_t3.addWidget(self.button_applyThreshAll)
+        else:
+            self.combo_threshMethod = None
+            self.combo_threshBlur = None
+            self.slider_threshDev = None
 
         #%% edge detection - live preview only (see class docstring)
         box_edge = qtw.QGroupBox('Edge Detection')
@@ -247,8 +349,74 @@ class MaskEditDialog(qtw.QDialog):
         self.mask_stack = source.copy()
         self._redraw_mask()
 
+    def _recompute_threshold_stack(self):
+        """Full (N, H, W) mask stack from the Threshold box's current
+        method/blur/deviation, via the caller's recompute_thresh_fn - or
+        None if that raised (caller decides how loudly to report it)."""
+        method = self.combo_threshMethod.currentText()
+        blur = int(self.combo_threshBlur.currentText())
+        offset = self.slider_threshDev.value() / 100
+        try:
+            return np.asarray(self.recompute_thresh_fn(method, offset, blur)).astype(bool)
+        except Exception:
+            if self.logger:
+                self.logger.exception('Failed to recompute threshold mask.')
+            return None
+
+    def _threshold_live_update(self, *_):
+        """Threshold box method/blur/deviation changed: recompute and
+        overwrite just self.frame's mask immediately, like Edge Detection's
+        live redraw - unlike Edge Detection this really does overwrite
+        mask_stack (a fresh re-threshold from raw ROI data is idempotent
+        w.r.t. its own parameters, so it doesn't compound the way repeated
+        grow/shrink or erosion would). Silent on failure (e.g. a
+        momentarily invalid combination while the user is still adjusting
+        the slider) - Apply to All Frames below is the one action that
+        surfaces a real error dialog."""
+        full = self._recompute_threshold_stack()
+        if full is None:
+            return
+        self.mask_stack[self.frame] = full[self.frame]
+        self._redraw_mask()
+
+    def _apply_threshold_all(self):
+        """Threshold box "Apply to All Frames": recompute and overwrite the
+        whole mask_stack - the one Threshold action that needs an explicit
+        button, since (unlike the live per-frame update above) it discards
+        every other frame's edits at once."""
+        full = self._recompute_threshold_stack()
+        if full is None:
+            qtw.QMessageBox.critical(self, 'Threshold Failed',
+                'Could not recompute the mask with these threshold settings - see log for details.')
+            return
+        self.mask_stack = full
+        self._redraw_mask()
+
     def get_mask_stack(self):
         return self.mask_stack
+
+    def get_edge_settings(self):
+        """Current Edge Detection box values - lets the caller sync its own
+        main-tab controls to whatever was left set here on Save && Close."""
+        return {
+            'enabled': self.checkbox_edgeOnly.isChecked(),
+            'kernel': self.spinbox_edgeKernel.value(),
+            'revert': self.checkbox_revertMask.isChecked(),
+            'directional': self.checkbox_edgeDirectional.isChecked(),
+            'direction': self.spinbox_edgeDirection.value(),
+        }
+
+    def get_thresh_settings(self):
+        """Current Threshold box values, or None if this dialog was opened
+        without recompute_thresh_fn (no Threshold box built at all - see
+        class docstring)."""
+        if self.recompute_thresh_fn is None:
+            return None
+        return {
+            'method': self.combo_threshMethod.currentText(),
+            'offset_raw': self.slider_threshDev.value(),
+            'blur': int(self.combo_threshBlur.currentText()),
+        }
 
     #%% mouse interaction: Ctrl+Scroll zoom, Ctrl+Click(+drag) pixel paint,
     # Shift+drag rectangular region paint
