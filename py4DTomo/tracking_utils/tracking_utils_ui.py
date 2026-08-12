@@ -5,6 +5,7 @@ Created on Fri Mar 15 16:58:43 2024
 @author: SGholam
 """
 
+import logging
 import numpy as np
 import cv2
 from scipy.ndimage import gaussian_filter
@@ -25,6 +26,8 @@ from dask.diagnostics import ProgressBar
 import dask.array as da
 # from dask import config as da_config
 # da_config.set(scheduler='processes')
+
+_logger = logging.getLogger(__name__)
 #%%
 def select_roi(img):
     """Open an interactive OpenCV window for the user to draw a single ROI.
@@ -471,7 +474,7 @@ def subtract_image_background(img, sub_method, sub_scale=1):
         thresh = threshold_yen(img)
     elif sub_method == 'li':
         # thresh = threshold_li(img)
-        raise('Li threshold gives error! Try something else.')
+        raise ValueError('Li threshold gives error! Try something else.')
     elif sub_method == 'mean':
         thresh = threshold_mean(img)
     thresh *= sub_scale
@@ -553,11 +556,14 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
                     # dp = s_temp.inav[x, y].data.compute(show_progressbar=False)
                     try:
                         dp = s_temp.inav[x, y].data
-                    except:
-                        pass
+                    except Exception:
+                        _logger.warning(
+                            'Failed to read pixel (%d, %d) at frame %d; reusing the '
+                            'previous pixel\'s diffraction pattern instead.', x, y, i,
+                            exc_info=True)
                     try:
                         s_3ded[i] += dp
-                    except:
+                    except Exception:
                         s_3ded[i] += dp.astype('uint32')
                 
             else:
@@ -572,7 +578,7 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
             dp = s_temp.data[x,y].compute(show_progressbar=False)
             try:
                 s_3ded[i] = dp
-            except:
+            except Exception:
                 s_3ded[i] = dp.astype('uint32')
                 
     s_3ded = hs.signals.Signal2D(s_3ded)
@@ -584,9 +590,8 @@ def extract_3ded(nav_signal, fns_4d, rois, i_roi, dtype, sig_shape, scanSize, ex
             # this is the only place it's used, guarded by a fallback below.
             import pyxem as px
             sub_imgs = px.signals.ElectronDiffraction2D(sub_imgs) # wont work for rois with different shapes
-        except:
+        except Exception:
             sub_imgs = create_array_from_dissimilar_imgs(sub_imgs)
-            # pass
         return s_3ded, sub_imgs, i_roi
     else:
         return s_3ded, i_roi
@@ -627,33 +632,46 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None
     Returns:
         numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
     """
+    # load_signal/load_tpx3/load_hs/load_hdf5 no longer return HyperSpy
+    # Signal2D objects (nor a (signal, file_handle) tuple for hdf5 - the
+    # file is now closed internally): .tpx3 returns the raw eventem.Roi
+    # object itself, everything else a plain numpy/dask array.
+    if dtype is None:
+        dtype = os.path.splitext(fn)[1]
+
+    if dtype == '.tpx3':
+        # eventem's mask-based ROI applies over the full scan grid directly
+        # (see loaders.load_tpx3) - it doesn't compose with a separate `roi`
+        # crop, so `roi` (if given) is ignored here and the *uncropped*
+        # mask is used as-is.
+        roi_obj = io.load_tpx3(fn, scanSize=scanSize, mask=mask, get_4d=False)
+        # Timepix3's detector is fixed at 512x512 - the same default used
+        # everywhere else in this app for .tpx3.
+        return np.array(roi_obj.Roi_diffraction_pattern).reshape(512, 512)
+
     if roi is not None:
-        x,y,w,h = roi
-        # mask = mask[x:x+w, y:y+h]
-        mask = mask[y:y+h, x:x+w] #TODO check
-    dtype = os.path.splitext(fn)[1]
-    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize, 
-                       roi=roi, lazy=True)
-    if type(s) == tuple: # hdf5 sends the file handler
-        s, f = s
-    
+        x, y, w, h = roi
+        mask = mask[y:y+h, x:x+w]
+    # .hdf5's lazy=True path returns a dask array built from a dataset whose
+    # file is already closed by the time load_signal returns (see
+    # loaders.load_hdf5) - not safe to compute later here, so read it
+    # eagerly instead; .hspy/.zspy/.mib's lazy loading is HyperSpy-managed
+    # and stays safely readable across the call boundary.
+    s = io.load_signal(fn, dtype=dtype, scanSize=scanSize,
+                       roi=roi, lazy=(dtype != '.hdf5'))
+
     with config.set(**{'array.slicing.split_large_chunks': False}):
-        arr_flat = s.data.reshape(-1, *s.data.shape[2:])
-    # Apply the 1D mask
-# =============================================================================
-#     mask_flat = mask.flatten()
-#     sliced_flat = arr_flat[mask_flat, :, :]
-# =============================================================================
+        arr_flat = s.reshape(-1, *s.shape[2:])
     mask_flat = np.where(mask.flatten()==1)[0]
     sliced_flat = arr_flat[mask_flat]
-    
+
     dp = sliced_flat.sum(axis=(0))
     if hasattr(dp, 'compute'):
         if isinstance(dp, da.Array):
             with ProgressBar():
                 dp = dp.compute()
         else:
-            dp.compute()
+            dp = dp.compute()
     return dp
 
 def check_threshold(img, dev=0.1, step=0.05):

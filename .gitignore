@@ -3,6 +3,9 @@ py4DTomo/tracking_utils/opencv_models
 py4DTomo/tracking_utils/SAM2_checkpoints
 temp/
 py4DTomo/io_utils/temp
+tests/test_data
+*.rar
+*.msi
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

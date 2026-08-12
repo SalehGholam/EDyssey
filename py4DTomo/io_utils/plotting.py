@@ -56,6 +56,12 @@ def add_readable_scalebar(ax, dx, units='m', **kwargs):
     ax.add_artist(scalebar)
     return scalebar
 
+def remove_scalebar(ax):
+    """Remove any existing ScaleBar artist(s) from `ax`, if present."""
+    for artist in list(ax.artists):
+        if isinstance(artist, ScaleBar):
+            artist.remove()
+
 def draw_reciprocal_scale_circles(ax, scale_recip, shape, center=None, old_artists=None):
     """Draw concentric dashed circles marking whole-1/A radii on a
     diffraction-pattern axis, in place of a conventional scale bar (which
@@ -94,7 +100,7 @@ def draw_reciprocal_scale_circles(ax, scale_recip, shape, center=None, old_artis
             try:
                 artist.remove()
             except Exception:
-                pass
+                pass  # already removed (e.g. axes was cleared since the last call)
     new_artists = []
     try:
         scale_recip = float(scale_recip)

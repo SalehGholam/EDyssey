@@ -28,7 +28,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from .logging_utils import LogConsole
-from .base_tab import TabBase, compute_left_panel_width
+from .base_tab import TabBase, compute_left_panel_width, get_existing_directory, build_left_panel
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .threshold_dialog import ThresholdDialog
@@ -57,12 +57,8 @@ class Tab_Create_NavSignal(TabBase):
         button_w = 90
         button_h_lrg = 50
 
-        self._left_widget = qtw.QWidget()
-        self._left_widget.setFixedWidth(width_userInput)
-        self._splitter.addWidget(self._left_widget)
-
         # layout top
-        layout_userInput = qtw.QVBoxLayout(self._left_widget)
+        layout_userInput = build_left_panel(self._splitter, width_userInput)
         #%% directory
         layout_dir_scanSize = qtw.QVBoxLayout()
         layout_userInput.addLayout(layout_dir_scanSize)
@@ -141,6 +137,9 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize_row1 = qtw.QHBoxLayout()
         layout_scanSize.addLayout(layout_scanSize_row1)
 
+        label_scanSize = qtw.QLabel('Scan Size')
+        layout_scanSize_row1.addWidget(label_scanSize)
+
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         layout_scanSize_row1.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
@@ -169,33 +168,6 @@ class Tab_Create_NavSignal(TabBase):
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
             layout_scanSize_row1.addWidget(wid)
         layout_scanSize_row1.addStretch(1)
-
-        # scale bars - moved out of Directories, real/reciprocal merged onto one row
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_scanSize.addWidget(self.box_scale)
-
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_canvas(
-            self.slider_imgNo.value()))
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-        self.lineEdit_scale_recip.setToolTip(
-            'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
-            'drawn as concentric dashed rings every 1 1/A, centered on the found center')
-        self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
 
         # detector size (per side, in pixels) - Auto assumes 512x512.
         layout_detSize = qtw.QHBoxLayout()
@@ -261,6 +233,35 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize_row2.addStretch(1)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
+
+        # scale bars - moved out of Directories, real/reciprocal merged onto
+        # one row; kept at the bottom of Input Parameters (below scan size/
+        # detector size/metadata), since it's a display-only calibration
+        # rather than an acquisition parameter.
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_scanSize.addWidget(self.box_scale)
+
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_row)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        self.lineEdit_scale_real.textChanged.connect(lambda: self._update_nav_scalebar())
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+        self.lineEdit_scale_recip.setToolTip(
+            'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
+            'drawn as concentric dashed rings every 1 1/A, centered on the found center')
+        self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
 
         #%% box smart scan (pattern-file) tomography support: each tilt angle
         # may have a "detection" file (dense, no pattern needed) and/or an
@@ -337,23 +338,30 @@ class Tab_Create_NavSignal(TabBase):
         # (instead of the generic Dwell T. above) for any single-file action
         # (Test File, Compute Summed DP, ...) once the file's role is known
         # via a confirmed Check Files match - see _get_dwell_time_for.
-        layout_scanSize_dwell = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell)
+        # Own rows (rather than sharing one, too-wide-for-the-panel row) -
+        # "Detection Dwell T. (μs)"/"Acquisition Dwell T. (μs)" are
+        # both long labels.
+        layout_scanSize_dwell1 = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell1)
         label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (μs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_detection)
+        layout_scanSize_dwell1.addWidget(label_dwellTime_detection)
         self.spinbox_dwellTime_detection = qtw.QSpinBox()
         self.spinbox_dwellTime_detection.setFixedWidth(70)
         self.spinbox_dwellTime_detection.setRange(1, 99999999)
         self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize_dwell1.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize_dwell1.addStretch(1)
+
+        layout_scanSize_dwell2 = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell2)
         label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (μs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_acquisition)
+        layout_scanSize_dwell2.addWidget(label_dwellTime_acquisition)
         self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
         self.spinbox_dwellTime_acquisition.setFixedWidth(70)
         self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
         self.spinbox_dwellTime_acquisition.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize_dwell.addStretch(1)
+        layout_scanSize_dwell2.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_scanSize_dwell2.addStretch(1)
 
         layout_scanSize_row5 = qtw.QHBoxLayout()
         layout_box_smartScan.addLayout(layout_scanSize_row5)
@@ -427,7 +435,8 @@ class Tab_Create_NavSignal(TabBase):
         # whole panel (right after layout_calculate_buttons/layout_save near
         # the end of init_widget) - see the comment there.
         self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedSize(button_w, button_h_lrg)
+        self.button_cancel.setFixedHeight(button_h_lrg)
+        
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.clicked.connect(self.cancel_running_work)
@@ -469,6 +478,12 @@ class Tab_Create_NavSignal(TabBase):
         self.file_list_widget = qtw.QListWidget()
         layout_userInput.addWidget(self.file_list_widget)
         self.file_list_widget.setMinimumWidth(150)
+        # A generous baseline height (rather than the few rows its bare
+        # sizeHint would give) - the panel now lives in a QScrollArea, which
+        # sizes its content to this natural/minimum size regardless of the
+        # window's actual height, instead of stretching to fill whatever
+        # space happens to be available the way a plain splitter pane would.
+        self.file_list_widget.setMinimumHeight(300)
         self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
         self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
         self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
@@ -548,6 +563,39 @@ class Tab_Create_NavSignal(TabBase):
         for sb in (self.spinbox_centerX, self.spinbox_centerY, self.spinbox_rIn, self.spinbox_rOut):
             sb.valueChanged.connect(self.update_mask_overlay)
 
+        # Several virtual detectors can be added to the list below and are
+        # combined into a single navigation image at calculation time -
+        # natively summed by eventem for .tpx3, OR-combined into one mask
+        # for every other format (see create_virtual_detector_multi in
+        # py4DTomo/io_utils/nav_image.py). An empty list just keeps the
+        # spinbox-defined detector above as the only one used, so nothing
+        # changes for anyone who never touches this.
+        self._extra_detectors = []
+
+        layout_detector_list_buttons = qtw.QHBoxLayout()
+        layout_mask.addLayout(layout_detector_list_buttons)
+        self.button_addDetector = qtw.QPushButton('Add Detector')
+        self.button_addDetector.setToolTip(
+            'Add the center/radii above as another virtual detector - once one or '
+            'more are added here, ALL of them (not the values above, until also '
+            'added) are combined into the single navigation image used for '
+            'calculations')
+        layout_detector_list_buttons.addWidget(self.button_addDetector)
+        self.button_addDetector.clicked.connect(self.add_extra_detector)
+        self.button_removeDetector = qtw.QPushButton('Remove Selected')
+        layout_detector_list_buttons.addWidget(self.button_removeDetector)
+        self.button_removeDetector.clicked.connect(self.remove_extra_detector)
+        layout_detector_list_buttons.addStretch(1)
+
+        self.list_detectors = qtw.QListWidget()
+        self.list_detectors.setToolTip(
+            'Additional virtual detectors, combined with each other (but not with '
+            'the center/radii spinboxes above unless also added here) into one '
+            'navigation image at calculation time')
+        self.list_detectors.setMaximumHeight(70)
+        layout_mask.addWidget(self.list_detectors)
+        self.list_detectors.itemSelectionChanged.connect(self._load_selected_detector)
+
         # Each row here holds at most one long-label button - a long label
         # can't shrink below its text's natural width (no eliding on
         # QPushButton), so packing several per row is what forced the whole
@@ -591,6 +639,16 @@ class Tab_Create_NavSignal(TabBase):
         # to work with and its own navigation toolbar.
         self._mask_artists = []
         self._mask_drag_mode = None
+        # Blit state for on_press_mask/on_motion_mask/on_release_mask -
+        # direct references to the 3 artists that get dragged (kept up to
+        # date by update_mask_overlay), and the cached background snapshot
+        # (everything else in ax_mask_preview) captured once a drag starts,
+        # so on_motion_mask can move just those 3 without a full-figure
+        # redraw on every mouse-move tick.
+        self._current_circle_out = None
+        self._current_circle_in = None
+        self._current_center_marker = None
+        self._mask_bg = None
         # Scan-space ROI drawn (Ctrl+drag) on the nav/test image, used only
         # by "Summed DP from ROI" - never by "Compute Summed DP", which always
         # sums the whole scan regardless of whether a ROI is currently drawn.
@@ -605,10 +663,10 @@ class Tab_Create_NavSignal(TabBase):
         layout_userInput.addLayout(layout_calculate_buttons)
         layout_userInput.addLayout(layout_save)
         layout_userInput.addWidget(self.button_cancel)
-        # Absorbs leftover vertical space below Cancel, so the whole panel's
-        # content stays pinned to the top instead of stretching to fill a
-        # taller window.
-        layout_userInput.addStretch(1)
+        # No trailing addStretch here - file_list_widget (given a stretch
+        # factor above, and Expanding by default) already claims all
+        # leftover vertical space, so Cancel naturally lands at the panel's
+        # bottom edge instead of leaving a separate empty gap below it.
         #%% canvas
         self._right_widget = qtw.QWidget()
         self._splitter.addWidget(self._right_widget)
@@ -741,32 +799,36 @@ class Tab_Create_NavSignal(TabBase):
 
     #%% functions
     def show_dialog(self, f):
-        """Open a file or folder picker, depending on which button (button_dir
-        or button_dir_save) triggered it, and fill the corresponding line edit."""
+        """Open a folder picker for whichever button (button_dir or
+        button_dir_save) triggered it, and fill the corresponding line edit."""
         sender = self.sender()
         if sender == self.button_dir:
-            file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.tpx3 *.mib);;All Files (*)"
-            path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
+            path = get_existing_directory(self, "Select 4D Signals Folder")
             if path:
-                path = os.path.split(path[0])[0]
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_signal.setText(path)
+                # setText() above only fires textChanged (which
+                # populate_file_list is connected to) when the path is
+                # actually different from what's already there - re-picking
+                # the *same* folder (e.g. after adding/removing files in it)
+                # would otherwise silently leave the stale file list showing.
+                self.populate_file_list()
         elif sender == self.button_dir_save:
-            path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+            path = get_existing_directory(self, "Select Destination Folder")
             if path:
                 self.lineEdit_dir_save.setText(path)
 
     def populate_file_list(self):
         """Refresh the file list for the current 4D signals folder, derive the
-        save directory/project name from it, auto-load tpx3 metadata if
-        present, and invalidate any previously-reviewed smart-scan match table."""
+        save directory/project name from it, auto-load comment.txt metadata if
+        present (any format - load_metadata(silent=True) no-ops quietly when
+        comment.txt is missing/unparsable), and invalidate any
+        previously-reviewed smart-scan match table."""
         directory = self.lineEdit_dir_signal.text()
         if os.path.isdir(directory):
             self.set_save_directory()
-        self.refresh_file_list()
-        if os.path.isdir(directory) and any(
-                f.endswith('.tpx3') for f in os.listdir(directory)):
             self.load_metadata(silent=True)
+        self.refresh_file_list()
         # A previously-reviewed smart-scan match table is only valid for the
         # folder it was built from - stale otherwise.
         self._smart_scan_rows = None
@@ -833,7 +895,7 @@ class Tab_Create_NavSignal(TabBase):
         """Browse for the pattern-files folder; invalidates any previously-
         reviewed Check Files match table."""
         start_dir = self.lineEdit_patternDir.text() or self.lineEdit_dir_signal.text()
-        path = qtw.QFileDialog.getExistingDirectory(self, "Select Pattern Files Folder", start_dir)
+        path = get_existing_directory(self, "Select Pattern Files Folder", start_dir)
         if path:
             self.lineEdit_patternDir.setText(path)
             self._smart_scan_rows = None
@@ -846,7 +908,7 @@ class Tab_Create_NavSignal(TabBase):
         """Browse for the detection-files folder; invalidates any previously-
         reviewed Check Files match table."""
         start_dir = self.lineEdit_detectionDir.text() or self.lineEdit_dir_signal.text()
-        path = qtw.QFileDialog.getExistingDirectory(self, "Select Detection Files Folder", start_dir)
+        path = get_existing_directory(self, "Select Detection Files Folder", start_dir)
         if path:
             self.lineEdit_detectionDir.setText(path)
             self._smart_scan_rows = None
@@ -922,6 +984,21 @@ class Tab_Create_NavSignal(TabBase):
         auto = self.checkbox_detectorSizeAuto.isChecked()
         self.spinbox_detectorSize_x.setDisabled(auto)
         self.spinbox_detectorSize_y.setDisabled(auto)
+
+    def get_detector_shape(self, fn):
+        """(shape_x, shape_y) of the detector/diffraction-pattern for `fn` -
+        auto-detected from the file for formats that report it cheaply
+        (io.get_det_size opens the file lazily, no full read), or the
+        manual "Detector Size" X/Y spinboxes for .tpx3 (auto-detecting that
+        would mean fully parsing the file - eventem has no cheaper
+        metadata-only query - just to learn its shape; "Auto" here keeps
+        the previous default of 512x512)."""
+        dtype = os.path.splitext(fn)[-1]
+        if dtype == '.tpx3':
+            if self.checkbox_detectorSizeAuto.isChecked():
+                return 512, 512
+            return self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()
+        return io.get_det_size(fn)
 
     def get_all_item_names(self):
         item_names = []
@@ -1014,7 +1091,9 @@ class Tab_Create_NavSignal(TabBase):
         result - lets the user check dwell time / scan size / virtual mask
         parameters before committing to the full "Calculate" run."""
         fn = self._get_test_fn(item)
-        if fn is None or not os.path.isfile(fn):
+        # os.path.exists, not isfile - .zspy stores are directories (Zarr),
+        # not single files, so isfile() rejected every valid .zspy path here.
+        if fn is None or not os.path.exists(fn):
             self.logger.error('Cannot test file: %s', fn)
             return
         dtype = os.path.splitext(fn)[-1]
@@ -1026,18 +1105,18 @@ class Tab_Create_NavSignal(TabBase):
 
         dwellTime = self._get_dwell_time_for(fn)
         fn_pattern = self._get_fn_pattern_for(fn)
+        det_shape = self.get_detector_shape(fn)
         self.logger.info('Testing navigation image for %s...', fn)
         if self.checkbox_useMask.isChecked():
             worker = WorkerThread_General(
                 io.calculate_nav_img_masked, 0, fn, dtype=dtype, scanSize=scanSize,
-                dwellTime=dwellTime, r_in=self.spinbox_rIn.value(),
-                r_out=self.spinbox_rOut.value(),
-                center=(self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                logger=self.logger, fn_pattern=fn_pattern)
+                dwellTime=dwellTime, detectors=self.get_active_detectors(),
+                logger=self.logger, fn_pattern=fn_pattern, det_shape=det_shape)
         else:
             worker = WorkerThread_General(io.calculate_nav_img, 0, fn, dtype=dtype,
                                           scanSize=scanSize, dwellTime=dwellTime,
-                                          logger=self.logger, fn_pattern=fn_pattern)
+                                          logger=self.logger, fn_pattern=fn_pattern,
+                                          det_shape=det_shape)
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
         QThreadPool.globalInstance().start(worker)
 
@@ -1056,6 +1135,7 @@ class Tab_Create_NavSignal(TabBase):
         self.ax.set_xlim(0, shape_y)
         self.ax.set_ylim(shape_x, 0)
         self.ax.set_title(f'TEST: {os.path.basename(fn)}')
+        self._update_nav_scalebar(redraw=False)
         # Re-seed the toolbar's view stack so its "Home" button resets to
         # *this* (correct, full-extent) view - otherwise Home falls back to
         # whatever the canvas showed before any data was loaded, since our
@@ -1072,7 +1152,9 @@ class Tab_Create_NavSignal(TabBase):
         nav/test image - for a restricted Summed DP instead, use "Summed DP from
         Threshold..." or "Summed DP from ROI"."""
         fn = self._get_test_fn()
-        if fn is None or not os.path.isfile(fn):
+        # os.path.exists, not isfile - .zspy stores are directories (Zarr),
+        # not single files, so isfile() rejected every valid .zspy path here.
+        if fn is None or not os.path.exists(fn):
             qtw.QMessageBox.critical(self, 'No File',
                 'Load a directory (and optionally select a file) before computing a Summed DP.')
             return
@@ -1086,9 +1168,10 @@ class Tab_Create_NavSignal(TabBase):
         self.logger.info('Computing Summed DP (summed diffraction pattern) from %s...', fn)
         self.button_computeSumDp.setDisabled(True)
         self._sum_dp_tic = perf_counter()
-        worker = WorkerThread_General(io.get_sum_dp, 0, fn, dtype=dtype, scanSize=scanSize,
+        worker = WorkerThread_General(io.get_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self._get_dwell_time_for(fn), roi=None,
-                                      logger=self.logger, fn_pattern=self._get_fn_pattern_for(fn))
+                                      logger=self.logger, fn_pattern=self._get_fn_pattern_for(fn),
+                                      det_shape=self.get_detector_shape(fn))
         worker.signals.results.connect(self._on_sum_dp_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1103,7 +1186,9 @@ class Tab_Create_NavSignal(TabBase):
                 'scan-space ROI first.')
             return
         fn = self._get_test_fn()
-        if fn is None or not os.path.isfile(fn):
+        # os.path.exists, not isfile - .zspy stores are directories (Zarr),
+        # not single files, so isfile() rejected every valid .zspy path here.
+        if fn is None or not os.path.exists(fn):
             qtw.QMessageBox.critical(self, 'No File',
                 'Load a directory (and optionally select a file) before computing a Summed DP.')
             return
@@ -1118,10 +1203,11 @@ class Tab_Create_NavSignal(TabBase):
         self.button_computeSumDp.setDisabled(True)
         self.button_sumDpFromRoi.setDisabled(True)
         self._sum_dp_tic = perf_counter()
-        worker = WorkerThread_General(io.get_sum_dp, 0, fn, dtype=dtype, scanSize=scanSize,
+        worker = WorkerThread_General(io.get_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self._get_dwell_time_for(fn),
                                       roi=self.roi_navsig, logger=self.logger,
-                                      fn_pattern=self._get_fn_pattern_for(fn))
+                                      fn_pattern=self._get_fn_pattern_for(fn),
+                                      det_shape=self.get_detector_shape(fn))
         worker.signals.results.connect(self._on_sum_dp_from_roi_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1173,32 +1259,114 @@ class Tab_Create_NavSignal(TabBase):
             self.logger.info('Summed DP computed successfully (%d x %d px).', det_x, det_y)
 
     def update_mask_overlay(self):
-        """Redraw the inner/outer radius circles and center marker on the
-        Summed DP preview to match the current spinbox values."""
+        """Redraw the inner/outer radius circles and center marker for the
+        current (spinbox-driven, drag-editable) detector, plus every
+        detector already added via "Add Detector", on the Summed DP preview."""
         for artist in self._mask_artists:
             try:
                 artist.remove()
             except Exception:
-                pass
+                self.logger.debug('Mask overlay artist already removed.', exc_info=True)
         self._mask_artists = []
         cx = self.spinbox_centerX.value()
         cy = self.spinbox_centerY.value()
         r_in = self.spinbox_rIn.value()
         r_out = self.spinbox_rOut.value()
 
-        circle_out = patches.Circle((cx, cy), r_out, fill=False, edgecolor='lime', linewidth=1.5)
-        self.ax_mask_preview.add_patch(circle_out)
-        self._mask_artists.append(circle_out)
+        # Direct references (not just the _mask_artists list) so
+        # on_motion_mask can reposition+blit just these 3 during a drag,
+        # instead of a full update_mask_overlay()/canvas.draw_idle() on
+        # every mouse-move tick.
+        self._current_circle_out = patches.Circle(
+            (cx, cy), r_out, fill=False, edgecolor='lime', linewidth=1.5)
+        self.ax_mask_preview.add_patch(self._current_circle_out)
+        self._mask_artists.append(self._current_circle_out)
         if r_in > 0:
-            circle_in = patches.Circle((cx, cy), r_in, fill=False, edgecolor='red', linewidth=1.5)
-            self.ax_mask_preview.add_patch(circle_in)
-            self._mask_artists.append(circle_in)
+            self._current_circle_in = patches.Circle(
+                (cx, cy), r_in, fill=False, edgecolor='red', linewidth=1.5)
+            self.ax_mask_preview.add_patch(self._current_circle_in)
+            self._mask_artists.append(self._current_circle_in)
+        else:
+            self._current_circle_in = None
         # green stands out clearly against inferno (whose brightest values
         # are yellow/white, near the direct beam where the center usually is)
-        center_marker = self.ax_mask_preview.scatter([cx], [cy], color='lime', marker='+', s=80, linewidth=2)
-        self._mask_artists.append(center_marker)
+        self._current_center_marker = self.ax_mask_preview.scatter(
+            [cx], [cy], color='lime', marker='+', s=80, linewidth=2)
+        self._mask_artists.append(self._current_center_marker)
+
+        # Already-added detectors (see add_extra_detector) - dashed and in a
+        # different color so they stay visually distinct from the one still
+        # being positioned (by drag or spinbox) above.
+        for detector in self._extra_detectors:
+            dcx, dcy = detector['center']
+            circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
+                                    edgecolor='cyan', linewidth=1.2, linestyle='--')
+            self.ax_mask_preview.add_patch(circle)
+            self._mask_artists.append(circle)
+            if detector['r_in'] > 0:
+                circle_in2 = patches.Circle((dcx, dcy), detector['r_in'], fill=False,
+                                            edgecolor='magenta', linewidth=1.2, linestyle='--')
+                self.ax_mask_preview.add_patch(circle_in2)
+                self._mask_artists.append(circle_in2)
+
         self.update_recip_scale_circles()
         self.canvas.draw_idle()
+
+    def add_extra_detector(self):
+        """Append the current center/radii spinbox values as another virtual
+        detector, combined with every other added detector (and the spinbox
+        values themselves, once anything has been added) at calculation
+        time - see get_active_detectors/calculate_nav_img_masked."""
+        r_in = self.spinbox_rIn.value()
+        r_out = self.spinbox_rOut.value()
+        if r_out <= r_in:
+            qtw.QMessageBox.critical(self, 'Invalid Virtual Mask',
+                'Outer radius must be greater than the inner radius.')
+            return
+        detector = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                    'r_in': r_in, 'r_out': r_out}
+        self._extra_detectors.append(detector)
+        self.list_detectors.addItem(self._format_detector(detector))
+        self.update_mask_overlay()
+
+    def remove_extra_detector(self):
+        """Remove the selected entry from the added-detectors list."""
+        row = self.list_detectors.currentRow()
+        if row < 0:
+            return
+        del self._extra_detectors[row]
+        self.list_detectors.takeItem(row)
+        self.update_mask_overlay()
+
+    def _format_detector(self, detector):
+        cx, cy = detector['center']
+        return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
+
+    def _load_selected_detector(self):
+        """Load the selected list entry's values back into the center/radii
+        spinboxes - lets it be inspected, or removed and re-added with edits."""
+        row = self.list_detectors.currentRow()
+        if row < 0 or row >= len(self._extra_detectors):
+            return
+        detector = self._extra_detectors[row]
+        for sb, val in ((self.spinbox_centerX, detector['center'][0]),
+                        (self.spinbox_centerY, detector['center'][1]),
+                        (self.spinbox_rIn, detector['r_in']),
+                        (self.spinbox_rOut, detector['r_out'])):
+            sb.blockSignals(True)
+            sb.setValue(int(val))
+            sb.blockSignals(False)
+        self.update_mask_overlay()
+
+    def get_active_detectors(self):
+        """The full set of virtual detectors to use for calculations right
+        now: every entry added via "Add Detector", or - if none have been
+        added - just the center/radii spinbox values alone. Passed as
+        calculate_nav_img_masked's `detectors` argument."""
+        if self._extra_detectors:
+            return list(self._extra_detectors)
+        return [{'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                 'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}]
 
     def update_recip_scale_circles(self):
         """Draw concentric dashed 1/A rings on the Summed DP preview, centered
@@ -1211,8 +1379,10 @@ class Tab_Create_NavSignal(TabBase):
         self._sum_dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_mask_preview, self.lineEdit_scale_recip.text(), self.sum_dp.shape,
             center=center, old_artists=getattr(self, '_sum_dp_recip_circles', None))
-        centering_mode = ('auto (large-sigma blur)' if self.checkbox_autoCenterDp.isChecked()
-                          else 'manual - drag the "+" or use the spinboxes')
+        if self.checkbox_autoCenterDp.isChecked():
+            centering_mode = 'auto (large-sigma blur) - uncheck "Auto-center" to set manually'
+        else:
+            centering_mode = 'manual - Ctrl+Click, drag the "+", or use the spinboxes'
         self.ax_mask_preview.set_xlabel(
             f'Circle center: {centering_mode}\n'
             'Hold Ctrl and drag the center (+) or a circle edge to move/resize the virtual mask.',
@@ -1255,18 +1425,21 @@ class Tab_Create_NavSignal(TabBase):
         used to find the diffraction center."""
         dtype = os.path.splitext(fn)[-1]
         scanSize = self._get_current_scanSize()
+        fn_pattern = self._get_fn_pattern_for(fn)
+        det_shape = self.get_detector_shape(fn)
         self.logger.info(
             'Computing Summed DP from %s-thresholded scan positions of %s...', method, fn)
         self.button_sumDpFromThreshold.setDisabled(True)
         self._sum_dp_tic = perf_counter()
         worker = WorkerThread_General(self._sum_dp_from_mask_worker, 0, fn, dtype, scanSize,
-                                      mask, self.logger)
+                                      mask, fn_pattern, det_shape, self.logger)
         worker.signals.results.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
 
     @staticmethod
-    def _sum_dp_from_mask_worker(fn, dtype, scanSize, mask, logger=None):
+    def _sum_dp_from_mask_worker(fn, dtype, scanSize, mask, fn_pattern=None,
+                                 det_shape=(512, 512), logger=None):
         """Worker for compute_sum_dp_from_threshold: crop to `mask`'s bounding
         box and sum diffraction patterns only at the masked scan positions."""
         rows = np.any(mask, axis=1)
@@ -1276,7 +1449,8 @@ class Tab_Create_NavSignal(TabBase):
         y0, y1 = int(y_idx[0]), int(y_idx[-1])
         x0, x1 = int(x_idx[0]), int(x_idx[-1])
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
-        dp = load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize, dwellTime=1)
+        dp = load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize, dwellTime=1,
+                    fn_pattern=fn_pattern, det_shape=det_shape)
         if hasattr(dp, 'compute'):
             with io.LoggingProgressBar(logger, 'Thresholded Summed DP'):
                 dp = dp.compute()
@@ -1289,7 +1463,11 @@ class Tab_Create_NavSignal(TabBase):
     def on_press_mask(self, event):
         """Grab the center marker or a circle edge for dragging - gated
         behind Ctrl so plain click/drag stays available for the toolbar's
-        Pan/Zoom tool, matching the rest of the app's convention."""
+        Pan/Zoom tool, matching the rest of the app's convention. A
+        Ctrl+Click that doesn't land on the marker/an edge instead
+        re-centers directly to the click point (only while Auto-center is
+        off), mirroring the click-anywhere DP recentering already present
+        on the other three tabs."""
         self._mask_drag_mode = None
         if (event.inaxes != self.ax_mask_preview or event.xdata is None
                 or 'ctrl' not in event.modifiers):
@@ -1314,28 +1492,91 @@ class Tab_Create_NavSignal(TabBase):
         elif r_in > 0 and abs(dist - r_in) < threshold_data:
             self._mask_drag_mode = 'r_in'
 
+        if self._mask_drag_mode is None:
+            # Not a drag start - re-center directly to the click point,
+            # same gating as the other three tabs' click-anywhere DP
+            # recentering (only while Auto-center is off, so it isn't
+            # immediately overwritten by the next auto-centered Summed DP
+            # computation).
+            if not self.checkbox_autoCenterDp.isChecked():
+                self.spinbox_centerX.setValue(int(round(event.xdata)))
+                self.spinbox_centerY.setValue(int(round(event.ydata)))
+                self.update_mask_overlay()
+            return
+
+        # Blit setup: snapshot everything in ax_mask_preview *except*
+        # the 3 artists about to be dragged, so on_motion_mask can move
+        # just those on every mouse-move tick instead of a full-figure
+        # redraw - dragging the virtual detector was noticeably slow
+        # before this, since self.ax and self.ax_mask_preview share one
+        # figure/canvas and a plain draw_idle() redraws both.
+        for artist in (self._current_circle_out, self._current_circle_in,
+                       self._current_center_marker):
+            if artist is not None:
+                artist.set_visible(False)
+        self.canvas.draw()
+        self._mask_bg = self.canvas.copy_from_bbox(self.ax_mask_preview.bbox)
+        for artist in (self._current_circle_out, self._current_circle_in,
+                       self._current_center_marker):
+            if artist is not None:
+                artist.set_visible(True)
+
     def on_motion_mask(self, event):
-        """Apply the drag started by on_press_mask (move the center, or resize
-        r_in/r_out) to the current mouse position."""
+        """Apply the drag started by on_press_mask (move the center, or
+        resize r_in/r_out) to the current mouse position - repositions the
+        dragged artists directly and blits, rather than going through the
+        spinboxes' valueChanged -> update_mask_overlay -> full redraw path
+        on every tick (still updates the spinboxes' displayed values, with
+        their change signals blocked so that path isn't retriggered)."""
         if (self._mask_drag_mode is None or event.inaxes != self.ax_mask_preview
                 or event.xdata is None or event.ydata is None):
             return
         if self._mask_drag_mode == 'center':
-            self.spinbox_centerX.setValue(int(round(event.xdata)))
-            self.spinbox_centerY.setValue(int(round(event.ydata)))
+            for sb, val in ((self.spinbox_centerX, event.xdata), (self.spinbox_centerY, event.ydata)):
+                sb.blockSignals(True)
+                sb.setValue(int(round(val)))
+                sb.blockSignals(False)
         else:
             cx = self.spinbox_centerX.value()
             cy = self.spinbox_centerY.value()
             r = int(round(np.hypot(event.xdata - cx, event.ydata - cy)))
             if self._mask_drag_mode == 'r_out':
-                self.spinbox_rOut.setValue(max(r, self.spinbox_rIn.value() + 1))
+                r = max(r, self.spinbox_rIn.value() + 1)
+                self.spinbox_rOut.blockSignals(True)
+                self.spinbox_rOut.setValue(r)
+                self.spinbox_rOut.blockSignals(False)
             elif self._mask_drag_mode == 'r_in':
-                self.spinbox_rIn.setValue(min(r, self.spinbox_rOut.value() - 1))
-        # The spinboxes' valueChanged -> update_mask_overlay connection
-        # (wired at creation time) redraws the circles/marker automatically.
+                r = min(r, self.spinbox_rOut.value() - 1)
+                self.spinbox_rIn.blockSignals(True)
+                self.spinbox_rIn.setValue(r)
+                self.spinbox_rIn.blockSignals(False)
+
+        cx = self.spinbox_centerX.value()
+        cy = self.spinbox_centerY.value()
+        self._current_circle_out.set_center((cx, cy))
+        self._current_circle_out.set_radius(self.spinbox_rOut.value())
+        if self._current_circle_in is not None:
+            self._current_circle_in.set_center((cx, cy))
+            self._current_circle_in.set_radius(self.spinbox_rIn.value())
+        self._current_center_marker.set_offsets([[cx, cy]])
+
+        self.canvas.restore_region(self._mask_bg)
+        self.ax_mask_preview.draw_artist(self._current_circle_out)
+        if self._current_circle_in is not None:
+            self.ax_mask_preview.draw_artist(self._current_circle_in)
+        self.ax_mask_preview.draw_artist(self._current_center_marker)
+        self.canvas.blit(self.ax_mask_preview.bbox)
 
     def on_release_mask(self, event):
+        """End the drag (if one was active) and do one full, correct redraw
+        - update_mask_overlay()/update_recip_scale_circles() were skipped
+        during the drag itself (see on_motion_mask), so the reciprocal-space
+        rings in particular need this to catch up to the final center."""
+        was_dragging = self._mask_drag_mode is not None
         self._mask_drag_mode = None
+        self._mask_bg = None
+        if was_dragging:
+            self.update_mask_overlay()
 
     def on_scroll_mask(self, event):
         """Zoom either plot in/out on Ctrl+scroll wheel, centered on the
@@ -1377,7 +1618,7 @@ class Tab_Create_NavSignal(TabBase):
             try:
                 self.rect_navsig.remove()
             except Exception:
-                pass
+                self.logger.debug('Nav-signal ROI rectangle already removed.', exc_info=True)
         self.rect_navsig = patches.Rectangle(self._navsig_press, 0, 0, linewidth=1,
                                              edgecolor='r', facecolor='none')
         self.ax.add_patch(self.rect_navsig)
@@ -1441,7 +1682,7 @@ class Tab_Create_NavSignal(TabBase):
             try:
                 self.rect_navsig.remove()
             except Exception:
-                pass
+                self.logger.debug('Nav-signal ROI rectangle already removed.', exc_info=True)
             self.rect_navsig = None
             self.canvas.draw_idle()
         self.button_sumDpFromRoi.setDisabled(True)
@@ -1501,19 +1742,17 @@ class Tab_Create_NavSignal(TabBase):
 
         mask_params = None
         if self.checkbox_useMask.isChecked():
-            r_in = self.spinbox_rIn.value()
-            r_out = self.spinbox_rOut.value()
-            if r_out <= r_in:
-                self.logger.warning(
-                    'Cannot start: virtual mask outer radius (%d) must be greater than '
-                    'the inner radius (%d).', r_out, r_in)
-                qtw.QMessageBox.critical(self, 'Invalid Virtual Mask',
-                    'Outer radius must be greater than the inner radius.')
-                return
-            mask_params = (r_in, r_out, (self.spinbox_centerX.value(), self.spinbox_centerY.value()))
-            self.logger.info(
-                'Using virtual mask: center=%s, inner radius=%d, outer radius=%d.',
-                mask_params[2], r_in, r_out)
+            detectors = self.get_active_detectors()
+            for det in detectors:
+                if det['r_out'] <= det['r_in']:
+                    self.logger.warning(
+                        'Cannot start: virtual mask outer radius (%d) must be greater than '
+                        'the inner radius (%d).', det['r_out'], det['r_in'])
+                    qtw.QMessageBox.critical(self, 'Invalid Virtual Mask',
+                        'Outer radius must be greater than the inner radius.')
+                    return
+            mask_params = detectors
+            self.logger.info('Using %d virtual detector(s): %s', len(detectors), detectors)
 
         # Captured now (while these are all known) rather than re-derived at
         # save time, since "Save Results" can be clicked well after
@@ -1527,9 +1766,8 @@ class Tab_Create_NavSignal(TabBase):
             'dwell_time_us': dwellTime,
             'virtual_detector': {
                 'used': mask_params is not None,
-                'inner_radius': mask_params[0] if mask_params else None,
-                'outer_radius': mask_params[1] if mask_params else None,
-                'center': list(mask_params[2]) if mask_params else None,
+                'detectors': [{'center': list(d['center']), 'r_in': d['r_in'], 'r_out': d['r_out']}
+                             for d in mask_params] if mask_params else None,
             },
             'comment_txt_metadata_source': {
                 'path': self.metadata_path_override or self.path_main,
@@ -1616,10 +1854,16 @@ class Tab_Create_NavSignal(TabBase):
         # handle_finished_nav and worker_nav_img.py's docstring for why.
         self._navimg_temp_dir = tempfile.mkdtemp(prefix='py5ded_navimg_')
         self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
+        # Detector shape only actually varies by dtype (auto-detected per
+        # file for non-.tpx3 formats, or the manual/Auto UI setting for
+        # .tpx3) - dtype itself is already uniform across this whole batch,
+        # so one lookup from the first file covers the batch.
+        det_shape = self.get_detector_shape(fns[0])
         self.tasks = deque()
         for i, fn in enumerate(fns):
             fn_pattern = fns_pattern[i] if fns_pattern is not None else None
-            self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params, fn_pattern))
+            self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params, fn_pattern,
+                              det_shape))
         self.running_processes = []
         self.process_task_map = {}
         self.process_output_buffers = {}
@@ -1633,19 +1877,17 @@ class Tab_Create_NavSignal(TabBase):
         wiring up its output/finished/error signals."""
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
-        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern = self.tasks.popleft()
+        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern, det_shape = \
+            self.tasks.popleft()
         scanSize_str = str(scanSize) if scanSize is not None else 'None'
         args = [fn, dtype, scanSize_str, str(dwellTime), str(i_index), self._navimg_temp_dir]
-        if mask_params is not None or fn_pattern:
-            # r_in/r_out/center must all be present (even as 'None') for
-            # fn_pattern to land in the right positional slot - see
-            # calculate_nav_img_worker's signature in worker_nav_img.py.
-            if mask_params is not None:
-                r_in, r_out, center = mask_params
-                args += [str(r_in), str(r_out), str(center)]
-            else:
-                args += ['None', 'None', 'None']
-            args += [fn_pattern or '']
+        # detectors_json/fn_pattern/det_shape are always appended together
+        # (even as 'None'/'' sentinels) so each lands in its correct
+        # positional slot in calculate_nav_img_worker's signature in
+        # worker_nav_img.py, regardless of which are actually in use.
+        args += [json.dumps(mask_params) if mask_params is not None else 'None']
+        args += [fn_pattern or '']
+        args += [str(det_shape)]
         program, arguments = worker_command('nav_img', args)
         process = QProcess()
         process.setProgram(program)
@@ -1896,13 +2138,24 @@ class Tab_Create_NavSignal(TabBase):
             shape_x, shape_y = self.nav_imgs[imgNo].shape
             self.img_display.set_extent([0, shape_y, shape_x, 0])
             self.ax.set_title(f'Image No. {imgNo+1:d}')
-            scale_real = self.lineEdit_scale_real.text()
-            try:
-                scale_real = float(scale_real)
-                io.add_readable_scalebar(self.ax, scale_real, 'nm')
-            except Exception:
-                pass
+            self._update_nav_scalebar(redraw=False)
             self.canvas.draw()
+
+    def _update_nav_scalebar(self, redraw=True):
+        """(Re)draw the scale bar on the nav/test image axis to match the
+        current Real (nm) field, or remove it if the field is empty/invalid.
+        Works regardless of whether the currently-displayed image came from
+        the nav_imgs stack or a single-file test, and is wired to the field's
+        textChanged so the scale bar updates live as it's edited."""
+        scale_real = self.lineEdit_scale_real.text()
+        try:
+            scale_real = float(scale_real)
+        except ValueError:
+            io.remove_scalebar(self.ax)
+        else:
+            io.add_readable_scalebar(self.ax, scale_real, 'nm')
+        if redraw:
+            self.canvas.draw_idle()
 
     def _set_nav_contrast_range(self, data_min, data_max):
         """(Re)anchor the nav-image contrast sliders to freshly-displayed
@@ -1956,7 +2209,7 @@ class Tab_Create_NavSignal(TabBase):
        msg.setInformativeText("Enter scan size and try again.")
        msg.setStandardButtons(qtw.QMessageBox.Ok)
        msg.setIcon(qtw.QMessageBox.Critical)
-       retval = msg.exec_()
+       msg.exec_()
 
     def _scan_size_required(self, dtype):
         """Whether an explicit (non-"Auto") scan size is required for

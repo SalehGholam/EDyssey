@@ -50,7 +50,7 @@ def delete_model(args):
     for item in args:
         try:
             del item
-        except:
+        except Exception:
             pass
         
     torch.cuda.empty_cache()

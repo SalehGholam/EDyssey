@@ -107,7 +107,7 @@ class ProcessStderrBuffer:
                 sys.stderr.buffer.write(chunk)
                 sys.stderr.buffer.flush()
             except Exception:
-                pass
+                pass  # no console attached (e.g. a frozen windowed build) - nothing to echo to
         return chunk
 
     def log_info(self, process, logger, label=''):

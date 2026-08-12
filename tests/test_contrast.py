@@ -95,7 +95,6 @@ def test_convert_to_8bit_does_not_mutate_input(clean_stack):
 
 def test_percentile_is_more_robust_to_hot_pixel_than_minmax(stack_with_hot_pixel):
     frame = stack_with_hot_pixel[0]  # contains the 5000.0 outlier
-    normal_pixel_value = stack_with_hot_pixel[1, 5, 5]  # a typical ~100 value, different frame
 
     img_minmax = contrast.convert_img_to_8bit(frame, method='minmax')
     img_percentile = contrast.convert_img_to_8bit(frame, method='percentile', plow=1.0, phigh=99.0)

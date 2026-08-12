@@ -5,6 +5,7 @@ Created on Thu Sep 19 15:55:17 2024
 @author: SGholam
 """
 
+import ast
 import os
 import json
 from glob import glob
@@ -30,7 +31,7 @@ from worker_extract_frame import load_dp
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
-from .base_tab import TabBase, compute_left_panel_width
+from .base_tab import TabBase, compute_left_panel_width, get_existing_directory, build_left_panel
 from .pets2_dialog import Pets2ParamsDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
@@ -77,7 +78,6 @@ class Tab_Tracking_CV2(TabBase):
 
     def init_widget(self):
         button_w = 110
-        button_h_sml = 30
         button_h_lrg = 50
         width_userInput = compute_left_panel_width()
         self.layout = qtw.QHBoxLayout(self)
@@ -85,12 +85,8 @@ class Tab_Tracking_CV2(TabBase):
         self._splitter = qtw.QSplitter(Qt.Horizontal)
         self.layout.addWidget(self._splitter)
 
-        self._left_widget = qtw.QWidget()
-        self._left_widget.setFixedWidth(width_userInput)
-        self._splitter.addWidget(self._left_widget)
-
         # layout top
-        layout_userInput = qtw.QVBoxLayout(self._left_widget)
+        layout_userInput = build_left_panel(self._splitter, width_userInput)
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories', self)
@@ -148,19 +144,26 @@ class Tab_Tracking_CV2(TabBase):
         layout_loadSignal = qtw.QHBoxLayout()
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
+        # id(dp_array) at the time dp_center was last auto-found - lets
+        # update_scalebar('reciprocal') skip re-running find_dp_center_blurred
+        # (a real HyperSpy call) when the displayed DP hasn't actually
+        # changed since, e.g. on every keystroke in the scale-recip field.
+        # See _on_auto_center_toggled.
+        self._dp_center_cache_key = None
 
         layout_dir.addLayout(layout_loadSignal)
-        layout_load_buttons = qtw.QVBoxLayout()
-        layout_loadSignal.addLayout(layout_load_buttons)
 
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        layout_load_buttons.addWidget(self.button_loadNavigation)
+        # self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
+        layout_loadSignal.addWidget(self.button_loadNavigation)
+        
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
 
         self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
-        self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        layout_load_buttons.addWidget(self.button_loadSavedAnalysis)
+        # self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg)
+        layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
         #%% box input parameters (scan dims, scale bars, detector size, dwell
@@ -173,6 +176,9 @@ class Tab_Tracking_CV2(TabBase):
 
         layout_scanSize_row1 = qtw.QHBoxLayout()
         layout_box_scanSize.addLayout(layout_scanSize_row1)
+
+        label_scanSize = qtw.QLabel('Scan Size')
+        layout_scanSize_row1.addWidget(label_scanSize)
 
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         self.checkbox_scanSize.setChecked(True)
@@ -208,39 +214,6 @@ class Tab_Tracking_CV2(TabBase):
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
             layout_scanSize_row1.addWidget(wid)
         layout_scanSize_row1.addStretch(1)
-
-        # scale bars - moved out of Directories, real/reciprocal merged onto one row
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_box_scanSize.addWidget(self.box_scale)
-
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the DP '
-            'plot to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(lambda: self.update_scalebar('reciprocal'))
-        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_scalebar('reciprocal'))
-        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
 
         # detector size (per side, in pixels) - only truly needed for .tpx3
         # (see get_detector_shape); Auto keeps the 512x512 default other
@@ -312,6 +285,42 @@ class Tab_Tracking_CV2(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
+        # scale bars - moved out of Directories, real/reciprocal merged onto
+        # one row; kept at the bottom of Input Parameters (below scan size/
+        # detector size/metadata), since it's a display-only calibration
+        # rather than an acquisition parameter.
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_box_scanSize.addWidget(self.box_scale)
+
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_row)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the reciprocal-space rings are re-centered on the '
+            'direct beam automatically (found via a large-sigma blur) after '
+            'every redraw. When unchecked, hold Ctrl and click on the DP '
+            'plot to set the center manually.')
+        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
+        self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_scalebar('reciprocal'))
+        self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
+
         # smart-scan (pattern-file) support: the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
@@ -370,23 +379,30 @@ class Tab_Tracking_CV2(TabBase):
         # for the dense detection pass, "Scan strategy: Custom" for the
         # sparse acquisition), each with its own dwelltime - editable here
         # in case they differ from (or aren't present in) comment.txt.
-        layout_scanSize_dwell = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell)
+        # Own rows (rather than sharing one, too-wide-for-the-panel row) -
+        # "Detection Dwell T. (μs)"/"Acquisition Dwell T. (μs)" are
+        # both long labels.
+        layout_scanSize_dwell1 = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell1)
         label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (μs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_detection)
+        layout_scanSize_dwell1.addWidget(label_dwellTime_detection)
         self.spinbox_dwellTime_detection = qtw.QSpinBox()
         self.spinbox_dwellTime_detection.setFixedWidth(70)
         self.spinbox_dwellTime_detection.setRange(1, 99999999)
         self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize_dwell1.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize_dwell1.addStretch(1)
+
+        layout_scanSize_dwell2 = qtw.QHBoxLayout()
+        layout_box_smartScan.addLayout(layout_scanSize_dwell2)
         label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (μs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_acquisition)
+        layout_scanSize_dwell2.addWidget(label_dwellTime_acquisition)
         self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
         self.spinbox_dwellTime_acquisition.setFixedWidth(70)
         self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
         self.spinbox_dwellTime_acquisition.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize_dwell.addStretch(1)
+        layout_scanSize_dwell2.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_scanSize_dwell2.addStretch(1)
 
         layout_scanSize_row4 = qtw.QHBoxLayout()
         layout_box_smartScan.addLayout(layout_scanSize_row4)
@@ -429,6 +445,12 @@ class Tab_Tracking_CV2(TabBase):
         self.tree_objects = qtw.QTreeWidget()
         layout_userInput_2.addWidget(self.tree_objects)
         self.tree_objects.setMinimumWidth(200)
+        # A generous baseline height (rather than the few rows its bare
+        # sizeHint would give) - the panel now lives in a QScrollArea, which
+        # sizes its content to this natural/minimum size regardless of the
+        # window's actual height, instead of stretching to fill whatever
+        # space happens to be available the way a plain splitter pane would.
+        self.tree_objects.setMinimumHeight(280)
         self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "dup", "del"]
         self.tree_objects.setHeaderLabels(["Use", "Idx", "Start", "End", "Ref", "Tracked", "Extracted", "Duplicate", "Delete"])
         self.tree_objects.setColumnCount(len(self.cols_tree))
@@ -445,10 +467,12 @@ class Tab_Tracking_CV2(TabBase):
         self.patches_axTrack = []
         self.empty_main_dataframe()
         
-        # bottom 
+        # bottom - blur/tracker selection on its own row, action buttons on
+        # another, rather than all 6 widgets crammed into one (too wide for
+        # the panel) row.
         layout_featureBottom = qtw.QHBoxLayout()
         layout_userInput_2.addLayout(layout_featureBottom)
-        
+
         # self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
         # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
         # self.checkbox_roiInRoi.setDisabled(True)
@@ -473,9 +497,14 @@ class Tab_Tracking_CV2(TabBase):
         self.combo_trackMethod.setMinimumContentsLength(8)
         layout_featureBottom.addWidget(self.combo_trackMethod)
         self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
-        
+        layout_featureBottom.addStretch(1)
+
+        layout_featureButtons = qtw.QHBoxLayout()
+        layout_userInput_2.addLayout(layout_featureButtons)
+        layout_featureButtons.addStretch(1)
+
         self.button_track = qtw.QPushButton('Track!')
-        layout_featureBottom.addWidget(self.button_track, alignment=Qt.AlignCenter)
+        layout_featureButtons.addWidget(self.button_track, alignment=Qt.AlignCenter)
         self.button_track.clicked.connect(self.track_rois)
         self.button_track.setDisabled(True)
 
@@ -483,9 +512,10 @@ class Tab_Tracking_CV2(TabBase):
         self.button_fineTuneMask.setToolTip(
             'Manually edit the selected ROI\'s mask, frame by frame - grow/shrink '
             'it directionally or apply edge detection to one frame')
-        layout_featureBottom.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
+        layout_featureButtons.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
         self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
         self.button_fineTuneMask.setDisabled(True)
+        layout_featureButtons.addStretch(1)
         #%% box thresh and 3DED
         layout_3ded = qtw.QVBoxLayout()
         layout_userInput.addLayout(layout_3ded)
@@ -652,7 +682,7 @@ class Tab_Tracking_CV2(TabBase):
         # form a compact cluster centered in the row via the stretches
         # below, instead of stretching edge-to-edge across the panel.
         layout_extract.addStretch(1)
-        self.button_3ded = qtw.QPushButton('Extract!')
+        self.button_3ded = qtw.QPushButton('Extract All')
         layout_extract.addWidget(self.button_3ded)
         self.button_3ded.setFixedHeight(button_h_lrg)
         self.button_3ded.clicked.connect(self.extract_3ded)
@@ -671,12 +701,19 @@ class Tab_Tracking_CV2(TabBase):
         self.button_save_results.clicked.connect(self.save_results)
         layout_extract.addStretch(1)
 
+        # Same width for all three - sized to fit the widest label
+        # ("Extract DP\n(Current Frame)") rather than a hardcoded guess.
+        extract_btn_width = self.button_extractCurrentFrame.sizeHint().width()
+        for btn in (self.button_3ded, self.button_extractCurrentFrame, self.button_save_results):
+            btn.setFixedWidth(extract_btn_width)
+
         self.disable_3ded_widgets(True)
         layout_userInput.addWidget(self.button_cancel)
-        # Absorbs leftover vertical space below Cancel, so the whole panel's
-        # content stays pinned to the top instead of stretching to fill a
-        # taller window.
-        layout_userInput.addStretch(1)
+        # No trailing addStretch here - box_buttons (Feature Handling, given
+        # a stretch factor above) already claims all leftover vertical
+        # space, via its own Expanding size policy set alongside it, so
+        # Cancel naturally lands at the panel's bottom edge instead of
+        # leaving a separate empty gap below it.
         #%% canvas
         self._right_widget = qtw.QWidget()
         self._splitter.addWidget(self._right_widget)
@@ -890,25 +927,30 @@ class Tab_Tracking_CV2(TabBase):
             file_filter = "supported signals (*.zspy *.hspy);;All Files (*)"
             # path = qtw.QFileDialog.getOpenFileNames(self, "Select 4D Signals Folder", '', file_filter)
             path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
-            if path and os.path.isfile(path[0]):
+            # os.path.exists, not isfile - .zspy stores are directories
+            # (Zarr), not single files.
+            if path and os.path.exists(path[0]):
                 self.lineEdit_dir_navSignal.setText(path[0])
                 self.lineEdit_dir_save.setText(io.default_analysis_save_dir(path[0]))
                 self.apply_nav_signal_metadata(path[0])
 
 
         elif sender == self.button_dir_4dSignals:
-            path = qtw.QFileDialog.getExistingDirectory(self, "Select 4D Folder")
+            path = get_existing_directory(self, "Select 4D Folder")
             # if path and os.path.isdir(path[0]):
             if path:
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_4d.setText(path)
                 self._smart_scan_rows = None  # stale for a different folder
                 self.label_smartScanSummary.setText('')
-                if any(f.endswith('.tpx3') for f in os.listdir(path)):
-                    self.load_metadata(silent=True)
+                # Attempted for every format, not just .tpx3 - comment.txt is
+                # written for smart-scanned .mib/.hspy/.zspy acquisitions
+                # too, and load_metadata(silent=True) already no-ops
+                # quietly when comment.txt is missing or unparsable.
+                self.load_metadata(silent=True)
 
         elif sender == self.button_dir_save:
-            path = qtw.QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+            path = get_existing_directory(self, "Select Destination Folder")
             if path and os.path.isdir(path[0]):
                 self.lineEdit_dir_save.setText(path)
 
@@ -1061,7 +1103,7 @@ class Tab_Tracking_CV2(TabBase):
 
     def browse_pattern_dir(self):
         start_dir = self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
-        path = qtw.QFileDialog.getExistingDirectory(self, "Select Pattern Files Folder", start_dir)
+        path = get_existing_directory(self, "Select Pattern Files Folder", start_dir)
         if path:
             self.lineEdit_patternDir.setText(path)
             self._smart_scan_rows = None
@@ -1072,7 +1114,7 @@ class Tab_Tracking_CV2(TabBase):
 
     def browse_detection_dir(self):
         start_dir = self.lineEdit_detectionDir.text() or self.lineEdit_dir_4d.text()
-        path = qtw.QFileDialog.getExistingDirectory(self, "Select Detection Files Folder", start_dir)
+        path = get_existing_directory(self, "Select Detection Files Folder", start_dir)
         if path:
             self.lineEdit_detectionDir.setText(path)
             self._smart_scan_rows = None
@@ -1116,7 +1158,9 @@ class Tab_Tracking_CV2(TabBase):
             return load(fn)
 
         fn = self.lineEdit_dir_navSignal.text()
-        if not os.path.isfile(fn):
+        # os.path.exists, not isfile - .zspy stores are directories (Zarr),
+        # not single files.
+        if not os.path.exists(fn):
             self.logger.error('Navigation signal file not found: %s', fn)
             qtw.QMessageBox.critical(self, 'File Not Found',
                 f'Cannot find navigation signal file:\n{fn}')
@@ -1139,22 +1183,24 @@ class Tab_Tracking_CV2(TabBase):
     def reset_data(self):
         """Clear all ROI patches from the nav/track axes, reset the ROI
         dataframe/tree and displayed images to blank placeholders."""
+        # Artists may already be gone (e.g. axes cleared elsewhere since the
+        # last reset) - that's expected, not an error.
         for p in self.ax_nav.patches:
             try:
                 p.remove()
-            except: pass
+            except Exception: pass
         for p in self.ax_track.patches:
             try:
                 p.remove()
-            except: pass
+            except Exception: pass
         for p in self.patches_axNav:
             try:
                 p.remove()
-            except: pass
+            except Exception: pass
         for p in self.patches_axTrack:
             try:
                 p.remove()
-            except: pass
+            except Exception: pass
         self.empty_main_dataframe()
         # New data may change image extents/overlays - force the blit
         # backgrounds to be recaptured on the next frame update.
@@ -1222,6 +1268,7 @@ class Tab_Tracking_CV2(TabBase):
         self.nav_imgs_raw = self.s.data
         self.nav_imgs = deepcopy(self.s_8bit.data)
         self.dp_center = None  # a new signal may have a different DP shape/center
+        self._dp_center_cache_key = None
         self.spinner.stop()
         
         shape_x, shape_y = self.nav_imgs[0].shape
@@ -1267,7 +1314,7 @@ class Tab_Tracking_CV2(TabBase):
         """Restore a previously saved analysis folder (produced by
         save_results): the navigation signal, per-ROI tracking (init points/
         out_rois/mask), and any extracted diffraction patterns."""
-        path = qtw.QFileDialog.getExistingDirectory(
+        path = get_existing_directory(
             self, "Select Saved Analysis Folder", self.lineEdit_dir_save.text())
         if not path:
             return
@@ -1627,7 +1674,7 @@ class Tab_Tracking_CV2(TabBase):
                                                verticalalignment='center', color='tab:orange', fontsize=font_size)
                         self.patches_axTrack.append(t)
                 except Exception:
-                    pass
+                    self.logger.debug('Skipped drawing ROI %s at frame %d.', i, imgNo, exc_info=True)
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
 
@@ -1700,21 +1747,42 @@ class Tab_Tracking_CV2(TabBase):
             # leave the reciprocal-space rings missing right after a fresh
             # load. Leaving dp_center at None falls back to the image's own
             # geometric center.
-            if self.checkbox_autoCenterDp.isChecked() and np.any(dp_array):
+            # find_dp_center_blurred is a real HyperSpy call (Signal2D + a
+            # gaussian-blur map) - only worth re-running when the displayed
+            # DP has actually changed since the last time (id() is a cheap,
+            # reliable proxy: set_data() always replaces the artist's array
+            # wholesale, never mutates it in place), not on every redraw -
+            # this is wired to per-keystroke text-field edits.
+            dp_key = id(dp_array)
+            if (self.checkbox_autoCenterDp.isChecked() and np.any(dp_array)
+                    and self._dp_center_cache_key != dp_key):
                 try:
                     self.dp_center = io.find_dp_center_blurred(dp_array)
+                    self._dp_center_cache_key = dp_key
                 except Exception:
                     self.logger.exception('Auto-centering the diffraction pattern failed.')
             self._dp_recip_circles = io.draw_reciprocal_scale_circles(
                 self.ax_dp, self.lineEdit_scale_recip.text(), shape,
                 center=self.dp_center, old_artists=getattr(self, '_dp_recip_circles', None))
             if self.checkbox_autoCenterDp.isChecked():
-                self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=9)
+                self.ax_dp.set_xlabel(
+                    'Circle center: auto (large-sigma blur) - uncheck "Auto-center" '
+                    'to set manually via Ctrl+Click', fontsize=9)
             else:
                 self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click DP plot to set', fontsize=9)
             # The circles are static across frames like the scale bars above.
             self._bg_extract = None
             self.canvas_extract.draw_idle()
+
+    def _on_auto_center_toggled(self):
+        """checkbox_autoCenterDp.stateChanged handler: force one fresh
+        find_dp_center_blurred re-run on the next redraw, even though the
+        displayed DP itself hasn't changed - otherwise re-enabling auto-
+        center after a manual Ctrl+Click override would silently keep
+        showing that stale manual center, since update_scalebar()'s cache
+        only re-runs it when the DP's identity has changed."""
+        self._dp_center_cache_key = None
+        self.update_scalebar('reciprocal')
 
     def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full'):
         """Blur `img`, compute a threshold via `thresh_method` (over the
@@ -1913,7 +1981,7 @@ class Tab_Tracking_CV2(TabBase):
             else:
                 count = self.tree_objects.topLevelItemCount()
                 item = self.tree_objects.topLevelItem(count - 1) # last one
-            init = eval(item.text(2))
+            init = ast.literal_eval(item.text(2))
             init.append(imgNo)
             idx = int(item.text(1))
         
@@ -2087,6 +2155,11 @@ class Tab_Tracking_CV2(TabBase):
             index = self.tree_objects.indexOfTopLevelItem(item)
             # print(index)
             deleted_idx = self.df_rois.index[index]
+            reply = qtw.QMessageBox.question(self, 'Delete ROI',
+                f'Delete ROI {deleted_idx} and all its tracked masks/points?\n'
+                'This cannot be undone.')
+            if reply == qtw.QMessageBox.No:
+                return
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
             # print(self.df_rois)
@@ -2227,7 +2300,9 @@ class Tab_Tracking_CV2(TabBase):
                 imgs = tr.cut_imgs_by_roi(imgs, rois_ref)
                 rois_in = tr.translate_roiInRoi(rois_in, rois_ref, fwd=True)
             except Exception:
-                pass
+                self.logger.warning(
+                    'ROI-in-ROI translation for ROI %s failed - tracking it with '
+                    'untranslated coordinates instead.', ind, exc_info=True)
             worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in, 
                                           init, tracking_method)
             worker.signals.results.connect(self.get_tracking_results)  # Connect to result signal
@@ -2262,7 +2337,9 @@ class Tab_Tracking_CV2(TabBase):
                     rois_pre = self.df_rois.loc[idx, 'out_rois'].to_numpy()
                     self.df_rois.at[idx, 'out_rois'] = tr.translate_roiInRoi(rois_pre, rois_ref, fwd=False)
                 except Exception:
-                    pass
+                    self.logger.warning(
+                        'Re-translating ROI-in-ROI coordinates for ROI %s failed; '
+                        'its out_rois were left untranslated.', idx, exc_info=True)
                             
             # self.slider_imgNo.setValue(0)
             # activating widgets
@@ -2288,8 +2365,13 @@ class Tab_Tracking_CV2(TabBase):
         the frame the slider is currently on; writes the edited stack back
         on Save & Close. If "Extract!" hasn't been run yet for this ROI
         (df_rois['mask'] not populated), builds a starting mask from
-        out_rois + the current threshold/blur/edge settings first, the same
-        way extract_3ded does."""
+        out_rois + the current threshold/blur settings first, the same way
+        extract_3ded does - kept raw (un-eroded), same as an already-
+        extracted mask, since Edge Detection is only ever a live dialog
+        preview now (see MaskEditDialog). A fresh raw re-threshold of
+        out_rois (unaffected by anything edited in this dialog, this session
+        or any previous one) is also always available as this ROI's "Reset
+        to Tracking" target."""
         selected_items = self.tree_objects.selectedItems()
         if not selected_items:
             qtw.QMessageBox.warning(self, 'No ROI Selected',
@@ -2301,17 +2383,23 @@ class Tab_Tracking_CV2(TabBase):
             qtw.QMessageBox.warning(self, 'Not Tracked Yet',
                 'This ROI has not been tracked yet - run "Track!" first.')
             return
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value() / 100
+        blur_kernel = int(self.combo_blur.currentText())
+        default_mask_stack = tr.create_masks(self.nav_imgs, out_rois, thresh_method,
+                                             thresh_offset, blur_kernel)
         mask_stack = self.df_rois.at[idx, 'mask']
         if np.all(pd.isna(mask_stack)):
-            thresh_method = self.combo_thresh_method.currentText()
-            thresh_offset = self.slider_thresh.value() / 100
-            blur_kernel = int(self.combo_blur.currentText())
-            mask_stack = tr.create_masks(self.nav_imgs, out_rois, thresh_method,
-                                         thresh_offset, blur_kernel)
-            if self.checkbox_edgeOnly.isChecked():
-                mask_stack = np.stack([self.apply_edge_mask(m) for m in mask_stack])
+            mask_stack = default_mask_stack
+        edge_settings = {
+            'enabled': self.checkbox_edgeOnly.isChecked(),
+            'kernel': self.spinbox_edgeKernel.value(),
+            'revert': self.checkbox_revertMask.isChecked(),
+            'directional': self.checkbox_edgeDirectional.isChecked(),
+            'direction': self.spinbox_edgeDirection.value()}
         dialog = MaskEditDialog(self, mask_stack, bg_stack=self.nav_imgs,
-                                start_frame=self.slider_imgNo.value(), logger=self.logger)
+                                start_frame=self.slider_imgNo.value(), logger=self.logger,
+                                default_mask_stack=default_mask_stack, edge_settings=edge_settings)
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_rois.at[idx, 'mask'] = dialog.get_mask_stack()
             self.logger.info('Fine-tuned mask saved for ROI %d.', idx)
@@ -2412,7 +2500,8 @@ class Tab_Tracking_CV2(TabBase):
                     fn_pattern = fns_pattern_4d[i_fr] if fns_pattern_4d is not None else None
                     self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
                                        os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
-                                       dtype, scanSize, (idx, i_fr), fn_pattern or ''])
+                                       dtype, scanSize, (idx, i_fr), fn_pattern or '',
+                                       f'({shape_d_x},{shape_d_y})'])
         
         
         # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\debug'
@@ -2500,7 +2589,8 @@ class Tab_Tracking_CV2(TabBase):
         self.logger.info('Extracting DP for ROI %d, frame %d (current-frame check)...', idx, i_fr)
         self.button_extractCurrentFrame.setDisabled(True)
         worker = WorkerThread_General(load_dp, 0, fn, roi=roi, mask=mask, dtype=dtype,
-                                      scanSize=scanSize, fn_pattern=fn_pattern)
+                                      scanSize=scanSize, fn_pattern=fn_pattern,
+                                      det_shape=self.get_detector_shape(fn))
         worker.signals.results.connect(
             lambda dp, _idx, idx=idx, i_fr=i_fr: self._on_current_frame_dp(dp, idx, i_fr))
         worker.signals.error.connect(self._on_current_frame_dp_failed)
@@ -2547,11 +2637,12 @@ class Tab_Tracking_CV2(TabBase):
     
         args = self.tasks.popleft()
         mask_path = args[2]
-        # args = [fn, roi, mask_path, dtype, scanSize, (idx, i_fr), fn_pattern] -
-        # (idx, i_fr) is second-to-last (fn_pattern, always present since
-        # extract_3ded() appends it unconditionally, must stay last to land
-        # in extract_3ded_mask_single_frame's matching positional slot).
-        idx, i_fr = args[-2]
+        # args = [fn, roi, mask_path, dtype, scanSize, (idx, i_fr), fn_pattern,
+        # det_shape] - (idx, i_fr) is third-to-last (fn_pattern/det_shape,
+        # always present since extract_3ded() appends them unconditionally,
+        # must stay last two to land in extract_3ded_mask_single_frame's
+        # matching positional slots).
+        idx, i_fr = args[-3]
         np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
         program, arguments = worker_command('extract_frame', args)
         process = QProcess()
@@ -2599,9 +2690,8 @@ class Tab_Tracking_CV2(TabBase):
         raw_output = process.readAllStandardOutput().data().decode().strip()
         try:
             result_array = pickle.loads(base64.b64decode(raw_output))
-        except Exception as e:
-            # print(f"Failed to decode output: {e}")
-            # print("Raw output was:", raw_output)
+        except Exception:
+            self.logger.exception('Failed to decode tracking extraction subprocess output.')
             return
 
         task_info = self.process_task_map.get(process, None)
@@ -2611,7 +2701,7 @@ class Tab_Tracking_CV2(TabBase):
     
         # *_ , (r_id, i_fr) = task_info
         img , i_c = result_array
-        idx, i_fr = eval(i_c)
+        idx, i_fr = ast.literal_eval(i_c)
         self.df_rois.loc[idx, 'dp'][i_fr] = img
         
     def handle_finished(self, process):
@@ -2690,7 +2780,8 @@ class Tab_Tracking_CV2(TabBase):
             if 'Voltage' in metadata:
                 voltage_kv = metadata['Voltage']
         except Exception:
-            pass
+            self.logger.debug('Could not auto-fill voltage from metadata; leaving it blank.',
+                               exc_info=True)
         exposure_s = self.spinbox_dwellTime.value() / 1e6
         try:
             aperpixel = float(self.lineEdit_scale_recip.text())
@@ -2709,9 +2800,11 @@ class Tab_Tracking_CV2(TabBase):
         tic = perf_counter()
         try:
             self._save_results_impl()
-        except Exception:
+        except Exception as exc:
             self.logger.exception('Failed to save results after %s.',
                                    io.format_duration_hms(perf_counter() - tic))
+            qtw.QMessageBox.critical(self, 'Save Failed',
+                f'Failed to save results:\n{exc}\n\nSee the log for details.')
             return
         self.logger.info(
             'Results saved successfully in %s (background clip/frame '

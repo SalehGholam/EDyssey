@@ -394,7 +394,6 @@ class Object_Detector_Widget(qtw.QWidget):
             img = self.masks[k]
             self.img_disp[k].set_data(img)
             self.img_disp[k].set_clim(vmin=img.min(), vmax=img.max())
-        no_points = len(np.where(self.mask_dilated > 0)[0])
         self.ax_maskFinal.set_title(f'Final Objects: {len(self.boxes)}')
         self.canvas.draw()
         
@@ -410,11 +409,8 @@ class Object_Detector_Widget(qtw.QWidget):
             x, y, w, h = cv2.boundingRect(cnt)
             boxes.append((x,y,w,h))
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(img, f"{idx}", (x, y - 10), 
+            cv2.putText(img, f"{idx}", (x, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            # Optionally, extract the ROI for further processing (e.g., classification)
-            roi = img[y:y+h, x:x+w]
-            # ... perform further operations on roi if needed
             idx += 1
         return img, boxes
     

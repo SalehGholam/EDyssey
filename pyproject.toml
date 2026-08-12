@@ -1,0 +1,16 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+# Start narrow: real bugs (undefined names, unused imports, etc.) rather than
+# style. Broaden this incrementally rather than enabling everything at once
+# on a codebase this size - a wall of pre-existing style violations on day
+# one just gets the linter disabled again.
+select = ["E9", "F"]
+ignore = [
+    "F401",  # unused imports - too many false positives from `from x import *`
+             # (py4DTomo/io_utils/__init__.py, tab files) to enable yet
+    "F403",  # `from x import *` - an established, intentional convention in
+             # py4DTomo/io_utils/io_utils_ui.py and tracking_utils/__init__.py
+]

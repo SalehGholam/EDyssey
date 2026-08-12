@@ -10,14 +10,15 @@ tab_create_navSignal.py's `_stopping`/`stop_worker` naming had, before
 being unified to match the other three here).
 
 Each tab still builds its own layout entirely itself, in its own
-init_widget() - this class owns none of that.
+init_widget() - besides the one shared piece of boilerplate factored out
+below (build_left_panel()), this module owns none of that.
 """
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import QThreadPool
+from PyQt5.QtCore import Qt, QThreadPool
 from .logging_utils import get_tab_logger
 
 
-def compute_left_panel_width(base=320, min_width=280, max_width=380, fraction=0.18):
+def compute_left_panel_width(base=440, min_width=420, max_width=480, fraction=0.22):
     """Left input panel width (px) for the current primary screen - a fixed
     (non-draggable) value like the `width_userInput` constant every tab used
     to hard-code, but scaled to the display instead of being the same
@@ -28,6 +29,13 @@ def compute_left_panel_width(base=320, min_width=280, max_width=380, fraction=0.
     sized to `fraction` of the primary screen's available width, clamped to
     [`min_width`, `max_width`] so it neither eats most of a small screen nor
     goes needlessly wide on a large one.
+
+    The defaults (and `min_width` especially) are sized to comfortably fit
+    the widest row across all 4 tabs' panels (long smart-scan/tracker rows
+    with several labels+combos+buttons) without clipping - each tab's own
+    QScrollArea wrapper (see tab_*.py's init_widget()) only scrolls
+    vertically, so anything wider than this budget would otherwise be
+    hidden behind the scrollbar rather than reachable at all.
     """
     screen = qtw.QApplication.primaryScreen()
     if screen is None:
@@ -36,6 +44,51 @@ def compute_left_panel_width(base=320, min_width=280, max_width=380, fraction=0.
     if avail_width <= 0:
         return base
     return max(min_width, min(max_width, int(avail_width * fraction)))
+
+
+def build_left_panel(splitter, width_userInput):
+    """Build the scrollable left parameter panel and add it to `splitter` -
+    the boilerplate every tab used to hand-copy identically into its own
+    init_widget() (a QScrollArea wrapper, sized to `width_userInput` - see
+    compute_left_panel_width() - so the panel scrolls vertically instead of
+    squeezing every box into whatever height the window happens to have).
+
+    `width_userInput` is padded by the vertical scrollbar's own width so the
+    viewport (where everything actually gets laid out) still gets the full
+    `width_userInput` this panel's widgets are sized for - otherwise the
+    scrollbar itself would eat into that budget and the rightmost widgets in
+    each row would get clipped/hidden behind it.
+
+    Returns the QVBoxLayout to add each tab's own boxes into.
+    """
+    left_widget = qtw.QWidget()
+    left_scroll = qtw.QScrollArea()
+    left_scroll.setWidget(left_widget)
+    left_scroll.setWidgetResizable(True)
+    scrollbar_w = qtw.QApplication.style().pixelMetric(qtw.QStyle.PM_ScrollBarExtent)
+    left_scroll.setFixedWidth(width_userInput + scrollbar_w)
+    left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    splitter.addWidget(left_scroll)
+    return qtw.QVBoxLayout(left_widget)
+
+
+def get_existing_directory(parent, caption, start_dir=''):
+    """Like `QFileDialog.getExistingDirectory()`, but shows files (not just
+    subfolders) while browsing, instead of hiding them entirely - the
+    built-in convenience function always sets ShowDirsOnly, which makes it
+    impossible to visually confirm a folder actually holds the files you're
+    looking for (e.g. .tpx3/.zspy 4D signals) before selecting it.
+    Selection is still restricted to directories; the return value matches
+    getExistingDirectory's own contract (the chosen path, or '' if cancelled).
+    """
+    dialog = qtw.QFileDialog(parent, caption, start_dir)
+    dialog.setFileMode(qtw.QFileDialog.Directory)
+    dialog.setOption(qtw.QFileDialog.ShowDirsOnly, False)
+    if dialog.exec_() == qtw.QFileDialog.Accepted:
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else ''
+    return ''
 
 
 class TabBase(qtw.QWidget):

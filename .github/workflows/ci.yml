@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    # ubuntu-latest + Python 3.10, not the Windows/newer-Python dev
+    # environment this app actually ships on: py4DTomo/io_utils/loaders.py
+    # unconditionally `import eventem`, a bundled compiled extension built
+    # per-platform/per-Python-version (see py4DTomo/io_utils/eventem.*.pyd
+    # and .so) - 3.10 is the newest CPython ABI it has a Linux build for, so
+    # this is the cheapest/fastest combination that can actually import it.
+    # tests/ itself only exercises pure-Python logic in py4DTomo/io_utils
+    # (no PyQt5/GUI), so this is enough to validate that layer.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Test (pytest)
+        run: pytest tests/

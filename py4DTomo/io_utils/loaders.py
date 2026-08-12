@@ -10,8 +10,9 @@ import dask.array as da
 import h5py
 import dask
 import eventem
+from scipy.ndimage import gaussian_filter
 
-from .progress import redirect_console_to_logger, LoggingProgressBar
+from .progress import redirect_console_to_logger, LoggingProgressBar, _log_or_print
 
 def get_4d_files(path_4d_datasets, dtype):
     """Return sorted list of 4D-STEM files matching *dtype* in *path_4d_datasets* (recursive)."""
@@ -23,27 +24,32 @@ def get_4d_files(path_4d_datasets, dtype):
 
 def load_signal(fn, **kwargs):
     """Dispatch-load a 4D-STEM file to the appropriate loader based on file extension."""
-    try:
-        dtype = kwargs.get('dtype')
-    except:
-        dtype = None
+    dtype = kwargs.get('dtype')
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
-
     if dtype == '.tpx3':
         result = load_tpx3(fn, **kwargs)
     elif dtype == '.hdf5':
         result = load_hdf5(fn, **kwargs)
-    elif dtype in ['.zspy', '.hspy']:
+    elif dtype in ['.zspy', '.hspy', '.mib']:
         result = load_hs(fn, **kwargs)
-    elif dtype == '.mib':
-        result = load_mib(fn, **kwargs)
+    else:
+        _log_or_print(kwargs.get('logger'), f'The data type {dtype} is not implemented for the analysis!')
+        return None
     return result
 
 def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
-              repetitions=1, sum_dp=False, logger=None,
-              n_threads=None, fn_pattern=None, **kwargs):
+              repetitions=1, logger=None, n_threads=None, fn_pattern=None,
+              get_4d=False, mask=None, det_shape=(512, 512), **kwargs):
     """Load a .tpx3 4D-STEM file via eventem; returns a HyperSpy Signal2D or summed nav image.
+
+    `det_shape`: (det_x, det_y) detector pixel dimensions. Only actually
+    applied (via `.detector_size_x`/`.detector_size_y`) when it differs from
+    what eventem itself already reports right after `set_file()` (which
+    reflects the real file's own hardware layout) - eventem does NOT gracefully
+    reshape/crop when told a detector size that doesn't match the real data:
+    it segfaults the whole process on `.run()`. Only override this for a
+    genuinely different real detector configuration, never as a guess.
 
     `logger`: optional logger the eventem progress output (printed straight
     to the console by the compiled extension) is redirected into, so it
@@ -63,114 +69,65 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     acquisition into its full (ny, nx, det, det) grid. None (default) treats
     the file as a normal dense raster, matching prior behaviour.
     """
-    if roi is None:
-        x, y, w, h = 0, 0, scanSize[0], scanSize[1]
-    else:
-        x, y, w, h = roi
-
-    roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
+    # Deliberately not named `roi` here - that name is this function's own
+    # `roi=(x, y, w, h)` crop parameter above, and reusing it for the
+    # eventem object clobbered that parameter before it could ever be read
+    # (every call ended up treating the crop as "full frame", the `roi is
+    # None` branch, since `roi` was always this object, never None, by the
+    # time it was checked).
+    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=get_4d)
     if n_threads is not None:
-        roi.n_threads = n_threads
-    roi.set_bitdepth(bitDepth)
-    roi.nx = scanSize[0]
-    roi.ny = scanSize[1]
-    roi.set_file(fn)
-    if fn_pattern:
-        roi.set_pattern_file(fn_pattern)
-    roi.set_roi(x=x, y=y, width=w, height=h)
-    roi.set_dwell_time(dwellTime*1000)
+        roi_obj.n_threads = n_threads
+    roi_obj.set_bitdepth(bitDepth)
+    roi_obj.nx = scanSize[0]
+    roi_obj.ny = scanSize[1]
+    roi_obj.set_file(fn)
+    if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
+        roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
+    if fn_pattern is not None:
+        roi_obj.set_pattern_file(fn_pattern)
+
+    if mask is None:
+        if roi is None:
+            x, y, w, h = 0, 0, scanSize[0], scanSize[1]
+        else:
+            x, y, w, h = roi
+        roi_obj.set_roi(x=x, y=y, width=w, height=h)
+    else:
+        roi_obj.set_roi_mask([mask.flatten()])
+
+    roi_obj.set_dwell_time(dwellTime*1000)
     with redirect_console_to_logger(logger, 'Loading tpx3'):
-        roi.run()
-    # ROI_scan_image = np.asarray(roi.Roi_scan_image)
-    # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
-    s = np.asarray(roi.get_4D())
-    if sum_dp:
-        s = s.sum(axis=(-1,-2))
-        return s
-    s = hs.signals.Signal2D(s)
+        roi_obj.run()
+    # s = np.asarray(roi_obj.get_4D())
+    # s = hs.signals.Signal2D(s)
+    return roi_obj
+
+def load_hdf5(fn, roi=None, scanSize=None, lazy=False,
+              logger=None, **kwargs): #TODO change to normal load
+    """Load a .hdf5 4D-STEM file using dask; supports lazy loading, ROI crop, and DP summation."""
+    with h5py.File(fn, 'r') as f:
+        if lazy:
+            # Must be .compute()d before this `with` block exits, same as
+            # get_dp()'s '.hdf5' branch (see its comment) - a dask array
+            # built from a dataset inside a `with h5py.File(...)` block
+            # stops being readable the moment that block exits, so it can
+            # never actually be handed back to the caller still lazy.
+            s = da.from_array(f['4D'])
+            if roi is None:
+                roi = [0, 0, scanSize[1], scanSize[0]]
+            x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
+            s = s[y:y+h, x:x+w]
+            s = s.compute()
+
+        else:
+            if roi is None:
+                roi = [0, 0, scanSize[1], scanSize[0]]
+            x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
+            s = f['4D'][y:y+h, x:x+w]  # numpy row-major: row (y) axis first
     return s
 
-def load_hdf5(fn, roi=None, scanSize=None, chunks=None, lazy=False,
-              sum_dp=False, logger=None, **kwargs):
-    """Load a .hdf5 4D-STEM file using dask; supports lazy loading, ROI crop, and DP summation."""
-    # with h5py.File(fn, 'r') as f:
-    f = h5py.File(fn, 'r')
-    arr_dim = len(f['4D'].shape) # data might be flattened
-    if arr_dim == 1: # TODO do it only once before running tomo
-        det_shape = f['shape'][:][-1] # works on only scquare detectors
-        scanSize_written = tuple(f['shape'][:][:2])
-        if scanSize is None:
-            scanSize = scanSize_written
-        else:
-            assert scanSize == scanSize_written, f"Scan size entered does not match to the shape of the hdf5 file: {scanSize} vs {scanSize_written}"
-    else:
-        det_shape = f['4D'].shape[-1] # works on only square detectors
-
-    if chunks is None:
-        # Read using the dataset's own on-disk chunk shape whenever it's
-        # actually chunked storage - any other chunk grid means every dask
-        # chunk straddles multiple real HDF5 chunks, multiplying disk I/O
-        # for no benefit. rechunk() afterwards doesn't avoid this either:
-        # dask still has to read the (misaligned) native chunks first
-        # before it can regroup them into the new shape.
-        native_chunks = f['4D'].chunks
-        if native_chunks is not None:
-            chunks = native_chunks
-        elif roi is not None:
-            y,x,h,w = roi
-            chunks = (h, w, det_shape, det_shape)
-            if arr_dim == 1:
-                chunks = np.prod(chunks)
-        elif det_shape == 512:
-            chunks = (16, 16, det_shape, det_shape)
-            if arr_dim == 1:
-                chunks = np.prod(chunks)
-        else:
-            chunks = (32, 32, det_shape, det_shape)
-            if arr_dim == 1:
-                chunks = np.prod(chunks)
-
-    if arr_dim == 1:
-        s = da.from_array(f['4D'], chunks=chunks)
-        with dask.config.set(**{'array.slicing.split_large_chunks': False}):
-            s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
-        # s = s.map_blocks(cp.asarray)
-    else:
-        s = da.from_array(f['4D'], chunks=chunks)
-        # s = s.map_blocks(cp.asarray)
-
-    if roi is not None and np.any(roi):
-        x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
-        s = s[y:y+h, x:x+w]  # numpy row-major: row (y) axis first
-
-    if sum_dp:
-        dp = s.sum(axis=(2,3))
-        with LoggingProgressBar(logger, 'Summing diffraction patterns'):
-            dp_res = dp.compute()
-        # dp_res = cp.asnump(dp_res)
-        f.close()
-        # cp.get_default_memory_pool().free_all_blocks()
-        # del s, dp
-        # cp.get_default_memory_pool().free_all_blocks()
-        return dp_res
-
-    if not lazy:
-        with LoggingProgressBar(logger, 'Loading 4D signal'):
-            s_get = s.compute()
-        # s_get = cp.asnumpy(s_get) # turning it to numpy from cupy
-        # cp.get_default_memory_pool().free_all_blocks()
-        # del s
-        f.close()
-        s_get = hs.signals.Signal2D(s_get)
-        return s_get
-
-    else:
-        s = hs.signals.Signal2D(s)
-        s = s.as_lazy()
-        # cp.get_default_memory_pool().free_all_blocks()
-        return s, f
-
-def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, logger=None,
+def load_hs(fn, roi=None, lazy=True, logger=None,
            fn_pattern=None, scanSize=None, **kwargs):
     """Load a .hspy/.zspy HyperSpy signal; supports lazy loading, ROI crop, and DP summation.
 
@@ -184,170 +141,46 @@ def load_hs(fn, roi=None, chunks=None, lazy=False, sum_dp=False, logger=None,
             behaviour.
         scanSize: (nx, ny) scan dimensions - only used when `fn_pattern` is given.
     """
-    #TODO add cupy if possible
     if fn_pattern:
-        s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks)
+        s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, logger=logger)
     else:
-        s = hs.load(fn, lazy=True)
-        det_shape = s.data.shape[-1]
-        # Unlike raw acquisition .hdf5 (whose native chunk is already a
-        # reasonably-sized block, so it's read as-is - see load_hdf5), 4D-STEM
-        # .hspy/.zspy files are typically written with a per-navigation-pixel
-        # chunk (e.g. (1,1,det,det)) to make single-frame random access fast
-        # during acquisition - exactly the wrong shape for a full-scan
-        # reduction, so re-chunking to a coarser nav grid first pays for itself.
-        if chunks is None:
-            nav_chunk = 16 if det_shape == 512 else 32
-            s.rechunk(nav_chunks=(nav_chunk, nav_chunk), sig_chunks=(det_shape, det_shape))
-        else:
-            s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
-
-    if np.any(roi):
-        x,y,w,h = roi
-        s = s.inav[x:x+w, y:y+h]
-
-    if sum_dp:
-        dp = s.sum(axis=(2,3)).data
-        with LoggingProgressBar(logger, 'Summing diffraction patterns'):
-            return dp.compute()
-
-    if not lazy:
-        with LoggingProgressBar(logger, 'Loading 4D signal'):
-            s.compute()
-    return s
-
-def _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks=None):
-    """Reconstruct a smart-scanned acquisition into its full dense
-    (ny, nx, det, det) grid.
-
-    Used for .mib/.hspy/.zspy - unlike .tpx3 (whose eventem reader
-    understands a pattern file natively, see `load_tpx3`), these are all
-    loaded via `hs.load` (just dispatching to a different reader plugin per
-    extension) as a flat stream of only the frames that were actually
-    acquired, in acquisition order - `fn_pattern` (a text file of one flat
-    scan-pixel index per stored frame) says where each one belongs. Every
-    scan position not visited is left as zero. Mirrors `recreate_4d` in
-    "other_scripts/smart scanning guide/smart_scanning_analysis_mib.py", but
-    reshapes to (ny, nx, det, det) - matching this app's own convention for
-    a dense .mib load (see the comment in `load_mib` below) rather than that
-    script's (nx, ny) - so `roi`/`.inav` cropping right after this call
-    behaves identically to the non-smart-scan path.
-    """
-    if scanSize is None:
-        raise ValueError(
-            "scanSize is required to reconstruct a smart-scanned acquisition (fn_pattern was "
-            f"given for {fn!r}, but scanSize was None) - a per-file header, when one exists, "
-            "reflects the number of frames actually written to disk for this sparse "
-            "acquisition, not the full scan grid, so it can't be auto-detected from the file "
-            "itself. Pass the scan size explicitly (e.g. from comment.txt).")
-    pattern = np.loadtxt(fn_pattern).astype('int64')
-    s_flat = hs.load(fn, lazy=True)  # (n_frames, det, det), acquisition order
-    det_shape = s_flat.data.shape[-2:]
-    dask_arr = da.zeros((scanSize[0] * scanSize[1], *det_shape),
-                        dtype=s_flat.data.dtype, chunks=(256, *det_shape))
-    dask_arr[pattern] = s_flat.data
-    dask_arr = dask_arr.reshape(scanSize[1], scanSize[0], *det_shape)
-    s = hs.signals.Signal2D(dask_arr).as_lazy()
-
-    if chunks is None:
-        nav_chunk = 16 if det_shape[0] == 512 else 32
-        s.rechunk(nav_chunks=(nav_chunk, nav_chunk), sig_chunks=det_shape)
-    else:
-        s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
-    return s
-
-def load_mib(fn, roi=None, scanSize=None, chunks=None, lazy=False, sum_dp=False,
-            logger=None, fn_pattern=None, **kwargs):
-    """Load a .mib file, rechunk, and optionally crop/sum.
-
-    Args:
-        fn: Path to the .mib file.
-        roi: Optional (x, y, w, h) crop region in scan coordinates.
-        scanSize: (nx, ny) scan dimensions. If None, reads from `default.hdr` in the same folder.
-        chunks: Explicit dask chunk shape. If None, auto-selected by detector size.
-        lazy: Return a lazy (dask-backed) signal without computing.
-        sum_dp: Return summed diffraction patterns (2D navigation image) instead of 4D signal.
-        logger: Optional logger to report dask compute progress through.
-        fn_pattern: Optional path to a smart-scan pattern file - see
-            `_reconstruct_smart_scan`. None (default) loads `fn` as a normal
-            dense raster, matching prior behaviour.
-
-    Returns:
-        numpy.ndarray if `sum_dp` is True; otherwise a HyperSpy Signal2D (lazy or computed).
-    """
-    if fn_pattern:
-        # Never auto-resolved from a .hdr here (unlike the dense branch
-        # below) - a smart-scanned acquisition's own .hdr "Frames in
-        # Acquisition" reflects the sparse frame count actually written to
-        # disk, not the full scan grid, so it would silently produce the
-        # wrong shape instead of the clear error _reconstruct_smart_scan
-        # raises when scanSize is still None.
-        s = _reconstruct_smart_scan(fn, fn_pattern, scanSize, chunks)
-    else:
-        if scanSize is None:
-            fld = os.path.split(fn)[0]
-            # Prefer a per-file .hdr matching this exact .mib's own
-            # basename (e.g. "default_0119_-50,00.mib" -> "...-50,00.hdr")
-            # over the generic "default.hdr" - tomography acquisitions like
-            # the smart-scan ones write one .hdr per .mib, not one shared
-            # one, so the generic name never matches them.
-            fn_hdr = os.path.splitext(fn)[0] + '.hdr'
-            if not os.path.isfile(fn_hdr):
-                fn_hdr = os.path.join(fld, 'default.hdr')
-            if os.path.isfile(fn_hdr):
+        if scanSize is None and os.path.splitext(fn)[1] == '.mib': # Get scan size for mib
+            fn_hdr = _resolve_mib_hdr(fn)
+            if fn_hdr is not None:
                 scanSize = get_scan_size_mib_hdr(fn_hdr)
-        # Passing navigation_shape=(nx, ny) lets the mib reader itself
-        # reshape the raw frame stream into a proper 4D array (it reverses
-        # the pair internally to (ny, nx, det, det) before returning it) -
-        # manually reshaping a flat (N, det, det) stack afterwards, as this
-        # used to do, silently assumed the same (nx, ny) axis order without
-        # that reversal and could produce a transposed navigation image.
-        s = hs.load(fn, lazy=True, navigation_shape=scanSize)
-        det_shape = s.data.shape[-1]
-
-        if chunks is None:
-            if det_shape == 512:
-                s.rechunk(nav_chunks=(16,16), sig_chunks=(det_shape,det_shape))
             else:
-                s.rechunk(nav_chunks=(32,32), sig_chunks=(det_shape,det_shape))
-        else:
-            s.rechunk(nav_chunks=chunks[:2], sig_chunks=chunks[2:])
+                _log_or_print(logger, f'Failed to find a .hdr file for {fn}')
+
+        # s = hs.load(fn, lazy=True, navigation_shape=scanSize)
+        s = hs.load(fn, lazy=True)
 
     if roi is not None:
         x,y,w,h = roi
         s = s.inav[x:x+w, y:y+h]
 
-    if sum_dp:
-        dp = s.sum(axis=(2,3)).data
-        with LoggingProgressBar(logger, 'Summing diffraction patterns'):
-            dp = dp.compute()
-        return dp
-
     if not lazy:
         with LoggingProgressBar(logger, 'Loading 4D signal'):
             s.compute()
-    return s
+    return s.data
 
-def get_scan_size(fn):
-    """Return (nx, ny) scan dimensions read from the file header."""
-    dtype = os.path.splitext(fn)[-1]
-    if dtype == '.hdf5':
-        with h5py.File(fn, 'r') as f:
-            scanSize = tuple(f['shape'])[:2]
-        return scanSize
-    else:
-        s = load_signal(fn, lazy=True)
-        return (s.data.shape[1], s.data.shape[0]) # TODO return y and x?
+def _reconstruct_smart_scan(fn, fn_pattern, scanSize, logger=None):
+    """Reconstruct a smart-scanned acquisition into its full dense
+    (ny, nx, det, det) grid. Used for .mib/.hspy/.zspy - not for .tpx3
+    """
+    if scanSize is None:
+        _log_or_print(logger, "scanSize is required to reconstruct a smart-scanned acquisition")
+        raise ValueError(
+            "scanSize is required to reconstruct a smart-scanned acquisition")
 
-def get_det_size(fn):
-    """Return (det_x, det_y) detector pixel dimensions read from the file."""
-    s = load_signal(fn, lazy=True)
-    if type(s) == tuple: # for hdf5
-        s, f = s
-        f.close()
-    det_shape = (s.data.shape[3], s.data.shape[2])
-    return det_shape
-
+    pattern = np.loadtxt(fn_pattern).astype('uint64')
+    s_flat = hs.load(fn, lazy=True)  # (n_frames, det, det), acquisition order
+    det_shape = s_flat.data.shape[-2:]
+    dask_arr = da.zeros((scanSize[0] * scanSize[1], *det_shape),
+                        dtype=s_flat.data.dtype)
+    dask_arr[pattern] = s_flat.data
+    dask_arr = dask_arr.reshape(scanSize[1], scanSize[0], *det_shape)
+    return dask_arr
+#%% get scan size
 def get_scan_size_mib_hdr(fn_hdr):
     """Parse scan dimensions from a Merlin .hdr header file.
 
@@ -368,3 +201,164 @@ def get_scan_size_mib_hdr(fn_hdr):
     framesAcq = int(framesAcq)
     scanSize = (fpt, int(framesAcq/fpt))
     return scanSize
+
+def _resolve_mib_hdr(fn):
+    """Resolve the .hdr header path for a .mib file.
+
+    Prefers a per-file header matching this exact .mib's own basename (e.g.
+    "default_0119_-50,00.mib" -> "...-50,00.hdr" - the convention a
+    smart-scan acquisition writes, one .hdr per .mib), falling back to a
+    shared "default.hdr" in the same folder (the convention a plain
+    full-scan acquisition writes once, for every .mib in the folder).
+
+    Returns:
+        str, or None if neither convention matches an existing file.
+    """
+    fn_hdr = os.path.splitext(fn)[0] + '.hdr'
+    if os.path.isfile(fn_hdr):
+        return fn_hdr
+    fn_hdr = os.path.join(os.path.dirname(fn), 'default.hdr')
+    if os.path.isfile(fn_hdr):
+        return fn_hdr
+    return None
+
+def get_scan_size(fn, dtype):
+    if dtype in ['.hspy', '.zspy']:
+        scanSize = hs.load(fn, lazy=True).shape[:2]
+    elif dtype == '.mib':
+        fn_hdr = _resolve_mib_hdr(fn)
+        if fn_hdr is None:
+            raise FileNotFoundError(
+                f"No .hdr file found for {fn!r} (tried a per-file .hdr and a "
+                "shared default.hdr in the same folder)")
+        scanSize = get_scan_size_mib_hdr(fn_hdr)
+    elif dtype == '.hdf5':
+        with h5py.File(fn, 'r') as f:
+            # f['shape'] is written as [nx, ny, det_x, det_y] - already in
+            # this app's own scanSize=(nx, ny) convention (see
+            # worker_nav_img._read_scansize_hdf5, whose docstring/return
+            # confirms the same first-two-elements convention, and the
+            # original pre-redesign load_hdf5, which compared this directly
+            # against a caller-supplied (nx, ny) scanSize with no reversal).
+            scanSize = tuple(int(x) for x in f['shape'][:2])
+    return scanSize
+
+def get_det_size(fn, dtype=None):
+    """Return (det_x, det_y) detector pixel dimensions, read cheaply (a lazy
+    load / header peek, no full read) from the file.
+
+    Not supported for .tpx3 - detector size isn't stored anywhere in a
+    .tpx3 file itself; callers fall back to a manual "Detector Size"
+    setting for that format instead (see e.g. tab_sam2.get_detector_shape).
+    """
+    if dtype is None:
+        dtype = os.path.splitext(fn)[1]
+    if dtype == '.hdf5':
+        with h5py.File(fn, 'r') as f:
+            # f['shape'][-2:] == (det_x, det_y) - same [nx, ny, det_x, det_y]
+            # convention as get_scan_size above, no axis swap needed here.
+            det_shape = tuple(int(x) for x in f['shape'][-2:])
+    else:
+        s = load_hs(fn, lazy=True)
+        # A dense array's own axis order is (..., det_y, det_x) - the last
+        # two axes are swapped here to match this function's (det_x, det_y)
+        # return contract (mirrors the removed pre-redesign get_det_size).
+        det_shape = (s.shape[-1], s.shape[-2])
+    return det_shape
+#%% dp related
+def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
+           logger=None, mask=None, dwellTime=1, det_shape=(512, 512)):
+    if dtype is None:
+        dtype = os.path.splitext(fn)[1]
+    if dtype not in ('.tpx3', '.hspy', '.zspy', '.mib', '.hdf5'):
+        raise ValueError(f"Unsupported file type '{dtype}' for get_dp() - "
+                          "expected one of .tpx3/.hspy/.zspy/.mib/.hdf5.")
+    if scanSize is None:
+        scanSize = get_scan_size(fn, dtype)
+    if dtype == '.tpx3':
+        if mask is None and roi is None:
+            dp = get_dp_tpx3_full(fn, scanSize=scanSize, fn_pattern=fn_pattern,
+                                  det_shape=det_shape)
+        elif mask is None:
+            dp = load_tpx3(fn, roi=roi, scanSize=scanSize, dwellTime=dwellTime,
+                           fn_pattern=fn_pattern, logger=logger, get_4d=False,
+                           det_shape=det_shape)
+            dp = np.array(dp.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
+        else:
+            if mask.shape != scanSize:
+                mask_temp = np.zeros(scanSize, dtype='uint8')
+                x,y,w,h = roi
+                mask_temp[y:y+h, x:x+w] = mask  # row-major: y (row) axis first
+                mask = mask_temp
+            dp = load_tpx3(fn, roi=None, scanSize=scanSize, dwellTime=dwellTime,
+                           fn_pattern=fn_pattern, logger=logger, get_4d=False,
+                           mask=mask, det_shape=det_shape)
+            dp = np.array(dp.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
+    
+    if dtype in ['.hspy', '.zspy', '.mib']:
+        s = load_hs(fn, roi=roi, logger=logger, fn_pattern=fn_pattern, 
+                    scanSize=scanSize)
+        dp = s.sum(axis=(0,1))
+        with LoggingProgressBar(logger, 'Loading 4D signal'):
+            dp = dp.compute()
+    
+    if dtype == '.hdf5':
+        # Built and computed directly here (not via load_hdf5(lazy=True)) -
+        # a dask array built from a dataset inside a `with h5py.File(...)`
+        # block stops being readable the moment that block exits, so a lazy
+        # array can only safely be handed back to a caller already computed,
+        # same as calculate_nav_img_hdf5 does.
+        with h5py.File(fn, 'r') as f:
+            s = da.from_array(f['4D'], chunks=f['4D'].chunks)
+            if roi is not None:
+                x, y, w, h = roi
+                s = s[y:y+h, x:x+w]
+            dp = s.sum(axis=(0,1))
+            with LoggingProgressBar(logger, 'Loading 4D signal'):
+                dp = dp.compute()
+    return dp
+
+def get_dp_tpx3_full(fn_tpx3, scanSize, dwellTime=1, fn_pattern=None,
+                     repititions=1, logger=None, det_shape=(512, 512)):
+    dp = eventem.Pacbed(repetitions=repititions)
+    dp.set_file(fn_tpx3)
+    dp.nx = scanSize[0]
+    dp.ny = scanSize[1]
+    # Only actually applied when it differs from what eventem itself already
+    # reports (reflecting the real file's own hardware layout) - see
+    # load_tpx3's docstring for why a genuine mismatch segfaults .run().
+    if det_shape != (dp.detector_size_x, dp.detector_size_y):
+        dp.detector_size_x, dp.detector_size_y = det_shape
+    dp.set_dwell_time(dwellTime*1000)
+    if fn_pattern is not None:
+        dp.set_pattern_file(fn_pattern)
+
+    with redirect_console_to_logger(logger, 'Loading tpx3'):
+        dp.run()
+    dp = np.array(dp.Pacbed_image).reshape(det_shape[1], det_shape[0])
+    return dp
+
+def find_dp_center_blurred(dp, sigma=15):
+    """Estimate the direct-beam center of a diffraction pattern by heavily
+    blurring it first, via HyperSpy's `Signal2D.map`, then taking the
+    location of the blurred maximum.
+
+    A large-sigma Gaussian blur washes out single hot/dead pixels and other
+    per-pixel noise (common on electron-counting detectors) while leaving
+    the (much larger) direct-beam spot as the dominant broad maximum - more
+    robust than searching the raw pattern directly, and cheap enough to
+    re-run on every redraw for automatic re-centering.
+
+    Args:
+        dp: 2-D diffraction pattern.
+        sigma: Gaussian blur standard deviation, in pixels. Deliberately
+            large (default 15) so the blur genuinely suppresses single-pixel
+            outliers rather than just smoothing them.
+
+    Returns:
+        (x, y) center in pixel coordinates.
+    """
+    s = hs.signals.Signal2D(np.asarray(dp, dtype=float))
+    s.map(gaussian_filter, sigma=sigma, show_progressbar=False)
+    y, x = np.unravel_index(np.argmax(s.data), s.data.shape)
+    return (float(x), float(y))

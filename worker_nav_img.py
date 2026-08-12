@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import sys
 import os
+import json
 import numpy as np
 
 file_path = os.path.abspath(__file__)
@@ -32,7 +33,7 @@ def _read_scansize_hdf5(fn):
 
 
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
-                             r_in=None, r_out=None, center=None, fn_pattern=None):
+                             detectors_json=None, fn_pattern=None, det_shape=None):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
     print the saved path to stdout - instead of the array itself, base64+
     pickle-encoded. Transferring a multi-MB encoded array through the
@@ -55,15 +56,18 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         i_index: Position of this file in the overall file list, as a string.
         temp_dir: Directory (already created by the parent) to save the
             result .npy file into.
-        r_in: Optional inner radius (pixels) of the virtual detector mask, as a string.
-        r_out: Optional outer radius (pixels) of the virtual detector mask, as a string.
-        center: Optional `'(x, y)'` center of the virtual detector mask, as a string.
+        detectors_json: Optional JSON-encoded list of {'center': [x, y],
+            'r_in', 'r_out'} dicts describing the virtual detector mask(s)
+            to use, as a string (or 'None'/None for no mask) - see
+            Tab_Create_NavSignal.get_active_detectors().
         fn_pattern: Optional path to a smart-scan pattern file for `fn` (empty
             string/'None' for a normal dense file) - see `loaders.load_tpx3`/
             `loaders._load_mib_smart_scan`.
     """
     try:
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
+        det_shape = (tuple(map(int, det_shape.strip("()").split(",")))
+                    if det_shape not in (None, '', 'None') else (512, 512))
         if scanSize == 'None':
             if dtype == '.hdf5':
                 scanSize = _read_scansize_hdf5(fn)
@@ -89,18 +93,18 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         # per-file throughput to collapse as more workers piled up
         # concurrently - pinning each process to 1 internal thread makes
         # total concurrency match what the user actually configured.
-        if r_in not in (None, 'None'):
-            r_in = float(r_in)
-            r_out = float(r_out)
-            center = tuple(map(float, center.strip("()").split(",")))
+        if detectors_json not in (None, 'None'):
+            detectors = json.loads(detectors_json)
+            for d in detectors:
+                d['center'] = tuple(d['center'])
             result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
-                                                 dwellTime=dwellTime, r_in=r_in,
-                                                 r_out=r_out, center=center, n_threads=1,
-                                                 fn_pattern=fn_pattern)
+                                                 dwellTime=dwellTime, detectors=detectors,
+                                                 n_threads=1, fn_pattern=fn_pattern,
+                                                 det_shape=det_shape)
         else:
             result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
                                           dwellTime=dwellTime, n_threads=1,
-                                          fn_pattern=fn_pattern)
+                                          fn_pattern=fn_pattern, det_shape=det_shape)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')
         np.save(fn_out, result)

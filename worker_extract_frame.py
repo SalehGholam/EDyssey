@@ -27,7 +27,8 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
 #%%
 #TODO add cupy if possible
-def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_pattern=None):
+def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_pattern=None,
+                                   det_shape=None):
     """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
 
     Subprocess entry point called by `tab_sam2.py`. Deserialises CLI arguments, loads the
@@ -43,6 +44,8 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
         i_c: Frame index within the extraction batch, as a string.
         fn_pattern: Optional path to a smart-scan pattern file for this frame
             (empty string/None for a normal dense frame) - see `load_tpx3`/`load_mib` below.
+        det_shape: Optional `'(det_x, det_y)'` string - `.tpx3` only, see
+            `load_tpx3`'s docstring (None/'None' falls back to (512, 512)).
     """
     try:
         # Parse input args
@@ -53,8 +56,11 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
         mask = np.load(mask_path)
         # mask = mask_path
         fn_pattern = fn_pattern or None
+        det_shape = (tuple(map(int, det_shape.strip("()").split(",")))
+                    if det_shape not in (None, '', 'None') else None)
 
-        dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize, fn_pattern=fn_pattern)
+        dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize, fn_pattern=fn_pattern,
+                    det_shape=det_shape)
         # Serialize result to base64 string and print it to stdout
         serialized = base64.b64encode(pickle.dumps((dp, i_c))).decode('utf-8')
         print(serialized)  # <- this goes to QProcess output
@@ -62,7 +68,7 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
         sys.stdout.flush()  # Ensure it's pushed
         sys.exit(0)
         
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
         sys.exit(1)  # fail code
@@ -77,10 +83,7 @@ def load_dp(fn, **kwargs):
     Returns:
         numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
     """
-    try:
-        dtype = kwargs.get('dtype')
-    except:
-        dtype = None
+    dtype = kwargs.get('dtype')
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
     
@@ -94,7 +97,7 @@ def load_dp(fn, **kwargs):
         result = load_mib(fn, **kwargs)
     return result
 
-def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, **kwargs):
+def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
     """Load a .tpx3 file, apply an ROI crop and mask, and return the summed diffraction pattern.
 
     Args:
@@ -106,10 +109,20 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, **kwargs):
         fn_pattern: Optional path to a smart-scan pattern file for `fn` -
             reshapes/selects scan positions correctly for a smart-scanned
             (sparsely acquired) frame, same as `loaders.load_tpx3`.
+        det_shape: (det_x, det_y) detector pixel dimensions ((512, 512) when
+            this is None). Only actually applied to the eventem object when
+            it differs from what eventem itself already reports after
+            set_file() (which reflects the real file's own hardware layout)
+            - eventem does NOT gracefully reshape/crop for a mismatched
+            value, it segfaults the whole process on .run(). Also used to
+            reshape the result, instead of `scanSize` (a real acquisition's
+            detector and scan dimensions usually differ).
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
+    if det_shape is None:
+        det_shape = (512, 512)
     repetitions = 1
     bitDepth=16
 # =============================================================================
@@ -155,6 +168,11 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, **kwargs):
     roi.set_bitdepth(bitDepth)
     roi.nx = scanSize[0]
     roi.ny = scanSize[1]
+    # Only actually applied when it differs from what eventem itself already
+    # reports (reflecting the real file's own hardware layout) - a genuine
+    # mismatch segfaults .run() instead of gracefully reshaping/cropping.
+    if det_shape != (roi.detector_size_x, roi.detector_size_y):
+        roi.detector_size_x, roi.detector_size_y = det_shape
     if fn_pattern:
         roi.set_pattern_file(fn_pattern)
     # roi.set_roi_mask([np.where(mask.flatten())[0]])
@@ -162,7 +180,7 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, **kwargs):
     roi.set_roi_mask([mask.flatten()])
     roi.run()
     dp = roi.Roi_diffraction_pattern
-    dp = np.array(dp).reshape(scanSize)
+    dp = np.array(dp).reshape(det_shape[1], det_shape[0])
     roi.close_socket()
     return dp
 
@@ -191,7 +209,7 @@ def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs)
         dp = s[mask_idx].sum(axis=0).compute()
     return dp
     
-def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
+def load_hs(fn, roi, mask, fn_pattern=None, **kwargs):
     """Load a .hspy/.zspy file and sum diffraction patterns at mask-True scan pixels.
 
     Args:
@@ -199,7 +217,6 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
         roi: (x, y, w, h) scan-space crop, applied via HyperSpy `inav`. Ignored
             when `fn_pattern` is given (see below).
         mask: 2-D boolean array matching the full scan dimensions.
-        chunks: Dask rechunk shape.
         fn_pattern: Optional path to a smart-scan pattern file - `.hspy`/
             `.zspy` are loaded via HyperSpy exactly like `.mib` (see
             `load_mib`'s docstring above for the full explanation); when
@@ -221,11 +238,11 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
         dp = s_flat[idx].sum(axis=0).compute()
         return dp
 
+    # Left at its native on-disk chunking - no rechunk() call - rather than
+    # an explicit shape that (via a HyperSpy rechunk() argument-binding
+    # quirk) was actually fragmenting every diffraction pattern into small
+    # sub-chunks instead of keeping each one whole.
     s = load(fn, lazy=True)
-    try:
-        s.rechunk(chunks)
-    except:
-        pass
     x, y, w, h = roi
     s = s.inav[x:x+w, y:y+h].data
     # `mask` covers the full scan, but `s` was just cropped to the ROI
@@ -237,7 +254,7 @@ def load_hs(fn, roi, mask, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
     dp = dp.compute()
     return dp
 
-def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), fn_pattern=None, **kwargs):
+def load_mib(fn, roi, mask, scanSize=None, fn_pattern=None, **kwargs):
     """Load a .mib file and sum diffraction patterns at mask-True scan pixels.
 
     Args:
@@ -246,7 +263,6 @@ def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), fn_pattern=N
             when `fn_pattern` is given (see below).
         mask: 2-D boolean array.
         scanSize: (nx, ny) scan dimensions. Reads from `default.hdr` if None.
-        chunks: Dask rechunk shape.
         fn_pattern: Optional path to a smart-scan pattern file - a text file
             of one flat scan-pixel index per frame actually stored in `fn`,
             in acquisition order (see
@@ -271,13 +287,22 @@ def load_mib(fn, roi, mask, scanSize=None, chunks=(16, 16, 64, 64), fn_pattern=N
 
     s = load(fn, lazy=True)
     if len(s.data.shape) == 3:
+        det_shape = s.data.shape[-1]
         if scanSize is None:
-            det_shape = s.data[-1]
-            fld = os.path.split(fn)[0]
-            fn_hdr = os.path.join(fld, 'default.hdr')
+            # Prefer a per-file .hdr matching this exact .mib's own basename
+            # (e.g. "default_0119_-50,00.mib" -> "...-50,00.hdr" - the
+            # smart-scan convention, one .hdr per .mib), falling back to a
+            # shared "default.hdr" in the same folder (the plain full-scan
+            # convention, one .hdr for every .mib in the folder).
+            fn_hdr = os.path.splitext(fn)[0] + '.hdr'
+            if not os.path.isfile(fn_hdr):
+                fn_hdr = os.path.join(os.path.split(fn)[0], 'default.hdr')
             scanSize = get_scan_size_mib_hdr(fn_hdr)
-        s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
-    s.rechunk(chunks)
+        s = s.reshape(scanSize[0], scanSize[1], det_shape, det_shape)
+    # Left at its native on-disk chunking - no rechunk() call - rather than
+    # an explicit shape that (via a HyperSpy rechunk() argument-binding
+    # quirk) was actually fragmenting every diffraction pattern into small
+    # sub-chunks instead of keeping each one whole.
     x,y,w,h = roi
     s = s.inav[x:x+w, y:y+h].data
     # `mask` covers the full scan, but `s` was just cropped to the ROI

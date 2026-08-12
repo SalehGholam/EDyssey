@@ -36,7 +36,7 @@ from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
 from ui_tabs.logging_utils import install_excepthook
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QCursor
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
 
@@ -59,10 +59,8 @@ class MainWindow(qtw.QMainWindow):
     
     def init_ui(self):
         self.resize(1000, 800)  # Width, Height in pixels
-        self.setWindowTitle("5DED Analysis")
+        self.setWindowTitle("EDyssey")
         self.tabs = qtw.QTabWidget()
-        # self.tab_converter = Tab_Converter()
-        # self.tabs.addTab(self.tab_converter, 'tpx3 Converter')
         self.tab_roi_on_4D = Tab_ROI_on_4D()
         self.tabs.addTab(self.tab_roi_on_4D, 'ROI on 4D')
         self.tab_create_navSignal = Tab_Create_NavSignal()
@@ -189,6 +187,33 @@ if __name__ == "__main__":
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = qtw.QApplication([])
+    # Must come after the QApplication is constructed - get_qt_log_handler()
+    # instantiates a QObject with signals, which needs QApplication to
+    # already exist for cross-thread delivery to work (see its docstring).
+    # Without this call, install_excepthook (imported above) was dead code:
+    # any uncaught exception during startup vanished silently instead of
+    # reaching logs/app.log - the only trace of a crash for a windowed app
+    # with no console attached (e.g. a frozen build, or `pythonw`).
+    install_excepthook()
     window = MainWindow()
+
+    # A fresh top-level window's default position, as Qt/Windows computes it
+    # at construction time, can land outside every screen's visible bounds
+    # on some multi-monitor / high-DPI combinations (a known rough edge when
+    # AA_EnableHighDpiScaling meets mismatched per-monitor scale factors) -
+    # the process keeps running and its taskbar entry stays put, but the
+    # window itself is simply never visible anywhere to click on. Force it
+    # onto whichever screen the mouse is currently on (falling back to the
+    # primary screen), sized/centered within that screen's available area.
+    screen = qtw.QApplication.screenAt(QCursor.pos()) or qtw.QApplication.primaryScreen()
+    if screen is not None:
+        geo = screen.availableGeometry()
+        w = min(window.width(), geo.width())
+        h = min(window.height(), geo.height())
+        window.resize(w, h)
+        window.move(geo.x() + (geo.width() - w) // 2, geo.y() + (geo.height() - h) // 2)
+
     window.show()
+    window.raise_()
+    window.activateWindow()
     app.exec_()

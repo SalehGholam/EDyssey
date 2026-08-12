@@ -1,3 +1,4 @@
-# Extra dependencies for running the test suite (tests/) - not needed to
-# run the app itself, see requirements.txt for that.
+# Extra dependencies for running the test suite (tests/) and linting - not
+# needed to run the app itself, see requirements.txt for that.
 pytest
+ruff

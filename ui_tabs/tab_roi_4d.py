@@ -12,7 +12,8 @@ import json
 from time import perf_counter
 from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess)
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QIntValidator, QDoubleValidator
+from PyQt5.QtGui import QIntValidator, QDoubleValidator, QKeySequence
+from PyQt5.QtWidgets import QShortcut
 from matplotlib.colors import SymLogNorm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -25,7 +26,7 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
-from .base_tab import TabBase, compute_left_panel_width
+from .base_tab import TabBase, compute_left_panel_width, build_left_panel
 from .threshold_dialog import ThresholdDialog
 from .worker_thread import ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -48,11 +49,7 @@ class Tab_ROI_on_4D(TabBase):
         self.layout.addWidget(self._splitter)
         
         width_userInput = compute_left_panel_width()
-        self._left_widget = qtw.QWidget()
-        self._left_widget.setFixedWidth(width_userInput)
-        self._splitter.addWidget(self._left_widget)
-
-        layout_userInput = qtw.QVBoxLayout(self._left_widget)
+        layout_userInput = build_left_panel(self._splitter, width_userInput)
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories')
         layout_userInput.addWidget(self.box_dir)
@@ -81,6 +78,9 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_scanSize_row1 = qtw.QHBoxLayout()
         layout_box_scanSize.addLayout(layout_scanSize_row1)
+
+        label_scanSize = qtw.QLabel('Scan Size')
+        layout_scanSize_row1.addWidget(label_scanSize)
 
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         layout_scanSize_row1.addWidget(self.checkbox_scanSize)
@@ -114,43 +114,13 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_scanSize_row1.addStretch(1)
 
-        # scale bars - moved here, real/reciprocal merged onto one row
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_box_scanSize.addWidget(self.box_scale)
-
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the '
-            'diffraction pattern to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(
-            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
-
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
-
-        self.lineEdit_scale_recip.textChanged.connect(self.update_canvas)
-        self.lineEdit_scale_real.textChanged.connect(self.update_canvas)
+        # id(self.dp) at the time dp_center was last auto-found - lets
+        # update_canvas() skip re-running find_dp_center_blurred (a real
+        # HyperSpy call) when the DP hasn't actually changed since, e.g. on
+        # every tick of a contrast-slider drag. See _on_auto_center_toggled.
+        self._dp_center_cache_key = None
 
         # detector size (per side, in pixels) - Auto assumes 512x512.
         layout_detSize = qtw.QHBoxLayout()
@@ -217,6 +187,44 @@ class Tab_ROI_on_4D(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
+        # scale bars - kept at the bottom of Input Parameters (below scan
+        # size/detector size/metadata), real/reciprocal merged onto one row,
+        # since it's a display-only calibration rather than an acquisition
+        # parameter.
+        self.box_scale = qtw.QGroupBox('Scale bars')
+        layout_box_scale = qtw.QVBoxLayout()
+        self.box_scale.setLayout(layout_box_scale)
+        layout_box_scanSize.addWidget(self.box_scale)
+
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_box_scale.addLayout(layout_scale_row)
+        label_scale_real = qtw.QLabel('Real (nm)')
+        label_scale_real.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_real)
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        label_scale_recip.setFixedWidth(55)
+        layout_scale_row.addWidget(label_scale_recip)
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+
+        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterDp.setChecked(True)
+        self.checkbox_autoCenterDp.setToolTip(
+            'When checked, the reciprocal-space rings are re-centered on the '
+            'direct beam automatically (found via a large-sigma blur) after '
+            'every redraw. When unchecked, hold Ctrl and click on the '
+            'diffraction pattern to set the center manually.')
+        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
+        self.lineEdit_scale_recip.textChanged.connect(
+            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
+        self.lineEdit_scale_real.textChanged.connect(
+            lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
+
         #%% box smart scan (pattern-file) acquisition support
         self.box_smartScan = qtw.QGroupBox('Smart Scan')
         layout_box_smartScan = qtw.QVBoxLayout()
@@ -244,29 +252,6 @@ class Tab_ROI_on_4D(TabBase):
         self.button_browsePattern.setDisabled(True)
         layout_scanSize_row3.addWidget(self.button_browsePattern)
         self.button_browsePattern.clicked.connect(self.browse_pattern_file)
-
-        # Detection/acquisition dwell times - a smart-scanned tilt series
-        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
-        # for the dense detection pass, "Scan strategy: Custom" for the
-        # sparse acquisition), each with its own dwelltime - editable here
-        # in case they differ from (or aren't present in) comment.txt.
-        layout_scanSize_dwell = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell)
-        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (\u03BCs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_detection)
-        self.spinbox_dwellTime_detection = qtw.QSpinBox()
-        self.spinbox_dwellTime_detection.setFixedWidth(70)
-        self.spinbox_dwellTime_detection.setRange(1, 99999999)
-        self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_detection)
-        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (\u03BCs)')
-        layout_scanSize_dwell.addWidget(label_dwellTime_acquisition)
-        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
-        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
-        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
-        self.spinbox_dwellTime_acquisition.setDisabled(True)
-        layout_scanSize_dwell.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize_dwell.addStretch(1)
 
         #%% load button
         layout_load = qtw.QHBoxLayout()
@@ -480,6 +465,11 @@ class Tab_ROI_on_4D(TabBase):
         # panel (a separate splitter pane) can span the full window height.
         self.log_console = LogConsole(self)
         layout_canvas.addWidget(self.log_console)
+
+        # keyboard shortcuts (matching the equivalent actions on the other tabs)
+        QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+T'), self, self.button_segment_image.click)
+        QShortcut(QKeySequence('Ctrl+R'), self, self.button_clear_roi.click)
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
@@ -493,6 +483,21 @@ class Tab_ROI_on_4D(TabBase):
         auto = self.checkbox_detectorSizeAuto.isChecked()
         self.spinbox_detectorSize_x.setDisabled(auto)
         self.spinbox_detectorSize_y.setDisabled(auto)
+
+    def get_detector_shape(self, fn):
+        """(shape_x, shape_y) of the detector/diffraction-pattern for `fn` -
+        auto-detected from the file for formats that report it cheaply
+        (io.get_det_size opens the file lazily, no full read), or the
+        manual "Detector Size" X/Y spinboxes for .tpx3 (auto-detecting that
+        would mean fully parsing the file - eventem has no cheaper
+        metadata-only query - just to learn its shape; "Auto" here keeps
+        the previous default of 512x512)."""
+        dtype = os.path.splitext(fn)[-1]
+        if dtype == '.tpx3':
+            if self.checkbox_detectorSizeAuto.isChecked():
+                return 512, 512
+            return self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()
+        return io.get_det_size(fn)
 
     def get_scan_size(self):
         """Return the (x, y) scan size from the manual entry fields, or
@@ -525,7 +530,8 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.info('Loading 4D signal from %s...', self.fn)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
-        worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime, self.get_fn_pattern())
+        worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime, self.get_fn_pattern(),
+                              self.get_detector_shape(self.fn))
 
         worker.signals.result.connect(self.image_handler)
         self.threadpool.start(worker)
@@ -540,6 +546,7 @@ class Tab_ROI_on_4D(TabBase):
         reset the nav axis view/toolbar history to it."""
         self.navImg = result
         self.dp_center = None  # a new signal may have a different DP shape/center
+        self._dp_center_cache_key = None
         self.update_canvas('nav')
         # Reset the view to the newly loaded image's full extent (in case
         # the user had already zoomed in on a previous signal, which
@@ -579,16 +586,30 @@ class Tab_ROI_on_4D(TabBase):
         # making the pattern-file picker unusable for exactly the formats
         # (mib/hspy) that need it most. They manage their own enabled state
         # via activate_lineEdit_patternFile() below instead.
+        # Metadata controls (Load/Browse/Block #) and everything under
+        # box_scale ("Scale bars") are excluded for the same reason -
+        # comment.txt metadata and the scale-bar settings apply to every
+        # format, not just .tpx3, and this loop used to silently disable
+        # them (including the "Load" button message_box_scan_size_required()
+        # itself tells the user to click) for any other format.
         smart_scan_widgets = (self.checkbox_smartScan, self.lineEdit_patternFile,
                               self.button_browsePattern)
+        metadata_widgets = (self.button_loadMetadata, self.button_browseMetadata,
+                            self.spinbox_metadataCount)
+        exempt_widgets = (set(smart_scan_widgets) | set(metadata_widgets)
+                          | {self.box_scale} | set(self.box_scale.findChildren(qtw.QWidget)))
         for wid in self.box_scanSize.findChildren(qtw.QWidget):
-            if wid in smart_scan_widgets:
+            if wid in exempt_widgets:
                 continue
             wid.setEnabled(enable)
             # print(e)
         self.checkbox_scanSize.setChecked(not enable)
         self.checkbox_scanSize.setDisabled(enable)
-        if enable:
+        # Attempted for every format, not just .tpx3 - comment.txt is
+        # written for smart-scanned .mib/.hspy/.zspy acquisitions too, and
+        # load_metadata(silent=True) already no-ops quietly when comment.txt
+        # is missing or unparsable.
+        if os.path.isfile(txt):
             self.load_metadata(silent=True)
         self.activate_lineEdit_patternFile()
 
@@ -639,13 +660,12 @@ class Tab_ROI_on_4D(TabBase):
                     f'Could not read metadata from comment.txt in:\n{path_main}\n\n{e}')
 
     def activate_lineEdit_patternFile(self):
-        """Enable the pattern-file picker and detection/acquisition
-        dwell-time spinboxes together, only when "Smart Scanned" is checked."""
+        """Enable the pattern-file picker, only when "Smart Scanned" is
+        checked - dwell time always comes from the single Dwell T. spinbox
+        above (Input Parameters), smart-scanned or not."""
         enable = self.checkbox_smartScan.isChecked()
         self.lineEdit_patternFile.setEnabled(enable)
         self.button_browsePattern.setEnabled(enable)
-        self.spinbox_dwellTime_detection.setEnabled(enable)
-        self.spinbox_dwellTime_acquisition.setEnabled(enable)
 
     def browse_pattern_file(self):
         fn = self.lineEdit_dir_signal.text()
@@ -801,7 +821,7 @@ class Tab_ROI_on_4D(TabBase):
             except Exception:
                 self.dwellTime = None
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime,
-                                    self.get_fn_pattern())
+                                    self.get_fn_pattern(), self.get_detector_shape(self.fn))
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
     
@@ -964,16 +984,23 @@ class Tab_ROI_on_4D(TabBase):
             scale_real = float(scale_real)
             for scale_ax in [self.ax_nav, self.ax_nav_roi]:
                 io.add_readable_scalebar(scale_ax, scale_real, 'nm')
-        except Exception as e:
-            # print(e)
+        except Exception:
             pass
         # A conventional linear scale bar doesn't read naturally on a
         # radially-symmetric diffraction pattern - concentric dashed rings
         # at every 1 1/A (centered on the DP) work better.
         dp_shape = self.img_display['dp'].get_array().shape
-        if self.checkbox_autoCenterDp.isChecked():
+        # find_dp_center_blurred is a real HyperSpy call (Signal2D + a
+        # gaussian-blur map) - only worth re-running when self.dp has
+        # actually been replaced since the last time (id() is a cheap,
+        # reliable proxy: self.dp is always reassigned wholesale, never
+        # mutated in place), not on every redraw - update_canvas() is wired
+        # directly to the (continuously-firing) DP contrast sliders.
+        dp_key = id(self.dp) if hasattr(self, 'dp') else None
+        if self.checkbox_autoCenterDp.isChecked() and self._dp_center_cache_key != dp_key:
             try:
                 self.dp_center = io.find_dp_center_blurred(self.dp)
+                self._dp_center_cache_key = dp_key
             except Exception:
                 self.logger.exception('Auto-centering the diffraction pattern failed.')
         center = self.dp_center if self.dp_center is not None else None
@@ -981,12 +1008,25 @@ class Tab_ROI_on_4D(TabBase):
             self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
             center=center, old_artists=getattr(self, '_dp_recip_circles', None))
         if self.checkbox_autoCenterDp.isChecked():
-            self.ax_dp.set_xlabel('Circle center: auto (large-sigma blur)', fontsize=9)
+            self.ax_dp.set_xlabel(
+                'Circle center: auto (large-sigma blur) - uncheck "Auto-center" '
+                'to set manually via Ctrl+Click', fontsize=9)
         else:
             self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=9)
 
         self.canvas.draw()
-    
+
+    def _on_auto_center_toggled(self):
+        """checkbox_autoCenterDp.stateChanged handler: force one fresh
+        find_dp_center_blurred re-run on the next redraw, even though
+        self.dp itself hasn't changed - otherwise re-enabling auto-center
+        after a manual Ctrl+Click override would silently keep showing that
+        stale manual center, since update_canvas()'s cache only re-runs it
+        when self.dp's identity has changed."""
+        self._dp_center_cache_key = None
+        if hasattr(self, 'dp'):
+            self.update_canvas(ax='dp')
+
     def message_box_tpx3(self):
        msg = qtw.QMessageBox()
        msg.setWindowTitle("Scan Size Error!")
@@ -994,7 +1034,7 @@ class Tab_ROI_on_4D(TabBase):
        msg.setInformativeText("Enter scan size and try again.")
        msg.setStandardButtons(qtw.QMessageBox.Ok)
        msg.setIcon(qtw.QMessageBox.Critical)
-       retval = msg.exec_()
+       msg.exec_()
 
     def _scan_size_required(self, dtype):
         """Whether an explicit (non-"Auto") scan size is required for
@@ -1053,7 +1093,7 @@ class Tab_ROI_on_4D(TabBase):
         try:
             p.remove()
         except Exception:
-            pass
+            self.logger.debug('SAM2 point scatter artist already removed.', exc_info=True)
         self.canvas.draw_idle()
         if not self.seg_points:
             self.button_segment_image.setDisabled(True)
@@ -1070,7 +1110,7 @@ class Tab_ROI_on_4D(TabBase):
             try:
                 p.remove()
             except Exception:
-                pass
+                self.logger.debug('SAM2 point scatter artist already removed.', exc_info=True)
         self.scatter_plots.clear()
         self.img_display['seg_mask'].set_data(np.zeros((512, 512, 4)))
         self.button_segment_image.setDisabled(True)
@@ -1089,7 +1129,7 @@ class Tab_ROI_on_4D(TabBase):
             try:
                 self.rect.remove()
             except Exception:
-                pass
+                self.logger.debug('ROI rectangle artist already removed.', exc_info=True)
             self.rect = None
             self.canvas.draw_idle()
         if not self.seg_points:
@@ -1245,7 +1285,8 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.info('Computing diffraction pattern summed over SAM2 mask...')
         dtype = os.path.splitext(self.fn)[-1]
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
-                                         self.scanSize, self.dwellTime, self.get_fn_pattern())
+                                         self.scanSize, self.dwellTime, self.get_fn_pattern(),
+                                         self.get_detector_shape(self.fn))
         worker.signals.result.connect(self.get_dp_from_mask)
         self.threadpool.start(worker)
 
@@ -1319,7 +1360,8 @@ class Tab_ROI_on_4D(TabBase):
         self._cancelling = False
         self.button_cancel.setEnabled(True)
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
-                                         self.dwellTime, self.get_fn_pattern())
+                                         self.dwellTime, self.get_fn_pattern(),
+                                         self.get_detector_shape(self.fn))
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -1389,7 +1431,8 @@ class WorkerSignals(QObject):
 class Worker_NavImg(QRunnable):
     """Background QRunnable that computes a 4D signal's navigation image,
     emitting it via signals.result."""
-    def __init__(self, fn, scanSize=None, dwellTime=None, fn_pattern=None):
+    def __init__(self, fn, scanSize=None, dwellTime=None, fn_pattern=None,
+                det_shape=(512, 512)):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1398,13 +1441,14 @@ class Worker_NavImg(QRunnable):
         self.scanSize = scanSize
         self.dwellTime = dwellTime
         self.fn_pattern = fn_pattern
+        self.det_shape = det_shape
         self.signals = WorkerSignals()
 
     def run(self):
         try:
             navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize,
                                              dwellTime=self.dwellTime, logger=self.logger,
-                                             fn_pattern=self.fn_pattern)
+                                             fn_pattern=self.fn_pattern, det_shape=self.det_shape)
         except Exception:
             self.logger.exception('Failed to calculate navigation image after %s.',
                                    io.format_duration_hms(perf_counter() - self._tic))
@@ -1420,7 +1464,7 @@ class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
-    def __init__(self, fn, roi, scanSize, dwellTime, fn_pattern=None):
+    def __init__(self, fn, roi, scanSize, dwellTime, fn_pattern=None, det_shape=(512, 512)):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1430,34 +1474,38 @@ class Worker_CalculateDP(QRunnable):
         self.scanSize = scanSize
         self.dwellTime = dwellTime
         self.fn_pattern = fn_pattern
+        self.det_shape = det_shape
 
         self.signals = WorkerSignals()
 
     def run(self):
+        # load_signal/load_tpx3/load_hs/load_hdf5 no longer return HyperSpy
+        # Signal2D objects (nor a (signal, file_handle) tuple for hdf5 - the
+        # file is now closed internally): .tpx3 returns the raw eventem.Roi
+        # object itself, everything else a plain numpy/dask array already
+        # cropped to `roi`.
+        dtype = os.path.splitext(self.fn)[-1]
         try:
-            s_cut = io.load_signal(self.fn, roi=self.roi,
-                                   scanSize=self.scanSize, dwellTime=self.dwellTime,
-                                   logger=self.logger, fn_pattern=self.fn_pattern)
-            if type(s_cut) == tuple: # for hdf5
-                s_cut, self.f = s_cut
-
-            # The h5py file handle (self.f, for the hdf5-lazy case) must stay
-            # open through .compute() since the dask array reads from it
-            # lazily, but has to be closed here regardless of whether that
-            # computation succeeds or raises — otherwise a failed compute
-            # leaks an open file handle for the rest of the process/console
-            # session.
-            try:
-                navImg_cut = s_cut.sum(axis=(2,3)).data
-                dp = s_cut.sum(axis=(0,1)).data
+            if dtype == '.tpx3':
+                x, y, w, h = self.roi
+                roi_obj = io.load_tpx3(self.fn, roi=self.roi, scanSize=self.scanSize,
+                                       dwellTime=self.dwellTime, fn_pattern=self.fn_pattern,
+                                       logger=self.logger, get_4d=False,
+                                       det_shape=self.det_shape)
+                dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(
+                    self.det_shape[1], self.det_shape[0])
+                navImg_cut = np.array(roi_obj.Roi_scan_image).reshape(h, w)
+            else:
+                s_cut = io.load_signal(self.fn, roi=self.roi,
+                                       scanSize=self.scanSize, dwellTime=self.dwellTime,
+                                       logger=self.logger, fn_pattern=self.fn_pattern)
+                navImg_cut = s_cut.sum(axis=(2,3))
+                dp = s_cut.sum(axis=(0,1))
                 if hasattr(dp, 'compute'): # lazy signals
                     with ProgressBar():
-                        dp.compute()
+                        dp = dp.compute()
                 if hasattr(navImg_cut, 'compute'): # lazy signals
                     navImg_cut = navImg_cut.compute()
-            finally:
-                if hasattr(self, 'f'):
-                    self.f.close()
         except Exception:
             self.logger.exception('Failed to calculate diffraction pattern after %s.',
                                    io.format_duration_hms(perf_counter() - self._tic))
@@ -1472,7 +1520,8 @@ class Worker_CalculateDP_Mask(QRunnable):
     (e.g. SAM2-segmented) mask is True, restricted to `roi` (the mask's
     bounding box) for efficiency. Reuses the same per-format masked loaders
     already used by the CV2/SAM2 tabs' 3DED extraction."""
-    def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None):
+    def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
+                det_shape=(512, 512)):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -1484,13 +1533,14 @@ class Worker_CalculateDP_Mask(QRunnable):
         self.scanSize = scanSize
         self.dwellTime = dwellTime
         self.fn_pattern = fn_pattern
+        self.det_shape = det_shape
         self.signals = WorkerSignals()
 
     def run(self):
         try:
             dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
                         scanSize=self.scanSize, dwellTime=self.dwellTime,
-                        fn_pattern=self.fn_pattern)
+                        fn_pattern=self.fn_pattern, det_shape=self.det_shape)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:
