@@ -1,6 +1,6 @@
-# py5DED User Manual
+# EDyssey User Manual
 
-py5DED is a PyQt5 desktop application for processing and analyzing 4D-STEM
+EDyssey is a PyQt5 desktop application for processing and analyzing 4D-STEM
 (scanning electron diffraction) datasets: computing navigation images,
 inspecting individual ROIs, tracking objects across a scan series (via
 classical computer vision or Meta's SAM2 AI segmentation model), and
@@ -9,7 +9,7 @@ extracting per-object 3D electron diffraction (3DED) data.
 ## Launching
 
 See [INSTALL.md](INSTALL.md) for setting up dependencies first. Then run
-`5DED_MainWidow.py`. The main window has four tabs (described below)
+`EDyssey_MainWindow.py`. The main window has four tabs (described below)
 and a live log console along the bottom.
 
 If you re-run the script in the same Python console/kernel (e.g. Spyder's

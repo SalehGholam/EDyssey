@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for py4DTomo.io_utils.contrast - the 8-bit contrast-stretching
+"""Tests for EDyssey.io_utils.contrast - the 8-bit contrast-stretching
 methods (percentile/minmax/std) added this session, including the
 outlier-robustness behaviour that's the whole point of defaulting to
 percentile instead of minmax (see contrast.py's module docstring).
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import hyperspy.api as hs
 
-from py4DTomo.io_utils import contrast
+from EDyssey.io_utils import contrast
 
 
 def _signal(data):

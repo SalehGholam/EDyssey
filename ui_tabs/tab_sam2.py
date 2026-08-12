@@ -27,7 +27,7 @@ import gc
 from copy import deepcopy
 import datetime
 from time import perf_counter
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 from typing import Literal
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -40,7 +40,7 @@ from .mask_edit_dialog import MaskEditDialog
 from worker_extract_frame import load_dp
 from glob import glob
 from matplotlib.colors import SymLogNorm
-# import py4DTomo.tracking_utils as tr
+# import EDyssey.tracking_utils as tr
 import shutil
 import threading
 from collections import deque
@@ -324,7 +324,7 @@ class Tab_SAM2(TabBase):
         #%% box smart scan (pattern-file) support: the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
-        # its matching pattern file - see py4DTomo/io_utils/smart_scan.py.
+        # its matching pattern file - see EDyssey/io_utils/smart_scan.py.
         self.box_smartScan = qtw.QGroupBox('Smart Scan')
         layout_box_smartScan = qtw.QVBoxLayout()
         self.box_smartScan.setLayout(layout_box_smartScan)
@@ -2538,7 +2538,7 @@ class Tab_SAM2(TabBase):
 
     def get_temp_dir(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
+        temp_dir = os.path.join(os.path.dirname(script_dir), 'EDyssey', 'io_utils', 'temp')
         os.makedirs(temp_dir, exist_ok=True)
         self.logger.info('temp dir: %s', temp_dir)
         return temp_dir

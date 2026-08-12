@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """"Check Files" popup for smart-scanned (pattern-file) acquisitions -
 reviews the automatic detection/acquisition/pattern-file match for every
-tilt angle in a folder (see py4DTomo/io_utils/smart_scan.py) before it's
+tilt angle in a folder (see EDyssey/io_utils/smart_scan.py) before it's
 used for a batch nav-image calculation (Tab_Create_NavSignal) or 3DED
 extraction (Tab_Tracking_CV2/Tab_SAM2), and lets bad rows be fixed by hand -
 the same file-by-file checking these tabs' docstrings describe doing
@@ -11,7 +11,7 @@ import os
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QMimeData
 from PyQt5.QtGui import QColor, QDrag
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 
 _COLS = ['Include', 'Angle', 'Detection File', 'Acquisition File', 'Pattern File', 'Status']
 _FILE_COLS = {2: 'detection_file', 3: 'acquisition_file', 4: 'pattern_file'}
@@ -90,7 +90,7 @@ class SmartScanCheckDialog(qtw.QDialog):
     """Editable table of every tilt angle found in `data_dir`, matched to
     its detection/acquisition data files and pattern file. `exec_()` returns
     QDialog.Accepted once the user confirms; `self.rows` then holds the
-    reviewed match table (see `py4DTomo.io_utils.smart_scan.match_tilt_files`
+    reviewed match table (see `EDyssey.io_utils.smart_scan.match_tilt_files`
     for the row shape) - pass it to `resolve_smart_scan_files` to get the
     ordered per-role file list to actually use."""
 

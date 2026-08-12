@@ -10,7 +10,7 @@ import sys
 import os
 file_path = os.path.abspath(__file__)
 fld_path = os.path.dirname(file_path)
-sys.path.append(os.path.join(fld_path, 'py4DTomo', 'io_utils')) # path to the evetem
+sys.path.append(os.path.join(fld_path, 'EDyssey', 'io_utils')) # path to the evetem
 import eventem
 from multiprocessing import Pool
 from glob import glob

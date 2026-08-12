@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tests for py4DTomo.io_utils.pets - the wavelength physics formula and the
+"""Tests for EDyssey.io_utils.pets - the wavelength physics formula and the
 .pts2 imagelist/parameter templating used by the "Make *.pts2" checkbox
 added this session (see ui_tabs/pets2_dialog.py)."""
 import pytest
 
-from py4DTomo.io_utils import pets
+from EDyssey.io_utils import pets
 
 
 def test_electron_wavelength_200kv_matches_reference():

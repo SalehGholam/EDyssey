@@ -19,7 +19,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
@@ -1178,7 +1178,7 @@ class Tab_ROI_on_4D(TabBase):
         """Return the temp directory used to exchange SAM2 inputs/outputs
         with the segmentation subprocess, creating it if necessary."""
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp', 'roi4d_seg')
+        temp_dir = os.path.join(os.path.dirname(script_dir), 'EDyssey', 'io_utils', 'temp', 'roi4d_seg')
         os.makedirs(temp_dir, exist_ok=True)
         return temp_dir
 

@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 import matplotlib.colors as mcolors
 import matplotlib.patches as patches
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 import hyperspy.api as hs
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -108,7 +108,7 @@ class Tab_Create_NavSignal(TabBase):
         self.lineEdit_projectName = qtw.QLineEdit()
         layout_project_name.addWidget(self.lineEdit_projectName)
         self.lineEdit_projectName.setToolTip(
-            'Results are saved to "<Save Path>/<Project>_5DED Analysis/navigator signal/'
+            'Results are saved to "<Save Path>/<Project>_EDyssey Analysis/navigator signal/'
             '<timestamp>/" - defaults to the 4D signals folder name whenever that '
             'folder changes, but can be edited freely before saving.')
 
@@ -266,7 +266,7 @@ class Tab_Create_NavSignal(TabBase):
         #%% box smart scan (pattern-file) tomography support: each tilt angle
         # may have a "detection" file (dense, no pattern needed) and/or an
         # "acquisition" file (sparse, needs its own pattern file) - see
-        # py4DTomo/io_utils/smart_scan.py.
+        # EDyssey/io_utils/smart_scan.py.
         self.box_smartScan = qtw.QGroupBox('Smart Scan')
         layout_box_smartScan = qtw.QVBoxLayout()
         self.box_smartScan.setLayout(layout_box_smartScan)
@@ -567,7 +567,7 @@ class Tab_Create_NavSignal(TabBase):
         # combined into a single navigation image at calculation time -
         # natively summed by eventem for .tpx3, OR-combined into one mask
         # for every other format (see create_virtual_detector_multi in
-        # py4DTomo/io_utils/nav_image.py). An empty list just keeps the
+        # EDyssey/io_utils/nav_image.py). An empty list just keeps the
         # spinbox-defined detector above as the only one used, so nothing
         # changes for anyone who never touches this.
         self._extra_detectors = []
@@ -1852,7 +1852,7 @@ class Tab_Create_NavSignal(TabBase):
         # just the path back, instead of a base64+pickle-encoded copy of
         # the array through stdout - see launch_next_nav_task/
         # handle_finished_nav and worker_nav_img.py's docstring for why.
-        self._navimg_temp_dir = tempfile.mkdtemp(prefix='py5ded_navimg_')
+        self._navimg_temp_dir = tempfile.mkdtemp(prefix='edyssey_navimg_')
         self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
         # Detector shape only actually varies by dtype (auto-detected per
         # file for non-.tpx3 formats, or the manual/Auto UI setting for
@@ -2064,10 +2064,10 @@ class Tab_Create_NavSignal(TabBase):
             'generation continues asynchronously).', io.format_duration_hms(perf_counter() - tic))
 
     def _save_results_impl(self):
-        """Save into "<Save Path>/<Project>_5DED Analysis/navigator signal/
+        """Save into "<Save Path>/<Project>_EDyssey Analysis/navigator signal/
         <timestamp>/" - a dedicated, per-run subfolder, not directly in the
         Save Path - so every navigator run for a project lands under one
-        shared "<Project>_5DED Analysis" tree (CV2/SAM2 default their own
+        shared "<Project>_EDyssey Analysis" tree (CV2/SAM2 default their own
         "Save Dir." into this same folder - see io.default_analysis_save_dir)
         and is directly loadable via "Load Saved Analysis" in those tabs.
         Everything this produces - the .hspy signal, per-frame TIFFs, clip,
@@ -2078,7 +2078,7 @@ class Tab_Create_NavSignal(TabBase):
             os.mkdir(self.pathSave)
         project_name = (self.lineEdit_projectName.text().strip()
                         or os.path.basename(self.path_main.rstrip('/\\')) or 'project')
-        path_navigator = os.path.join(self.pathSave, f'{project_name}_5DED Analysis', 'navigator signal')
+        path_navigator = os.path.join(self.pathSave, f'{project_name}_EDyssey Analysis', 'navigator signal')
         os.makedirs(path_navigator, exist_ok=True)
         fld_1 = datetime.date.today()
         fld_2 = datetime.datetime.now().strftime("%H-%M-%S")

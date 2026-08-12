@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt
 import matplotlib.patches as patches
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 
 _MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.45])  # translucent orange overlay
 _DIRECTIONS = [('Top', 270), ('Bottom', 90), ('Left', 180), ('Right', 0)]

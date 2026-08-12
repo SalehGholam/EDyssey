@@ -17,12 +17,12 @@ import base64
 import pickle
 file_path = os.path.abspath(__file__)
 main_path = os.path.dirname(file_path)
-eventem_path = os.path.join(main_path, 'py4DTomo', 'io_utils')
+eventem_path = os.path.join(main_path, 'EDyssey', 'io_utils')
 sys.path.append(eventem_path)
 # os.chdir()
 import eventem
 from hyperspy.api import signals, load
-# from py4DTomo.io_utils import load_signal
+# from EDyssey.io_utils import load_signal
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
 #%%
@@ -343,9 +343,9 @@ if __name__ == "__main__":
     
 # =============================================================================
 #     # for debugging
-#     path_mask = r'D:\0_5ded test\Ayush\5DED Analysis\2026-03-26__17-11-25\roi No 1\output_mask.npy'
+#     path_mask = r'D:\0_edyssey test\Ayush\EDyssey Analysis\2026-03-26__17-11-25\roi No 1\output_mask.npy'
 #     mask = np.load(path_mask)[-1]
-#     args = ['D:/0_5ded test/Ayush/4d signals\\raw_0652_-37.75_000000.tpx3', 
+#     args = ['D:/0_edyssey test/Ayush/4d signals\\raw_0652_-37.75_000000.tpx3', 
 #              '[314 117  23  23]', 
 #              mask, 
 #              '.tpx3', 

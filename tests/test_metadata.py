@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tests for py4DTomo.io_utils.metadata - all pure/deterministic (no Qt, no
+"""Tests for EDyssey.io_utils.metadata - all pure/deterministic (no Qt, no
 compiled eventem/pacbed dependency), using synthetic fixtures rather than
 any personal machine's real acquisition data.
 """
@@ -7,7 +7,7 @@ import json
 import os
 import pytest
 
-from py4DTomo.io_utils import metadata as md
+from EDyssey.io_utils import metadata as md
 
 
 def _write(tmp_path, name, text):
@@ -101,15 +101,15 @@ def test_get_metadata_skips_unparsable_lines(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_default_analysis_save_dir_inside_navigator_structure():
-    fn = os.path.join('D:', os.sep, 'data', 'mySample_5DED Analysis',
+    fn = os.path.join('D:', os.sep, 'data', 'mySample_EDyssey Analysis',
                        'navigator signal', '2026-07-29__12-00-00', 'navigation_signal.hspy')
-    expected = os.path.join('D:', os.sep, 'data', 'mySample_5DED Analysis')
+    expected = os.path.join('D:', os.sep, 'data', 'mySample_EDyssey Analysis')
     assert md.default_analysis_save_dir(fn) == expected
 
 
 def test_default_analysis_save_dir_standalone_file_falls_back():
     fn = os.path.join('D:', os.sep, 'data', 'some_old_signal.hspy')
-    expected = os.path.join('D:', os.sep, 'data', '5DED Analysis')
+    expected = os.path.join('D:', os.sep, 'data', 'EDyssey Analysis')
     assert md.default_analysis_save_dir(fn) == expected
 
 

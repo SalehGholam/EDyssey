@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from skimage.filters import threshold_otsu, threshold_li, threshold_yen
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 
 
 class ThresholdDialog(qtw.QDialog):

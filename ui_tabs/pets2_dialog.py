@@ -14,11 +14,11 @@ Layout:
 
 Every field except the per-study ones (center, alpha start/step) is cached
 to `<repo>/temp/pets2_last_params.json` on OK and used to pre-fill the next
-time this dialog opens (see py4DTomo/io_utils/pets.py).
+time this dialog opens (see EDyssey/io_utils/pets.py).
 """
 import re
 import PyQt5.QtWidgets as qtw
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 
 _INT_RE = re.compile(r'^[+-]?\d+$')
 

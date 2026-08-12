@@ -15,10 +15,10 @@ from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from matplotlib.colors import SymLogNorm
 import matplotlib.pyplot as plt
 import numpy as np
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 import hyperspy.api as hs
 from hyperspy.api import load
-import py4DTomo.tracking_utils as tr
+import EDyssey.tracking_utils as tr
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
@@ -324,11 +324,11 @@ class Tab_Tracking_CV2(TabBase):
         # smart-scan (pattern-file) support: the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
-        # its matching pattern file - see py4DTomo/io_utils/smart_scan.py.
+        # its matching pattern file - see EDyssey/io_utils/smart_scan.py.
         #%% box smart scan (pattern-file) support: the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
-        # its matching pattern file - see py4DTomo/io_utils/smart_scan.py.
+        # its matching pattern file - see EDyssey/io_utils/smart_scan.py.
         self.box_smartScan = qtw.QGroupBox('Smart Scan')
         layout_box_smartScan = qtw.QVBoxLayout()
         self.box_smartScan.setLayout(layout_box_smartScan)
@@ -2504,7 +2504,7 @@ class Tab_Tracking_CV2(TabBase):
                                        f'({shape_d_x},{shape_d_y})'])
         
         
-        # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\debug'
+        # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\other_scripts\debug'
         # with open(os.path.join(path_debug, 'args.txt'), 'r') as f:
         #     f.writelines(self.tasks)
         
@@ -2520,7 +2520,7 @@ class Tab_Tracking_CV2(TabBase):
         """Return the shared temp directory used for per-frame extraction
         masks, creating it if it doesn't exist yet."""
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(os.path.dirname(script_dir), 'py4DTomo', 'io_utils', 'temp')
+        temp_dir = os.path.join(os.path.dirname(script_dir), 'EDyssey', 'io_utils', 'temp')
         os.makedirs(temp_dir, exist_ok=True)
         self.logger.info('temp directory: %s', temp_dir)
         return temp_dir

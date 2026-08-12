@@ -9,7 +9,7 @@ process.setArguments(["worker_X.py", *args])` - that pattern only works when
 path to run. In a PyInstaller-frozen build, `sys.executable` is the frozen
 app itself (no bundled python.exe), so the worker script has to be run a
 different way: the frozen exe re-invokes itself with `--worker <name> ...`,
-which 5DED_MainWidow.py's entry point recognizes and dispatches to
+which EDyssey_MainWindow.py's entry point recognizes and dispatches to
 worker_dispatch.py (repo root) instead of starting the GUI. This module is
 the one place that decides which of those two invocation shapes to build,
 so no call site needs to know or care whether it's running frozen or not.
@@ -42,5 +42,5 @@ def worker_command(worker_name, args):
         return sys.executable, ['--worker', worker_name] + str_args
     # sys.executable is a plain python.exe here, which needs an explicit
     # script to run - unlike the frozen case above.
-    entry = os.path.join(_REPO_ROOT, '5DED_MainWidow.py')
+    entry = os.path.join(_REPO_ROOT, 'EDyssey_MainWindow.py')
     return sys.executable, [entry, '--worker', worker_name] + str_args

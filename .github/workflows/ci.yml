@@ -9,12 +9,12 @@ on:
 jobs:
   test:
     # ubuntu-latest + Python 3.10, not the Windows/newer-Python dev
-    # environment this app actually ships on: py4DTomo/io_utils/loaders.py
+    # environment this app actually ships on: EDyssey/io_utils/loaders.py
     # unconditionally `import eventem`, a bundled compiled extension built
-    # per-platform/per-Python-version (see py4DTomo/io_utils/eventem.*.pyd
+    # per-platform/per-Python-version (see EDyssey/io_utils/eventem.*.pyd
     # and .so) - 3.10 is the newest CPython ABI it has a Linux build for, so
     # this is the cheapest/fastest combination that can actually import it.
-    # tests/ itself only exercises pure-Python logic in py4DTomo/io_utils
+    # tests/ itself only exercises pure-Python logic in EDyssey/io_utils
     # (no PyQt5/GUI), so this is enough to validate that layer.
     runs-on: ubuntu-latest
     steps:

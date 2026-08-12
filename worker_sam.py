@@ -62,14 +62,14 @@ if __name__ == "__main__":
     idx = int(idx)
     
 # =============================================================================
-#     path_seg_input = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\test_data\5DED Analysis\JPG Images\0'
+#     path_seg_input = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\other_scripts\test_data\EDyssey Analysis\JPG Images\0'
 #     idx = 0
-#     path_checkpoints = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\py4DTomo\tracking_utils\SAM2_checkpoints'
+#     path_checkpoints = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\EDyssey\tracking_utils\SAM2_checkpoints'
 # =============================================================================
     
     path_file = os.path.abspath(__file__)
     path_file = os.path.dirname(path_file)
-    path_checkpoints = os.path.join(path_file, 'py4DTomo', 'tracking_utils', 'SAM2_checkpoints')
+    path_checkpoints = os.path.join(path_file, 'EDyssey', 'tracking_utils', 'SAM2_checkpoints')
     fn_checkpoint = 'sam2.1_hiera_large.pt'
     sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
@@ -165,7 +165,7 @@ if __name__ == "__main__":
         
 # =============================================================================
 #         # debugging
-#         p_d = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\py5DED\other_scripts\test_data\5DED Analysis'
+#         p_d = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\other_scripts\test_data\EDyssey Analysis'
 #         f_d = os.path.join(p_d, "video_segments.pkl")
 #         with open(f_d, "wb") as f:
 #             pickle.dump(video_segments, f)

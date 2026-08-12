@@ -9,7 +9,7 @@ calling a specific function) means none of the worker scripts' own
 still parses `sys.argv` and calls `sys.exit(...)` exactly as it always has,
 whether invoked directly (`python worker_extract_frame.py ...`, still works
 unchanged) or dispatched through here (dev-mode subprocess re-invoking
-5DED_MainWidow.py, or a PyInstaller-frozen build re-invoking itself).
+EDyssey_MainWindow.py, or a PyInstaller-frozen build re-invoking itself).
 """
 import os
 import sys

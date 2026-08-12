@@ -10,7 +10,7 @@ line-length = 110
 select = ["E9", "F"]
 ignore = [
     "F401",  # unused imports - too many false positives from `from x import *`
-             # (py4DTomo/io_utils/__init__.py, tab files) to enable yet
+             # (EDyssey/io_utils/__init__.py, tab files) to enable yet
     "F403",  # `from x import *` - an established, intentional convention in
-             # py4DTomo/io_utils/io_utils_ui.py and tracking_utils/__init__.py
+             # EDyssey/io_utils/io_utils_ui.py and tracking_utils/__init__.py
 ]

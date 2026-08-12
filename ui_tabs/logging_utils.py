@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Shared logging setup for py5DED.
+Shared logging setup for EDyssey.
 
 Each tab gets its own logger writing to its own rotating file under
 logs/<tab_name>.log (so a session's history stays readable per-tab
@@ -25,7 +25,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 _FORMATTER = logging.Formatter(
     '%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-_LOGGER_PREFIX = 'py5DED.'
+_LOGGER_PREFIX = 'EDyssey.'
 
 
 class QtLogHandler(logging.Handler, QObject):

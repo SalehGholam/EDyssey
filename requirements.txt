@@ -1,4 +1,4 @@
-# py5DED runtime dependencies, pinned to versions verified against this
+# EDyssey runtime dependencies, pinned to versions verified against this
 # codebase. See INSTALL.md for the pieces that can't just be `pip install`ed
 # from this file (eventem/pacbed, SAM2, ffmpeg).
 #

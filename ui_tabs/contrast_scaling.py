@@ -11,14 +11,14 @@ cheap for a long stack) via `rescale_async`. Each call to `rescale_async`
 supersedes any still-running previous one - only the newest call's result
 is ever delivered - so rapid retuning can't pile up worker threads.
 
-Pairs with py4DTomo.io_utils.io_utils_ui.convert_to_8bit/convert_img_to_8bit
+Pairs with EDyssey.io_utils.io_utils_ui.convert_to_8bit/convert_img_to_8bit
 (and their shared CONTRAST_METHODS/_contrast_bounds) - this widget owns the
 UI plus this scheduling, but the actual pixel math still lives in
 io_utils_ui, not here.
 """
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import pyqtSignal, Qt
-import py4DTomo.io_utils as io
+import EDyssey.io_utils as io
 from .worker_thread import WorkerThread_General
 
 
