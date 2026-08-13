@@ -35,6 +35,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--worker':
 
 import gc
 import logging
+import re
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
@@ -73,7 +74,23 @@ class MainWindow(qtw.QMainWindow):
         self.tabs.addTab(self.tab_tracking_cv2, 'ROI Tracker')
         self.tab_sam2 = Tab_SAM2()
         self.tabs.addTab(self.tab_sam2, 'SAM2 Tracker')
-        
+
+        # Every tab instance that currently exists: the 4 fixed ones above,
+        # plus any duplicates opened via the File menu - closeEvent below
+        # cleans up all of them, not just the original 4, so a duplicate
+        # left open at exit doesn't leak its threadpool/subprocesses/
+        # matplotlib figure. self._primary_tabs (a fixed snapshot of just
+        # the original 4) is what _on_tab_close_requested refuses to close -
+        # closing e.g. self.tab_roi_on_4D itself would leave that attribute
+        # pointing at a destroyed widget.
+        self._all_tabs = [self.tab_roi_on_4D, self.tab_create_navSignal,
+                          self.tab_tracking_cv2, self.tab_sam2]
+        self._primary_tabs = set(self._all_tabs)
+
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._build_menu()
+
         # In a PyInstaller-frozen build, bundled data files (this icon
         # included) are extracted under sys._MEIPASS, not next to __file__ -
         # sys._MEIPASS doesn't exist at all in a normal (non-frozen) run.
@@ -158,9 +175,85 @@ class MainWindow(qtw.QMainWindow):
             QToolButton:hover { background-color: #3c3c3c; border: 1px solid #555; }
         """)
 
+    def _build_menu(self):
+        menu_file = self.menuBar().addMenu('&File')
+
+        action_duplicate = menu_file.addAction('Duplicate Current Tab')
+        action_duplicate.setShortcut('Ctrl+Shift+D')
+        action_duplicate.setToolTip(
+            'Open a new, empty tab of the same type as the currently active one - '
+            'e.g. a second "ROI on 4D" tab, for working on two signals side by side')
+        action_duplicate.triggered.connect(self.duplicate_current_tab)
+
+        action_close = menu_file.addAction('Close Current Tab')
+        action_close.setShortcut('Ctrl+W')
+        action_close.triggered.connect(
+            lambda: self._on_tab_close_requested(self.tabs.currentIndex()))
+
+        menu_file.addSeparator()
+        action_exit = menu_file.addAction('Exit')
+        action_exit.setShortcut('Ctrl+Q')
+        action_exit.triggered.connect(self.close)
+
+        menu_help = self.menuBar().addMenu('&Help')
+        action_about = menu_help.addAction('About EDyssey')
+        action_about.triggered.connect(self.show_about_dialog)
+
+    def duplicate_current_tab(self):
+        """Open a new, empty tab of the same type as the currently active
+        one, appended at the end and switched to - e.g. a second
+        independent "ROI on 4D" tab, for comparing two signals side by side
+        without losing the first one's state. The new tab is a fresh
+        instance (its own class's __init__, same as the 4 original tabs
+        get at startup), not a copy of the current tab's loaded data."""
+        current = self.tabs.currentWidget()
+        if current is None:
+            return
+        base_label = re.sub(r' \(\d+\)$', '', self.tabs.tabText(self.tabs.currentIndex()))
+        try:
+            new_tab = type(current)()
+        except Exception:
+            logging.getLogger('EDyssey.app').exception(
+                'Failed to duplicate tab %s', type(current).__name__)
+            qtw.QMessageBox.critical(self, 'Duplicate Failed',
+                f'Could not create a new {base_label} tab - see the log for details.')
+            return
+        existing = sum(1 for i in range(self.tabs.count())
+                      if re.sub(r' \(\d+\)$', '', self.tabs.tabText(i)) == base_label)
+        index = self.tabs.addTab(new_tab, f'{base_label} ({existing + 1})')
+        self._all_tabs.append(new_tab)
+        self.tabs.setCurrentIndex(index)
+
+    def _on_tab_close_requested(self, index):
+        """Slot for the tab bar's close ('x') button and "Close Current
+        Tab" - refuses to close any of the 4 original tabs (see
+        self._primary_tabs), since self.tab_roi_on_4D etc. would then point
+        at a destroyed widget; only tabs opened via duplicate_current_tab
+        can actually be closed."""
+        if index < 0 or index >= self.tabs.count():
+            return
+        widget = self.tabs.widget(index)
+        if widget in self._primary_tabs:
+            qtw.QMessageBox.information(self, 'Cannot Close',
+                'The original tabs can\'t be closed - use "Duplicate Current Tab" '
+                '(File menu, Ctrl+Shift+D) first if you want a closable copy.')
+            return
+        try:
+            widget.cleanup()
+        except Exception:
+            logging.getLogger('EDyssey.app').exception(
+                'Error cleaning up %s on tab close', type(widget).__name__)
+        self.tabs.removeTab(index)
+        if widget in self._all_tabs:
+            self._all_tabs.remove(widget)
+        widget.deleteLater()
+
+    def show_about_dialog(self):
+        qtw.QMessageBox.about(self, 'About EDyssey',
+            'EDyssey\n\n4D-STEM acquisition, navigation, and tracking toolkit.')
+
     def closeEvent(self, event):
-        for tab in (self.tab_roi_on_4D, self.tab_create_navSignal,
-                    self.tab_tracking_cv2, self.tab_sam2):
+        for tab in self._all_tabs:
             try:
                 tab.cleanup()
             except Exception:
