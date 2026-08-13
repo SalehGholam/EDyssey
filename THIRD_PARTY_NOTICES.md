@@ -70,12 +70,29 @@ imports or calls them):
 - `EDyssey/tracking_utils/SAM2_checkpoints/sam2.1_hiera_{tiny,small,base_plus}.pt` -
   only the `large` checkpoint is ever loaded (`worker_sam.py`).
 
-## Runtime dependencies (installed via `requirements.txt` / `pip`, not bundled by the installer)
+## Runtime dependencies
+
+Installed via `requirements.txt`/`pip` in every case; additionally bundled
+directly inside the PyInstaller build itself for the parts noted below (see
+[EDyssey.spec](EDyssey.spec)).
 
 Notably GPL-3.0: **PyQt5** (or a commercial Riverbank license) and
 **HyperSpy** - these are why EDyssey itself is GPL-3.0 rather than a more
 permissive license (GPL forbids adding further restrictions on top of a
-combined work). Everything else (numpy, dask, opencv-contrib-python,
-matplotlib, tifffile, h5py, tqdm, scipy, scikit-image, pandas, Pillow,
-torch, the `sam2` package) is permissively licensed (BSD/MIT/Apache-2.0
-family). See each package's own PyPI page for its exact license.
+combined work). Both are bundled into every installer build (online and
+offline).
+
+Everything else (numpy, dask, opencv-contrib-python, matplotlib, tifffile,
+h5py, tqdm, scipy, scikit-image, pandas, Pillow) is permissively licensed
+(BSD/MIT/Apache-2.0 family) and bundled into every installer build too.
+
+**`torch`, `torchvision`, the `sam2` package, and their own dependencies
+(`hydra-core`, `iopath`, `omegaconf`)** - also permissively licensed
+(BSD-3-Clause for torch/torchvision, Apache-2.0 for sam2, MIT/BSD for the
+rest) - are bundled directly (including CUDA runtime DLLs) **only in the
+offline installer** (`EDYSSEY_OFFLINE_BUILD=1` in EDyssey.spec). The online
+installer and a from-source install instead expect these installed
+separately (see INSTALL.md's "Enabling SAM2") since the right `torch` build
+is CUDA-version-specific.
+
+See each package's own PyPI page for its exact license.

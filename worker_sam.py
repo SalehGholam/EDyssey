@@ -77,11 +77,16 @@ if __name__ == "__main__":
 #     path_checkpoints = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\EDyssey\tracking_utils\SAM2_checkpoints'
 # =============================================================================
     
-    path_file = os.path.abspath(__file__)
-    path_file = os.path.dirname(path_file)
-    path_checkpoints = os.path.join(path_file, 'EDyssey', 'tracking_utils', 'SAM2_checkpoints')
-    fn_checkpoint = 'sam2.1_hiera_large.pt'
-    sam2_checkpoint = os.path.join(path_checkpoints, fn_checkpoint)
+    # asset_fetch.resolve_sam2_checkpoint_dir() is the single source of
+    # truth for where the checkpoint actually is - it may be staged
+    # read-only next to the app (offline installer) or downloaded into a
+    # writable per-user location (online installer, since the install
+    # directory itself isn't guaranteed to be writable - see
+    # EDyssey/io_utils/app_dirs.py). Re-deriving this path independently
+    # here used to silently disagree with asset_fetch's own resolution.
+    from EDyssey.tracking_utils.asset_fetch import (
+        resolve_sam2_checkpoint_dir, SAM2_CHECKPOINT_FILENAME)
+    sam2_checkpoint = os.path.join(resolve_sam2_checkpoint_dir(), SAM2_CHECKPOINT_FILENAME)
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
     if not os.path.isfile(sam2_checkpoint):
         # Normally unreachable - tab_sam2.py downloads this checkpoint (via

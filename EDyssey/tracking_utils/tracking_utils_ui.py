@@ -182,10 +182,15 @@ def track_roi_cv2(imgs, rois, init=[0], tracking_method='csrt'):
         # which WorkerThread_General routes to the caller's connected
         # `.error` signal instead of crashing silently.
         asset_fetch.ensure_tracker_models(tracking_method)
+        # resolve_opencv_models_dir() always exists on return (creates it
+        # if needed) - EDyssey/tracking_utils/opencv_models/ is git-ignored
+        # and never shipped, so it doesn't exist at all on a fresh install
+        # until asset_fetch has actually downloaded something into it; a
+        # bare os.chdir() into a not-yet-existing directory used to crash
+        # even a plain 'csrt'/'mil' tracker (which need no external files)
+        # on a completely fresh install.
         path_origin = os.getcwd()
-        path_file = os.path.abspath(__file__)
-        path_file = os.path.split(path_file)[0]
-        path_trackerModels = os.path.join(path_file, 'opencv_models')
+        path_trackerModels = asset_fetch.resolve_opencv_models_dir(tracking_method)
         os.chdir(path_trackerModels)
         if tracking_method == 'csrt':
             tracker = cv2.TrackerCSRT_create()

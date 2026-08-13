@@ -32,9 +32,19 @@ the front.
 - **Log console** (bottom of the main window): live, color-coded messages
   (errors in red, warnings in yellow) tagged by which tab produced them.
   The full session is also written to disk, one file per tab, under a
-  `logs/` folder next to the app (plus `logs/app.log` for uncaught
-  errors) — check there first if something goes wrong and the console
-  message isn't enough.
+  `logs/` folder (plus `logs/app.log` for uncaught errors) — check there
+  first if something goes wrong and the console message isn't enough.
+  Next to the app when running from source; `%LocalAppData%\EDyssey\logs`
+  for an installed build, since the install location itself (particularly
+  the default `Program Files`) isn't guaranteed to be writable.
+- **Diagnostic console window**: the installer builds also open a plain
+  black console window alongside the main app (pushed behind it on
+  startup, so it won't cover anything - check the taskbar/Alt+Tab for
+  "EDyssey Console"). This is separate from the log console above: it
+  shows raw output that doesn't go through EDyssey's own logging - e.g.
+  `torch`/CUDA's own messages on the SAM2 tab. Safe to ignore during
+  normal use; check it if something's gone wrong and the log console
+  above isn't explaining it. Closing it also closes the app.
 
 ## Tabs
 

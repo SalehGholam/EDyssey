@@ -21,6 +21,15 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+# EDyssey.spec's offline build (EDYSSEY_OFFLINE_BUILD=1) uses these
+# non-default --workpath/--distpath names instead, specifically so it can
+# run alongside a normal online build without the two colliding - the
+# generic build//dist/ rules above don't match them.
+build_offline/
+dist_offline/
+# Compiled installer .exe output from installer/EDyssey_*.iss (iscc) -
+# multi-GB for the offline variant, far too large for git regardless.
+installer/Output/
 downloads/
 eggs/
 .eggs/

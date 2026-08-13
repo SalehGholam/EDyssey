@@ -6,7 +6,7 @@ Two installer variants exist - same app either way, they only differ in
 whether the (large) model weight files come bundled or get downloaded
 later:
 
-- **Online** (small): download `EDyssey_Setup_Online_<version>.exe` from the
+- **Online** (small, ~200MB): download `EDyssey_Setup_Online_<version>.exe` from the
   [Releases](https://github.com/SalehGholam/EDyssey/releases) page and run
   it - no Python setup needed. The SAM2 checkpoint and the Nano/DaSiamRPN
   tracker model files are downloaded automatically, once, the first time
@@ -16,14 +16,17 @@ later:
   and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for exactly what
   gets downloaded and from where. This needs an internet connection the
   first time; nothing is re-downloaded after that.
-- **Offline** (~2-3GB): `EDyssey_Setup_Offline_<version>.exe` bundles those
-  same model files, so nothing downloads later either - useful for a
-  machine with no/restricted internet access. This one is too large for a
-  GitHub Release, so it isn't published there - ask whoever maintains this
-  repo for a copy directly.
+- **Offline** (~2.6GB): `EDyssey_Setup_Offline_<version>.exe` bundles
+  those same model files, **and** `torch`/CUDA/`sam2` themselves, so
+  nothing downloads or needs installing later, ever - useful for a machine
+  with no/restricted internet access, or just to skip the manual step
+  below entirely. This one is too large for a GitHub Release, so it isn't
+  published there - ask whoever maintains this repo for a copy directly.
 
-Either way, `torch`/`sam2` are **not** installed automatically - see
-"Enabling SAM2" below. Every other tab/feature works out of the box.
+With the online installer (or running from source), `torch`/`sam2` are
+**not** installed automatically - see "Enabling SAM2" below. Every other
+tab/feature works out of the box either way. The offline installer needs
+no such step - SAM2 works immediately after install.
 
 ## Option B: Run from source
 
@@ -75,10 +78,13 @@ dependency, just slower/larger output without it.
 
 Run `EDyssey_MainWindow.py`. See [MANUAL.md](MANUAL.md) for usage.
 
-## Enabling SAM2 (both options)
+## Enabling SAM2 (running from source, or the online installer)
 
-`torch` and the `sam2` package are deliberately not installed by either the
-Windows installer or `requirements.txt` - `torch` alone is a multi-GB,
+Skip this section if you're using the offline installer - it already
+includes `torch`/CUDA/`sam2`.
+
+`torch` and the `sam2` package are deliberately not installed by
+`requirements.txt` or the online installer - `torch` alone is a multi-GB,
 CUDA-version-specific download (see https://pytorch.org/get-started/locally/),
 so there's no single build that would be right for every machine.
 

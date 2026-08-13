@@ -16,21 +16,24 @@ segmentation model - and extracting per-object 3D electron diffraction
 **Windows installer (recommended):** two variants, both installing the same
 app - no Python setup required either way:
 
-- **Online** (small): download `EDyssey_Setup_Online_<version>.exe` from the
+- **Online** (small, ~200MB): download `EDyssey_Setup_Online_<version>.exe` from the
   [Releases](https://github.com/SalehGholam/EDyssey/releases) page. The SAM2
   checkpoint and Nano/DaSiamRPN tracker model files download automatically
   the first time you use those specific features, instead of being bundled
   upfront.
-- **Offline** (large, ~2-3GB): bundles those same model files so nothing
-  needs to be downloaded later, not even on first use. Not published on
-  GitHub (too large for a Release asset) - ask whoever maintains this repo
-  for a copy, or build it yourself (see Development below).
+- **Offline** (large, ~2.6GB): bundles those same model files, plus
+  `torch`/CUDA/`sam2` themselves, so nothing needs to be downloaded or
+  installed later - not even on first use of the SAM2 tab. Not published
+  on GitHub (too large for a Release asset) - ask whoever maintains this
+  repo for a copy, or build it yourself (see Development below).
 
 **From source:** see [INSTALL.md](INSTALL.md).
 
-Either way, SAM2 support needs one extra manual step (`torch` + the `sam2`
-package aren't bundled or auto-installed, since the right build depends on
-your GPU/CUDA version) - see INSTALL.md's "Enabling SAM2" section.
+With the online installer (or running from source), SAM2 support needs one
+extra manual step (`torch` + the `sam2` package aren't bundled or
+auto-installed, since the right build depends on your GPU/CUDA version) -
+see INSTALL.md's "Enabling SAM2" section. The offline installer already
+includes both, so SAM2 works immediately after install.
 
 ## Usage
 
@@ -44,11 +47,15 @@ your GPU/CUDA version) - see INSTALL.md's "Enabling SAM2" section.
 
 - Tests: `pytest tests/`
 - Lint: `ruff check .`
-- Building the Windows installer: `pyinstaller EDyssey.spec`, then either
-  `iscc installer\EDyssey_online.iss` or `iscc installer\EDyssey_offline.iss`
-  (the offline one needs the model weight files present locally first - see
-  its header comment). See [EDyssey.spec](EDyssey.spec)'s header comment for
-  the overall packaging rationale.
+- Building the Windows installer:
+  - Online: `pyinstaller EDyssey.spec`, then `iscc installer\EDyssey_online.iss`.
+  - Offline: `set EDYSSEY_OFFLINE_BUILD=1` first, then
+    `pyinstaller EDyssey.spec --distpath dist_offline --workpath build_offline`,
+    then `iscc installer\EDyssey_offline.iss` - needs `torch`/`sam2` and the
+    model weight files present locally first (see its header comment).
+
+  See [EDyssey.spec](EDyssey.spec)'s header comment for the overall
+  packaging rationale.
 
 ## License
 

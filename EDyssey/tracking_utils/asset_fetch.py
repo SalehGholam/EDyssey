@@ -17,6 +17,8 @@ import sys
 import urllib.request
 import urllib.error
 
+from EDyssey.io_utils.app_dirs import writable_data_dir
+
 _logger = logging.getLogger(__name__)
 
 
@@ -26,25 +28,48 @@ class AssetDownloadError(Exception):
     actionable message rather than letting a raw urllib exception surface."""
 
 
-def _base_dir():
-    """EDyssey/tracking_utils/ - the PyInstaller-extracted temp dir when
-    frozen (same pattern as worker_dispatch._base_dir()), this file's own
-    directory otherwise."""
+def _install_dir():
+    """EDyssey/tracking_utils/ next to the app - the PyInstaller-extracted
+    location when frozen (same pattern as worker_dispatch._base_dir()),
+    this file's own directory otherwise. This is where the *offline*
+    installer (installer/EDyssey_offline.iss) pre-stages model files, and
+    where a dev-mode checkout already has them if previously downloaded.
+    Treated as read-only: it isn't guaranteed to be writable (e.g. the
+    default `Program Files` install location needs admin rights)."""
     if getattr(sys, 'frozen', False):
         base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(base, 'EDyssey', 'tracking_utils')
     return os.path.dirname(os.path.abspath(__file__))
 
 
-SAM2_CHECKPOINT_DIR = os.path.join(_base_dir(), 'SAM2_checkpoints')
+def _writable_dir():
+    """Always-writable fallback, for both re-checking a previous on-demand
+    download and as the download target itself - see _install_dir()'s
+    docstring for why that one alone isn't safe to write into. Mirrors
+    _install_dir()'s own EDyssey/tracking_utils/ structure."""
+    return os.path.join(writable_data_dir(), 'EDyssey', 'tracking_utils')
+
+
+def _resolve_existing(subdir, filenames_and_sizes):
+    """Return whichever of _install_dir()/_writable_dir() already has every
+    file in `filenames_and_sizes` ({filename: expected_size}) at the right
+    size, preferring _install_dir() (so an offline-installer-staged copy is
+    used as-is, never re-downloaded) - or None if neither has a complete set."""
+    for base in (_install_dir(), _writable_dir()):
+        candidate = os.path.join(base, subdir)
+        if all(os.path.isfile(os.path.join(candidate, fn))
+               and os.path.getsize(os.path.join(candidate, fn)) == size
+               for fn, size in filenames_and_sizes.items()):
+            return candidate
+    return None
+
+
 SAM2_CHECKPOINT_FILENAME = 'sam2.1_hiera_large.pt'
 # Meta's own official download host - the same URL checkpoints/
 # download_ckpts.sh (part of facebookresearch/sam2, not shipped/tracked in
 # this repo) uses for this exact checkpoint. Apache-2.0.
 SAM2_CHECKPOINT_URL = 'https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt'
 SAM2_CHECKPOINT_SIZE = 898083611  # bytes; Meta publishes no official checksum to verify against
-
-OPENCV_MODELS_DIR = os.path.join(_base_dir(), 'opencv_models')
 
 # opencv/opencv_zoo pinned to the last commit before DaSiamRPN was removed
 # there ("Remove DaSiamRPN since we have its superseder VitTrack now (#213)",
@@ -158,11 +183,23 @@ def _download(url, dest_path, expected_size=None, expected_sha256=None, progress
     _logger.info('Downloaded %s (%d bytes) -> %s', url, actual_size, dest_path)
 
 
+def resolve_sam2_checkpoint_dir():
+    """Directory containing (or that should receive) the SAM2 checkpoint -
+    _install_dir() if a correctly-sized copy is already staged there (e.g.
+    by the offline installer), otherwise _writable_dir() (created if
+    needed), which is also where ensure_sam2_checkpoint() downloads to."""
+    existing = _resolve_existing(
+        'SAM2_checkpoints', {SAM2_CHECKPOINT_FILENAME: SAM2_CHECKPOINT_SIZE})
+    if existing is not None:
+        return existing
+    target = os.path.join(_writable_dir(), 'SAM2_checkpoints')
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
 def ensure_sam2_checkpoint(progress_callback=None):
-    """Return the SAM2 checkpoint's path, downloading it first if missing.
-    Matches the layout `worker_sam.py` already expects
-    (EDyssey/tracking_utils/SAM2_checkpoints/sam2.1_hiera_large.pt)."""
-    dest = os.path.join(SAM2_CHECKPOINT_DIR, SAM2_CHECKPOINT_FILENAME)
+    """Return the SAM2 checkpoint's path, downloading it first if missing."""
+    dest = os.path.join(resolve_sam2_checkpoint_dir(), SAM2_CHECKPOINT_FILENAME)
     if os.path.isfile(dest) and os.path.getsize(dest) == SAM2_CHECKPOINT_SIZE:
         return dest
     _logger.info('SAM2 checkpoint not found locally, downloading (~%.0f MB)...',
@@ -170,15 +207,6 @@ def ensure_sam2_checkpoint(progress_callback=None):
     _download(SAM2_CHECKPOINT_URL, dest, expected_size=SAM2_CHECKPOINT_SIZE,
               progress_callback=progress_callback)
     return dest
-
-
-def tracker_needs_download(tracking_method):
-    """True if `tracking_method` ('csrt'/'mil'/'nano'/'dasiamrpn'/xcorr
-    methods) has any model file missing from EDyssey/tracking_utils/
-    opencv_models/. csrt/mil/xcorr methods need no external weights at all,
-    so this is always False for them."""
-    models = _models_for(tracking_method)
-    return any(not os.path.isfile(os.path.join(OPENCV_MODELS_DIR, fn)) for fn in models)
 
 
 def _models_for(tracking_method):
@@ -189,9 +217,28 @@ def _models_for(tracking_method):
     return {}
 
 
+def resolve_opencv_models_dir(tracking_method):
+    """Directory containing (or that should receive) `tracking_method`'s
+    .onnx weight file(s) - same install-dir-preferred / writable-dir-
+    fallback resolution as resolve_sam2_checkpoint_dir(). Always exists on
+    return (created if needed) - also used as the `os.chdir()` target
+    before constructing *any* CV2 tracker (see tracking_utils_ui.py),
+    including 'csrt'/'mil', which need no external files but still need
+    *some* existing directory to chdir into."""
+    models = _models_for(tracking_method)
+    if models:
+        existing = _resolve_existing(
+            'opencv_models', {fn: info['size'] for fn, info in models.items()})
+        if existing is not None:
+            return existing
+    target = os.path.join(_writable_dir(), 'opencv_models')
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
 def ensure_tracker_models(tracking_method, progress_callback=None):
     """Download whichever of `tracking_method`'s model file(s) are missing
-    from EDyssey/tracking_utils/opencv_models/ - a no-op for 'csrt'/'mil'/
+    from resolve_opencv_models_dir()'s target - a no-op for 'csrt'/'mil'/
     the xcorr methods, which need no external weights.
 
     Args:
@@ -199,8 +246,12 @@ def ensure_tracker_models(tracking_method, progress_callback=None):
             for a multi-file tracker (dasiamrpn), this fires per-file with
             that file's own byte counts, not a combined total.
     """
-    for filename, info in _models_for(tracking_method).items():
-        dest = os.path.join(OPENCV_MODELS_DIR, filename)
+    models = _models_for(tracking_method)
+    if not models:
+        return
+    target_dir = resolve_opencv_models_dir(tracking_method)
+    for filename, info in models.items():
+        dest = os.path.join(target_dir, filename)
         if os.path.isfile(dest) and os.path.getsize(dest) == info['size']:
             continue
         _logger.info('Tracker model %s not found locally, downloading (~%.1f MB)...',

@@ -14,9 +14,9 @@ written verbatim from the reference file and aren't user-editable here.
 import os
 import json
 import numpy as np
+from .app_dirs import writable_data_dir
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_CACHE_DIR = os.path.join(_REPO_ROOT, 'temp')
+_CACHE_DIR = os.path.join(writable_data_dir(), 'temp')
 _CACHE_FILE = os.path.join(_CACHE_DIR, 'pets2_last_params.json')
 
 #%% physics

@@ -196,8 +196,9 @@ if __name__ == "__main__":
     # already exist for cross-thread delivery to work (see its docstring).
     # Without this call, install_excepthook (imported above) was dead code:
     # any uncaught exception during startup vanished silently instead of
-    # reaching logs/app.log - the only trace of a crash for a windowed app
-    # with no console attached (e.g. a frozen build, or `pythonw`).
+    # reaching logs/app.log - the only trace of a crash when run via
+    # `pythonw` (no console attached there, unlike a frozen build - see
+    # EDyssey.spec's console=True).
     install_excepthook()
     window = MainWindow()
 
@@ -220,4 +221,23 @@ if __name__ == "__main__":
     window.show()
     window.raise_()
     window.activateWindow()
+
+    if getattr(sys, 'frozen', False):
+        # EDyssey.spec's console=True gives a frozen build a real console
+        # window (raw prints, torch/CUDA's own stderr chatter, tracebacks
+        # that don't reach the Qt log console) - push it behind the main
+        # window so it doesn't steal focus/cover the app on startup. Still
+        # reachable via the taskbar or Alt+Tab to check. GetConsoleWindow()
+        # returns 0 if there's no console for some reason - SetWindowPos
+        # with hwnd 0 would be a no-op anyway, but skip explicitly rather
+        # than rely on that.
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW('EDyssey Console (diagnostic output)')
+        console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if console_hwnd:
+            HWND_BOTTOM, SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 1, 0x0001, 0x0002, 0x0010
+            ctypes.windll.user32.SetWindowPos(
+                console_hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+
     app.exec_()

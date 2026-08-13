@@ -17,9 +17,9 @@ from logging.handlers import RotatingFileHandler
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtGui import QTextCursor
 import PyQt5.QtWidgets as qtw
+from EDyssey.io_utils.app_dirs import writable_data_dir
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(os.path.dirname(_HERE), 'logs')
+LOG_DIR = os.path.join(writable_data_dir(), 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 _FORMATTER = logging.Formatter(

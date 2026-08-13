@@ -74,6 +74,19 @@ def _log_or_print(logger, msg):
 # (fd 1 and fd 2) from the same thread - a plain Lock would self-deadlock.
 _fd_redirect_lock = threading.RLock()
 
+def _safe_flush(stream):
+    """Best-effort flush - `stream` is None in a PyInstaller windowed build
+    (console=False) with no console attached: sys.stdout/sys.stderr are
+    None there, not just closed or redirected, so a bare .flush() call
+    raises AttributeError. This is only making sure already-buffered
+    Python output is out before the raw fd gets redirected below, not
+    essential to what follows, so any failure here is safe to ignore."""
+    try:
+        stream.flush()
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
 @contextlib.contextmanager
 def _capture_fd(fd, on_line):
     """Tee OS file descriptor `fd` (1=stdout, 2=stderr) through a pipe for
@@ -94,12 +107,22 @@ def _capture_fd(fd, on_line):
     bookkeeping below).
     """
     with _fd_redirect_lock:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        original_fd = os.dup(fd)
-        read_fd, write_fd = os.pipe()
-        os.dup2(write_fd, fd)
-        os.close(write_fd)
+        _safe_flush(sys.stdout)
+        _safe_flush(sys.stderr)
+        try:
+            original_fd = os.dup(fd)
+            read_fd, write_fd = os.pipe()
+            os.dup2(write_fd, fd)
+            os.close(write_fd)
+        except OSError:
+            # No real OS-level fd to capture from - e.g. a PyInstaller
+            # windowed build with no console attached, where fd 1/2 may
+            # not be valid/duplicable at all. Degrade to a plain no-op
+            # rather than crashing the operation this wraps: losing live
+            # progress-in-log-console for this one call is much better
+            # than losing the whole load/compute.
+            yield
+            return
 
         last_line = [None]
 
@@ -140,8 +163,8 @@ def _capture_fd(fd, on_line):
         try:
             yield
         finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
+            _safe_flush(sys.stdout)
+            _safe_flush(sys.stderr)
             os.dup2(original_fd, fd)
             # Unbounded: the pipe's write end is deterministically closed by
             # the dup2 above (the only other reference, write_fd, was closed
