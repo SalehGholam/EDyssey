@@ -33,6 +33,7 @@ from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import TabBase, compute_left_panel_width, get_existing_directory, build_left_panel
 from .pets2_dialog import Pets2ParamsDialog
+from .ribbon import RibbonPanel, RibbonTool
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
@@ -738,7 +739,14 @@ class Tab_Tracking_CV2(TabBase):
         # self._splitter.setStretchFactor(0, 0)
         # self._splitter.setStretchFactor(1, 1)
         # self._splitter.setSizes([300, 900])
-        layout_canvas = qtw.QVBoxLayout(self._right_widget)
+        # Canvas (existing vertical stack) + the ribbon toolbar, side by
+        # side - see Tab_ROI_on_4D.init_widget for the identical pattern.
+        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
+        layout_right_outer.setContentsMargins(0, 0, 0, 0)
+        layout_right_outer.setSpacing(0)
+        self._canvas_container = qtw.QWidget()
+        layout_right_outer.addWidget(self._canvas_container, 1)
+        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
         
         # self.figure_nav = Figure(constrained_layout=True)
         self.figure_nav = Figure(constrained_layout=True)
@@ -814,6 +822,40 @@ class Tab_Tracking_CV2(TabBase):
         self.canvas_extract.setMinimumHeight(650)
         self.toolbar_nav = NavigationToolbar(self.canvas_nav, self)
         self.toolbar_extract = NavigationToolbar(self.canvas_extract, self)
+
+        #%% ribbon
+        # Docked along the right edge - an additional click-driven way to
+        # reach actions already available via Ctrl-click/drag on canvas_nav
+        # (see on_press) and the buttons in the left panel; none of those
+        # are removed or changed by this. 'select_roi' is the only tool
+        # mode on_press actually checks (see RibbonPanel.active_tool
+        # there) - it covers both a new ROI (on ax_nav) and a ROI-in-ROI
+        # (on ax_track), same as Ctrl+drag already does on each. Everything
+        # else here is a one-shot action wired straight to the button it
+        # duplicates. Pan/Zoom/Home act on canvas_nav (where ROI selection
+        # happens) - canvas_extract keeps its own toolbar_extract below it.
+        self.ribbon = RibbonPanel([
+            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on Nav./Tracking Results to draw '
+                      'a new ROI (or ROI-in-ROI, on the right axis)\n'
+                      '(same as holding Ctrl and dragging)', 'tool'),
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('track', 'Track', 'Run tracking (same as "Track!")', 'action',
+                      self.button_track.click),
+            RibbonTool('extract', 'Extract\nAll', 'Extract all diffraction patterns (same as "Extract All")',
+                      'action', self.button_3ded.click),
+            RibbonTool('save', 'Save', 'Save results (same as "Save Results")', 'action',
+                      self.button_save_results.click),
+            RibbonTool('sep2', kind='separator'),
+            RibbonTool('pan', 'Pan', 'Toggle pan mode on the Nav./Tracking canvas',
+                      'action', self.toolbar_nav.pan),
+            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode on the Nav./Tracking canvas',
+                      'action', self.toolbar_nav.zoom),
+            RibbonTool('home', 'Home', 'Reset the Nav./Tracking canvas view',
+                      'action', self.toolbar_nav.home),
+        ], parent=self)
+        self.ribbon.toolChanged.connect(
+            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        layout_right_outer.addWidget(self.ribbon)
 
         self._canvas_stack_widget = qtw.QWidget()
         layout_canvas_stack = qtw.QVBoxLayout(self._canvas_stack_widget)
@@ -1861,13 +1903,17 @@ class Tab_Tracking_CV2(TabBase):
         self.update_canvas()
 
     def on_press(self, event):
-        """Mouse-button-press handler for canvas_nav: with Ctrl held, start
-        a new ROI rectangle on ax_nav, or a ROI-in-ROI rectangle on
-        ax_track, at the click position."""
-        if event.inaxes not in (self.ax_nav, self.ax_track) or 'ctrl' not in event.modifiers:
+        """Mouse-button-press handler for canvas_nav: with Ctrl held (or the
+        ribbon's "Select ROI" tool active), start a new ROI rectangle on
+        ax_nav, or a ROI-in-ROI rectangle on ax_track, at the click
+        position."""
+        ribbon_tool = self.ribbon.active_tool
+        if event.inaxes not in (self.ax_nav, self.ax_track) or (
+                ribbon_tool != 'select_roi' and 'ctrl' not in event.modifiers):
             # Plain click/drag is reserved for the navigation toolbar's
             # Pan/Zoom tool (and the scroll-wheel zoom) so images can be
-            # zoomed into; hold "ctrl" to draw/edit a ROI instead.
+            # zoomed into; hold "ctrl" (or activate the ribbon's "Select
+            # ROI" tool) to draw/edit a ROI instead.
             self.press = None
             return
         self.press = (event.xdata, event.ydata)

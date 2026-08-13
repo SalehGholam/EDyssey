@@ -38,6 +38,7 @@ from .base_tab import TabBase, compute_left_panel_width, get_existing_directory,
 from .pets2_dialog import Pets2ParamsDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
+from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
 from glob import glob
 from matplotlib.colors import SymLogNorm
@@ -707,7 +708,14 @@ class Tab_SAM2(TabBase):
         # self._splitter.setStretchFactor(0, 0)
         # self._splitter.setStretchFactor(1, 1)
         # self._splitter.setSizes([300, 900])
-        layout_canvas = qtw.QVBoxLayout(self._right_widget)
+        # Canvas (existing vertical stack) + the ribbon toolbar, side by
+        # side - see Tab_ROI_on_4D.init_widget for the identical pattern.
+        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
+        layout_right_outer.setContentsMargins(0, 0, 0, 0)
+        layout_right_outer.setSpacing(0)
+        self._canvas_container = qtw.QWidget()
+        layout_right_outer.addWidget(self._canvas_container, 1)
+        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
         
         self.figure = Figure(constrained_layout=True)
         # self.figure = Figure(figsize=(16,8)) # with figsize
@@ -841,6 +849,45 @@ class Tab_SAM2(TabBase):
         self.tree_objects.itemSelectionChanged.connect(self.update_stack_guide)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
+
+        #%% ribbon
+        # Docked along the right edge - an additional click-driven way to
+        # reach actions already available via Ctrl-click on the canvas (see
+        # on_click) and the buttons in the left panel; none of those are
+        # removed or changed by this. 'add_point' is the only tool mode
+        # on_click actually checks (see RibbonPanel.active_tool there) -
+        # left/right click still choose positive/negative, and Shift still
+        # chooses new-object-vs-append, exactly as before. Everything else
+        # here is a one-shot action wired straight to the button it
+        # duplicates.
+        self.ribbon = RibbonPanel([
+            RibbonTool('add_point', '+/− Pt', 'Add point: click on Navigation '
+                      '(left = positive, right = negative)\nAdd Shift to add to the '
+                      'selected object instead of starting a new one\n'
+                      '(same as holding Ctrl and clicking)', 'tool'),
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('remove_point', 'Undo\nPt', 'Remove last point (same as middle-click)',
+                      'action', self.delete_last_point),
+            RibbonTool('seg_img', 'Seg\nImage', 'Segment the current frame only (same as "Seg Image")',
+                      'action', self.button_runSeg_img.click),
+            RibbonTool('track', 'Track', 'Track objects across all frames (same as "Track")',
+                      'action', self.button_runSeg_clip.click),
+            RibbonTool('extract', 'Extract\nAll', 'Extract 3D ED patterns (same as "Extract All")',
+                      'action', self.button_3ded.click),
+            RibbonTool('save', 'Save', 'Save results (same as "Save Results")', 'action',
+                      self.button_save_results.click),
+            RibbonTool('sep2', kind='separator'),
+            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+                      'action', self.toolbar.pan),
+            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+                      'action', self.toolbar.zoom),
+            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+                      'action', self.toolbar.home),
+        ], parent=self)
+        self.ribbon.toolChanged.connect(
+            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        layout_right_outer.addWidget(self.ribbon)
+
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -1702,9 +1749,10 @@ class Tab_SAM2(TabBase):
     def on_click(self, event):
         """Canvas mouse-click handler: middle-click deletes the last added
         point; Ctrl+click on the DP plot (only while auto-centering is off)
-        sets a manual diffraction-pattern center; Ctrl+click on the nav image
-        adds a positive (left) or negative (right) point to the selected
-        object, starting a new object unless Shift is held."""
+        sets a manual diffraction-pattern center; Ctrl+click on the nav
+        image (or a plain click while the ribbon's "Add point" tool is
+        active) adds a positive (left) or negative (right) point to the
+        selected object, starting a new object unless Shift is held."""
         if event.button == 2: # middle click:
             self.delete_last_point()
             return
@@ -1718,10 +1766,11 @@ class Tab_SAM2(TabBase):
             return
         if (event.inaxes != self.ax_nav) or (event.button not in [1,3]):
             return
-        if 'ctrl' not in event.modifiers:
+        if self.ribbon.active_tool != 'add_point' and 'ctrl' not in event.modifiers:
             # Plain click/drag is reserved for the navigation toolbar's
             # Pan/Zoom tool (and the scroll-wheel zoom below) so images can
-            # be zoomed into; hold "ctrl" to add a point instead.
+            # be zoomed into; hold "ctrl" (or activate the ribbon's "Add
+            # point" tool) to add a point instead.
             return
 
         imgNo = self.slider_imgNo.value()

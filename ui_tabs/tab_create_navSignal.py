@@ -33,6 +33,7 @@ from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .threshold_dialog import ThresholdDialog
 from .smart_scan_dialog import SmartScanCheckDialog
+from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
 #%% class
 class Tab_Create_NavSignal(TabBase):
@@ -673,7 +674,14 @@ class Tab_Create_NavSignal(TabBase):
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setSizes([300, 900])
-        layout_canvas = qtw.QVBoxLayout(self._right_widget)
+        # Canvas (existing vertical stack) + the ribbon toolbar, side by
+        # side - see Tab_ROI_on_4D.init_widget for the identical pattern.
+        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
+        layout_right_outer.setContentsMargins(0, 0, 0, 0)
+        layout_right_outer.setSpacing(0)
+        self._canvas_container = qtw.QWidget()
+        layout_right_outer.addWidget(self._canvas_container, 1)
+        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
 
         # Both plots share a single figure/canvas (side-by-side subplots)
         # rather than two separate canvases, with one shared toolbar below.
@@ -722,6 +730,41 @@ class Tab_Create_NavSignal(TabBase):
         layout_canvas.addWidget(self.canvas)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
+
+        #%% ribbon
+        # Docked along the right edge - an additional click-driven way to
+        # reach actions already available via Ctrl-click/drag on the canvas
+        # (see on_press_navsig) and the buttons in the left panel; none of
+        # those are removed or changed by this. 'select_roi' is the only
+        # tool mode on_press_navsig actually checks (see
+        # RibbonPanel.active_tool there) - everything else is a one-shot
+        # action wired straight to the method/button it duplicates. The
+        # virtual-detector mask drag (on_press_mask) isn't exposed here -
+        # it's a spinbox/drag hybrid rather than a simple click tool, so it
+        # keeps working exactly as before, only via Ctrl+drag on the
+        # Summed DP preview.
+        self.ribbon = RibbonPanel([
+            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on the Nav./Test Image to draw '
+                      'a scan-space ROI (for "Summed DP from ROI")\n(same as holding Ctrl and dragging)',
+                      'tool'),
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('clear_roi', 'Clear\nROI', 'Clear the drawn scan-space ROI (same as right-click)',
+                      'action', self.clear_navsig_roi),
+            RibbonTool('compute_dp', 'Sum\nDP', 'Compute Summed DP (find the detector center)',
+                      'action', self.button_computeSumDp.click),
+            RibbonTool('add_detector', 'Add\nDetector', 'Add the current virtual detector to the list',
+                      'action', self.button_addDetector.click),
+            RibbonTool('sep2', kind='separator'),
+            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+                      'action', self.toolbar.pan),
+            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+                      'action', self.toolbar.zoom),
+            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+                      'action', self.toolbar.home),
+        ], parent=self)
+        self.ribbon.toolChanged.connect(
+            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        layout_right_outer.addWidget(self.ribbon)
 
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
@@ -1599,7 +1642,8 @@ class Tab_Create_NavSignal(TabBase):
         self.canvas.draw_idle()
 
     def on_press_navsig(self, event):
-        """Start dragging a scan-space ROI on the nav/test image (Ctrl+drag),
+        """Start dragging a scan-space ROI on the nav/test image (Ctrl+drag,
+        or a plain drag while the ribbon's "Select ROI" tool is active),
         mirroring the ROI-drawing convention already used on tab ROI on 4D -
         this ROI only ever feeds "Summed DP from ROI", never "Compute Summed DP".
         A plain right-click instead deletes the currently-drawn ROI."""
@@ -1610,7 +1654,9 @@ class Tab_Create_NavSignal(TabBase):
             self._navsig_press = None
             self.clear_navsig_roi()
             return
-        if event.xdata is None or 'ctrl' not in event.modifiers or event.button != 1:
+        ribbon_tool = self.ribbon.active_tool
+        if (event.xdata is None or (ribbon_tool != 'select_roi' and 'ctrl' not in event.modifiers)
+                or event.button != 1):
             self._navsig_press = None
             return
         self._navsig_press = (event.xdata, event.ydata)

@@ -30,6 +30,7 @@ from .base_tab import TabBase, compute_left_panel_width, build_left_panel
 from .threshold_dialog import ThresholdDialog
 from .worker_thread import ProcessStderrBuffer
 from .worker_launch import worker_command
+from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
@@ -506,7 +507,16 @@ class Tab_ROI_on_4D(TabBase):
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setSizes([width_userInput, 900])
-        layout_canvas = qtw.QVBoxLayout(self._right_widget)
+        # Canvas (existing vertical stack) + the ribbon toolbar, side by
+        # side - the ribbon lives in a fixed-width strip along the right
+        # edge rather than in the splitter, so it can't be dragged away or
+        # resized like the left parameter panel can.
+        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
+        layout_right_outer.setContentsMargins(0, 0, 0, 0)
+        layout_right_outer.setSpacing(0)
+        self._canvas_container = qtw.QWidget()
+        layout_right_outer.addWidget(self._canvas_container, 1)
+        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
         
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure(constrained_layout=True)
@@ -582,6 +592,42 @@ class Tab_ROI_on_4D(TabBase):
         self.button_reset_slider.clicked.connect(self.reset_sliders)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
+
+        #%% ribbon
+        # Docked along the right edge (see layout_right_outer above) - an
+        # additional click-driven way to reach the same actions already
+        # available via Ctrl/Shift-click on the canvas (see on_press) and
+        # the buttons in the left panel; none of those are removed or
+        # changed by this. 'select_roi'/'add_point' are the only two tool
+        # modes on_press actually checks (see RibbonPanel.active_tool
+        # there) - everything else here is a one-shot action wired straight
+        # to the method/button it duplicates.
+        self.ribbon = RibbonPanel([
+            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on the Nav. Image to draw a '
+                      'new ROI (also usable as a SAM2 box prompt)\n(same as holding Ctrl and dragging)',
+                      'tool'),
+            RibbonTool('add_point', '+/− Pt', 'Add SAM2 point: click on the Nav. Image '
+                      '(left = positive, right = negative)\n(same as holding Shift and clicking)',
+                      'tool'),
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('remove_point', 'Undo\nPt', 'Remove last SAM2 point (same as middle-click)',
+                      'action', self.delete_last_seg_point),
+            RibbonTool('clear_points', 'Clear\nPts', 'Clear all SAM2 points', 'action',
+                      self.clear_seg_points),
+            RibbonTool('clear_roi', 'Clear\nROI', 'Clear the drawn ROI', 'action', self.clear_roi),
+            RibbonTool('segment', 'Seg-\nment', 'Run SAM2 segmentation (same as "Segment Image")',
+                      'action', self.button_segment_image.click),
+            RibbonTool('sep2', kind='separator'),
+            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+                      'action', self.toolbar.pan),
+            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+                      'action', self.toolbar.zoom),
+            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+                      'action', self.toolbar.home),
+        ], parent=self)
+        self.ribbon.toolChanged.connect(
+            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        layout_right_outer.addWidget(self.ribbon)
 
         # The app-wide log console lives here (below this tab's own plot
         # column) rather than under the whole window, so the left parameter
@@ -825,9 +871,12 @@ class Tab_ROI_on_4D(TabBase):
     def on_press(self, event):
         """Mouse-press dispatch for the nav/DP canvas: manual DP
         re-centering (Ctrl+Click on the DP axis), removing the last SAM2
-        point (middle click), adding a SAM2 point (Shift+Click), or
-        starting a new ROI rectangle (Ctrl+Drag) - depending on click
-        location and modifiers."""
+        point (middle click), adding a SAM2 point (Shift+Click, or a plain
+        click while the ribbon's "Add SAM2 point" tool is active), or
+        starting a new ROI rectangle (Ctrl+Drag, or a plain drag while the
+        ribbon's "Select ROI" tool is active) - depending on click location,
+        modifiers, and the ribbon's currently active tool."""
+        ribbon_tool = self.ribbon.active_tool
         if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
                 and 'ctrl' in event.modifiers and not self.checkbox_autoCenterDp.isChecked()
                 and hasattr(self, 'dp')):
@@ -844,17 +893,19 @@ class Tab_ROI_on_4D(TabBase):
             # Middle click removes the last-added SAM2 point.
             self.delete_last_seg_point()
             return
-        if 'shift' in event.modifiers and event.button in (1, 3):
-            # Shift+click adds a SAM2 point prompt (left = positive, right =
+        if (ribbon_tool == 'add_point' or 'shift' in event.modifiers) and event.button in (1, 3):
+            # Shift+click (or the ribbon's "Add SAM2 point" tool, plain
+            # click) adds a SAM2 point prompt (left = positive, right =
             # negative) - deliberately a different modifier than the
             # Ctrl+drag ROI below so the two annotation modes can't be
             # confused with each other.
             self.add_seg_point(event)
             return
-        if 'ctrl' not in event.modifiers or event.button != 1:
+        if (ribbon_tool != 'select_roi' and 'ctrl' not in event.modifiers) or event.button != 1:
             # Plain click/drag is reserved for the navigation toolbar's
             # Pan/Zoom tool (and the scroll-wheel zoom) so images can be
-            # zoomed into; hold "ctrl" to draw a new ROI instead.
+            # zoomed into; hold "ctrl" (or activate the ribbon's "Select
+            # ROI" tool) to draw a new ROI instead.
             self.press = None
             return
         self.press = (event.xdata, event.ydata)
