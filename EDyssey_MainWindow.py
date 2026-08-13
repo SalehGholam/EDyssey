@@ -40,7 +40,7 @@ from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2)
 from ui_tabs.logging_utils import install_excepthook
-from PyQt5.QtGui import QIcon, QCursor
+from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
 
@@ -191,6 +191,20 @@ if __name__ == "__main__":
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = qtw.QApplication([])
+
+    # Shown while MainWindow() builds its four tabs (matplotlib canvases
+    # included) below - the heavy hyperspy/dask/etc. imports above already
+    # happened before this point (Python runs all module-level imports
+    # before __main__ starts), so this covers UI construction time, not
+    # library import time, but that's still a real few-second gap with
+    # nothing else on screen otherwise.
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    fn_splash = os.path.join(base_dir, 'ui_tabs', 'logo', 'EDyssey_logo.png')
+    splash_pixmap = QPixmap(fn_splash).scaledToWidth(420, Qt.SmoothTransformation)
+    splash = qtw.QSplashScreen(splash_pixmap, Qt.WindowStaysOnTopHint)
+    splash.show()
+    app.processEvents()
+
     # Must come after the QApplication is constructed - get_qt_log_handler()
     # instantiates a QObject with signals, which needs QApplication to
     # already exist for cross-thread delivery to work (see its docstring).
@@ -221,6 +235,7 @@ if __name__ == "__main__":
     window.show()
     window.raise_()
     window.activateWindow()
+    splash.finish(window)
 
     if getattr(sys, 'frozen', False):
         # EDyssey.spec's console=True gives a frozen build a real console
