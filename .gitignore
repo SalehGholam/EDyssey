@@ -7,6 +7,8 @@ tests/test_data
 *.rar
 *.msi
 .claude/
+EDyssey/io_utils/tab_tracking_log.txt
+New Icon.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
