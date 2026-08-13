@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-![Icon Image](New Icon.png)
+![Icon Image](New_Icon.png)
 
 EDyssey is a PyQt5 desktop application for processing
 and analyzing 4D-STEM Tomography data (scanning electron diffraction) datasets. It covers a range of necessary steps to reach the final 3D ED dataset.
