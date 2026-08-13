@@ -375,6 +375,126 @@ class Tab_ROI_on_4D(TabBase):
             'navigation image, then sum diffraction patterns only at the scan '
             'positions above it, instead of a rectangular ROI')
 
+        #%% Virtual Imaging
+        self.box_virtualImaging = qtw.QGroupBox('Virtual Imaging')
+        layout_userInput.addWidget(self.box_virtualImaging)
+        layout_virtualImaging = qtw.QVBoxLayout()
+        self.box_virtualImaging.setLayout(layout_virtualImaging)
+
+        layout_vi_row1 = qtw.QHBoxLayout()
+        layout_virtualImaging.addLayout(layout_vi_row1)
+        label_vi_mode = qtw.QLabel('Mode')
+        layout_vi_row1.addWidget(label_vi_mode)
+        self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.addItems(['Sum', 'Variance'])
+        self.combo_virtualMode.setToolTip(
+            'Sum: total scattered intensity per scan position (standard vSTEM). '
+            'Variance: variance of intensities per scan position instead - '
+            'highlights local structural variation (e.g. amorphous vs. crystalline '
+            'regions) rather than total dose. Not available for .tpx3 files.')
+        layout_vi_row1.addWidget(self.combo_virtualMode)
+        self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
+        self.checkbox_useVirtualMask.setToolTip(
+            'When checked, only the annular region(s) below are used, instead of '
+            'the whole detector')
+        layout_vi_row1.addWidget(self.checkbox_useVirtualMask)
+        layout_vi_row1.addStretch(1)
+
+        layout_vi_center = qtw.QHBoxLayout()
+        layout_virtualImaging.addLayout(layout_vi_center)
+        label_vi_centerX = qtw.QLabel('Center X')
+        layout_vi_center.addWidget(label_vi_centerX)
+        self.spinbox_vi_centerX = qtw.QSpinBox()
+        self.spinbox_vi_centerX.setMaximumWidth(70)
+        self.spinbox_vi_centerX.setRange(0, 8192)
+        self.spinbox_vi_centerX.setValue(256)
+        layout_vi_center.addWidget(self.spinbox_vi_centerX)
+        label_vi_centerY = qtw.QLabel('Center Y')
+        layout_vi_center.addWidget(label_vi_centerY)
+        self.spinbox_vi_centerY = qtw.QSpinBox()
+        self.spinbox_vi_centerY.setMaximumWidth(70)
+        self.spinbox_vi_centerY.setRange(0, 8192)
+        self.spinbox_vi_centerY.setValue(256)
+        layout_vi_center.addWidget(self.spinbox_vi_centerY)
+        self.button_vi_autoCenter = qtw.QPushButton('Auto Center')
+        self.button_vi_autoCenter.setToolTip(
+            'Copy the diffraction pattern\'s beam center (see "Auto-center" above, '
+            'in Scale bars) into Center X/Y')
+        layout_vi_center.addWidget(self.button_vi_autoCenter)
+        self.button_vi_autoCenter.clicked.connect(self.vi_auto_center)
+
+        layout_vi_radii = qtw.QHBoxLayout()
+        layout_virtualImaging.addLayout(layout_vi_radii)
+        label_vi_rIn = qtw.QLabel('Inner R')
+        layout_vi_radii.addWidget(label_vi_rIn)
+        self.spinbox_vi_rIn = qtw.QSpinBox()
+        self.spinbox_vi_rIn.setMaximumWidth(70)
+        self.spinbox_vi_rIn.setRange(0, 4096)
+        self.spinbox_vi_rIn.setSingleStep(10)
+        layout_vi_radii.addWidget(self.spinbox_vi_rIn)
+        label_vi_rOut = qtw.QLabel('Outer R')
+        layout_vi_radii.addWidget(label_vi_rOut)
+        self.spinbox_vi_rOut = qtw.QSpinBox()
+        self.spinbox_vi_rOut.setMaximumWidth(70)
+        self.spinbox_vi_rOut.setRange(1, 4096)
+        self.spinbox_vi_rOut.setValue(256)
+        self.spinbox_vi_rOut.setSingleStep(10)
+        layout_vi_radii.addWidget(self.spinbox_vi_rOut)
+        layout_vi_radii.addStretch(1)
+        for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
+                   self.spinbox_vi_rIn, self.spinbox_vi_rOut):
+            sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
+            sb.valueChanged.connect(self.update_virtual_mask_overlay)
+
+        # Several virtual detectors can be added below and combined into a
+        # single virtual image at calculation time (OR-combined mask for
+        # every format except .tpx3, natively summed by eventem there) - see
+        # get_active_virtual_detectors/io.calculate_nav_img_masked. An empty
+        # list just keeps the spinbox-defined detector above as the only one
+        # used - matches the Navigator tab's identical convention.
+        self._extra_detectors_vi = []
+        layout_vi_list_buttons = qtw.QHBoxLayout()
+        layout_virtualImaging.addLayout(layout_vi_list_buttons)
+        self.button_vi_addDetector = qtw.QPushButton('Add Detector')
+        self.button_vi_addDetector.setToolTip(
+            'Add the center/radii above as another virtual detector - once one or '
+            'more are added here, ALL of them (not the values above, until also '
+            'added) are combined into the virtual image')
+        layout_vi_list_buttons.addWidget(self.button_vi_addDetector)
+        self.button_vi_addDetector.clicked.connect(self.add_extra_detector_vi)
+        self.button_vi_removeDetector = qtw.QPushButton('Remove Selected')
+        layout_vi_list_buttons.addWidget(self.button_vi_removeDetector)
+        self.button_vi_removeDetector.clicked.connect(self.remove_extra_detector_vi)
+        layout_vi_list_buttons.addStretch(1)
+
+        self.list_detectors_vi = qtw.QListWidget()
+        self.list_detectors_vi.setToolTip(
+            'Additional virtual detectors, combined with each other (but not with '
+            'the center/radii spinboxes above unless also added here)')
+        self.list_detectors_vi.setMaximumHeight(60)
+        layout_virtualImaging.addWidget(self.list_detectors_vi)
+        self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
+
+        layout_vi_compute = qtw.QHBoxLayout()
+        layout_virtualImaging.addLayout(layout_vi_compute)
+        layout_vi_compute.addStretch(1)
+        self.button_computeVirtualImage = qtw.QPushButton('Compute\nVirtual Image')
+        self.button_computeVirtualImage.setFixedHeight(50)
+        layout_vi_compute.addWidget(self.button_computeVirtualImage)
+        self.button_computeVirtualImage.clicked.connect(self.compute_virtual_image)
+        self.button_computeVirtualImage.setToolTip(
+            'Compute a navigation image over the WHOLE scan using the mode/mask '
+            'above (Sum or Variance, optionally restricted to the virtual '
+            'detector(s)) - independent of any ROI/SAM2 mask drawn elsewhere on '
+            'this tab')
+        layout_vi_compute.addStretch(1)
+
+        # Artists for the virtual-detector circle overlay drawn on the DP
+        # axis, redrawn by update_virtual_mask_overlay() - spinbox/list
+        # driven only (unlike the Navigator tab's draggable equivalent);
+        # edit the values directly instead.
+        self._vi_mask_artists = []
+
         layout_userInput.addWidget(self.button_cancel)
         # Absorbs leftover vertical space below Cancel, so the whole panel's
         # content stays pinned to the top instead of stretching to fill a
@@ -393,9 +513,12 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas = FigureCanvas(self.figure)
         layout_canvas.addWidget(self.canvas)
         
-        self.ax_nav = self.figure.add_subplot(131)
-        self.ax_nav_roi = self.figure.add_subplot(132)
-        self.ax_dp = self.figure.add_subplot(133)
+        # 2x2 grid (was a single row of 3) - added a 4th axis (ax_virtual)
+        # for "Compute Virtual Image" (see #%% Virtual Imaging above).
+        self.ax_nav = self.figure.add_subplot(221)
+        self.ax_nav_roi = self.figure.add_subplot(222)
+        self.ax_dp = self.figure.add_subplot(223)
+        self.ax_virtual = self.figure.add_subplot(224)
 
 # =============================================================================
 #         gs = gridspec.GridSpec(2, 2, height_ratios=[1, 2], width_ratios=[1, 1])  # Top row: equal, bottom: double height
@@ -846,6 +969,7 @@ class Tab_ROI_on_4D(TabBase):
         self.slider_vmax.setValue(self.dp.max())
         self.slider_vmin.setValue(1)
         self.update_canvas(roiUpdate=True)
+        self.update_virtual_mask_overlay()
     
     def reset_sliders(self):
         # Only the DP colormap's vmin/vmax change here - no need for
@@ -870,6 +994,8 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display['dp'] = self.ax_dp.imshow(img_temp, cmap='inferno')
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
 
+        self.img_display['virtual'] = self.ax_virtual.imshow(img_temp, cmap='viridis')
+
         # SAM2 segmentation mask overlay, drawn on top of a crop of the nav
         # image in the "ROI Image" axis (show_seg_mask() re-targets nav_roi's
         # own image + view to that crop, then this sits on top of it).
@@ -880,6 +1006,8 @@ class Tab_ROI_on_4D(TabBase):
         self.ax_nav.set_title('Nav. Image')
         self.ax_nav_roi.set_title('ROI Image')
         self.ax_dp.set_title('Dif. Pattern')
+        self.ax_virtual.set_title('Virtual Image')
+        self.ax_virtual.set_axis_off()
 
         self.ax_nav_roi.set_axis_off()
         # ax_nav/ax_dp keep their x-axis label visible (for the interaction
@@ -911,6 +1039,8 @@ class Tab_ROI_on_4D(TabBase):
             self.img_display['nav_roi'], ax=self.ax_nav_roi, fraction=0.046, pad=0.04)
         self.colorbars['dp'] = self.figure.colorbar(
             self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
+        self.colorbars['virtual'] = self.figure.colorbar(
+            self.img_display['virtual'], ax=self.ax_virtual, fraction=0.046, pad=0.04)
 
         # self.figure.tight_layout()
 
@@ -922,9 +1052,17 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display['nav'].set_data(img_temp)
         self.img_display['nav_roi'].set_data(img_temp)
         self.img_display['dp'].set_data(img_temp)
+        self.img_display['virtual'].set_data(img_temp)
         self.ax_nav_roi.set_title('ROI Image')
+        self.ax_virtual.set_title('Virtual Image')
         self.clear_seg_points()
         self.clear_roi()
+        for artist in self._vi_mask_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._vi_mask_artists.clear()
         self.canvas.draw_idle()
 
     def update_slider_range(self):
@@ -1061,6 +1199,151 @@ class Tab_ROI_on_4D(TabBase):
         msg.setStandardButtons(qtw.QMessageBox.Ok)
         msg.setIcon(qtw.QMessageBox.Critical)
         msg.exec_()
+
+#%% Virtual Imaging
+    def vi_auto_center(self):
+        """Copy the diffraction pattern's beam center (self.dp_center -
+        found automatically via the large-sigma blur, or set manually via
+        Ctrl+Click on the DP; see checkbox_autoCenterDp) into the
+        virtual-detector Center X/Y spinboxes."""
+        if not hasattr(self, 'dp'):
+            qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
+                'Draw an ROI, segment an image, or use "Summed DP from Threshold" '
+                'first, so a beam center can be found.')
+            return
+        if self.dp_center is None:
+            try:
+                self.dp_center = io.find_dp_center_blurred(self.dp)
+            except Exception:
+                self.logger.exception('Auto-centering failed.')
+                return
+        cx, cy = self.dp_center
+        self.spinbox_vi_centerX.setValue(int(round(cx)))
+        self.spinbox_vi_centerY.setValue(int(round(cy)))
+
+    def add_extra_detector_vi(self):
+        """Add the spinbox-defined virtual detector to the list, combined
+        with every other added detector at calculation time - see
+        get_active_virtual_detectors/io.calculate_nav_img_masked."""
+        detector = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
+                    'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+        self._extra_detectors_vi.append(detector)
+        self.list_detectors_vi.addItem(self._format_detector_vi(detector))
+        self.update_virtual_mask_overlay()
+
+    def remove_extra_detector_vi(self):
+        """Remove the selected entry from the added-detectors list."""
+        row = self.list_detectors_vi.currentRow()
+        if row < 0:
+            return
+        del self._extra_detectors_vi[row]
+        self.list_detectors_vi.takeItem(row)
+        self.update_virtual_mask_overlay()
+
+    def _format_detector_vi(self, detector):
+        cx, cy = detector['center']
+        return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
+
+    def _load_selected_detector_vi(self):
+        """Load the selected list entry's values back into the spinboxes -
+        re-adding creates a new list entry rather than editing in place."""
+        row = self.list_detectors_vi.currentRow()
+        if row < 0 or row >= len(self._extra_detectors_vi):
+            return
+        detector = self._extra_detectors_vi[row]
+        for sb, val in ((self.spinbox_vi_centerX, detector['center'][0]),
+                        (self.spinbox_vi_centerY, detector['center'][1]),
+                        (self.spinbox_vi_rIn, detector['r_in']),
+                        (self.spinbox_vi_rOut, detector['r_out'])):
+            sb.blockSignals(True)
+            sb.setValue(val)
+            sb.blockSignals(False)
+        self.update_virtual_mask_overlay()
+
+    def get_active_virtual_detectors(self):
+        """The full set of virtual detectors to use for the next Compute
+        Virtual Image - every entry in the added-detectors list, or just the
+        spinbox-defined one if none have been added (matches the Navigator
+        tab's get_active_detectors())."""
+        if self._extra_detectors_vi:
+            return list(self._extra_detectors_vi)
+        return [{'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
+                'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}]
+
+    def update_virtual_mask_overlay(self):
+        """Redraw the virtual-detector circle(s) over the currently
+        displayed diffraction pattern (ax_dp) - a preview of what "Compute
+        Virtual Image" will use. Spinbox/list driven only (unlike the
+        Navigator tab's draggable equivalent) - edit the values directly."""
+        for artist in self._vi_mask_artists:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._vi_mask_artists.clear()
+        if not hasattr(self, 'dp'):
+            self.canvas.draw_idle()
+            return
+        detectors = self.get_active_virtual_detectors()
+        # Dashed/grey once detectors have actually been added to the list
+        # (all of them are then in play together); solid/red while still
+        # just previewing the live spinbox values.
+        style = (dict(fill=False, edgecolor='0.7', linestyle='--') if self._extra_detectors_vi
+                else dict(fill=False, edgecolor='r', linestyle='-'))
+        for detector in detectors:
+            cx, cy = detector['center']
+            circle_out = patches.Circle((cx, cy), detector['r_out'], **style)
+            self.ax_dp.add_patch(circle_out)
+            self._vi_mask_artists.append(circle_out)
+            if detector['r_in'] > 0:
+                circle_in = patches.Circle((cx, cy), detector['r_in'], **style)
+                self.ax_dp.add_patch(circle_in)
+                self._vi_mask_artists.append(circle_in)
+        self.canvas.draw_idle()
+
+    def compute_virtual_image(self):
+        """Kick off a background computation of the navigation image over
+        the WHOLE scan, using the Sum/Variance mode and (optionally) the
+        virtual detector(s) configured above - independent of whatever
+        ROI/SAM2 mask is currently drawn elsewhere on this tab."""
+        if not hasattr(self, 'fn') or not self.fn:
+            qtw.QMessageBox.critical(self, 'No Signal Loaded',
+                'Load a 4D signal first (see "Load Signal" above).')
+            return
+        mode = self.combo_virtualMode.currentText().lower()
+        detectors = self.get_active_virtual_detectors() if self.checkbox_useVirtualMask.isChecked() else None
+        self.logger.info('Computing virtual image (mode=%s, %s)...', mode,
+                          f'{len(detectors)} detector(s)' if detectors else 'whole detector')
+        self.button_computeVirtualImage.setDisabled(True)
+        self._cancelling = False
+        self.button_cancel.setEnabled(True)
+        worker = Worker_VirtualImage(self.fn, self.scanSize, self.dwellTime, mode, detectors,
+                                     self.get_fn_pattern(), self.get_detector_shape(self.fn))
+        worker.signals.result.connect(self._on_virtual_image_computed)
+        worker.signals.error.connect(self._on_virtual_image_failed)
+        self.threadpool.start(worker)
+
+    def _on_virtual_image_computed(self, img):
+        self.button_computeVirtualImage.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        self.img_display['virtual'].set_data(img)
+        self.img_display['virtual'].set_clim(vmin=img.min(), vmax=img.max())
+        shape_y, shape_x = img.shape
+        self.img_display['virtual'].set_extent([0, shape_x, shape_y, 0])
+        self.ax_virtual.set_xlim(0, shape_x)
+        self.ax_virtual.set_ylim(shape_y, 0)
+        self.ax_virtual.set_title(f'Virtual Image ({self.combo_virtualMode.currentText()})')
+        self.canvas.draw_idle()
+        self.logger.info('Virtual image computed successfully.')
+
+    def _on_virtual_image_failed(self, traceback_text):
+        self.button_computeVirtualImage.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            return
+        self.logger.error('Failed to compute virtual image:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Virtual Image Failed',
+            f'Computing the virtual image failed:\n\n{traceback_text.strip().splitlines()[-1]}')
 
 #%% SAM2 segmentation
     def add_seg_point(self, event):
@@ -1297,6 +1580,7 @@ class Tab_ROI_on_4D(TabBase):
         self.slider_vmax.setValue(self.dp.max())
         self.slider_vmin.setValue(1)
         self.update_canvas(ax='dp')
+        self.update_virtual_mask_overlay()
 
 #%% Summed DP from threshold
     def open_threshold_dialog(self):
@@ -1375,6 +1659,7 @@ class Tab_ROI_on_4D(TabBase):
         self.slider_vmax.setValue(self.dp.max())
         self.slider_vmin.setValue(1)
         self.update_canvas(ax='dp')
+        self.update_virtual_mask_overlay()
 
     def _on_sum_dp_from_threshold_failed(self, traceback_text):
         self.button_sumDpFromThreshold.setEnabled(True)
@@ -1459,6 +1744,47 @@ class Worker_NavImg(QRunnable):
         self.logger.info('Navigation image calculated successfully in %s.',
                           io.format_duration_hms(perf_counter() - self._tic))
         self.signals.finished.emit()
+
+class Worker_VirtualImage(QRunnable):
+    """Background QRunnable that computes a navigation image over the whole
+    scan using a Sum or Variance reduction, optionally restricted to one or
+    more virtual detectors - backs the "Compute Virtual Image" button."""
+    def __init__(self, fn, scanSize, dwellTime, mode, detectors=None, fn_pattern=None,
+                det_shape=(512, 512)):
+        super().__init__()
+        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self._tic = perf_counter()
+        self.logger.info('Calculating virtual image...')
+        self.fn = fn
+        self.scanSize = scanSize
+        self.dwellTime = dwellTime
+        self.mode = mode
+        self.detectors = detectors
+        self.fn_pattern = fn_pattern
+        self.det_shape = det_shape
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            if self.detectors:
+                img = io.calculate_nav_img_masked(
+                    self.fn, scanSize=self.scanSize, dwellTime=self.dwellTime,
+                    detectors=self.detectors, mode=self.mode, logger=self.logger,
+                    fn_pattern=self.fn_pattern, det_shape=self.det_shape)
+            else:
+                img = io.calculate_nav_img(
+                    self.fn, scanSize=self.scanSize, dwellTime=self.dwellTime,
+                    mode=self.mode, logger=self.logger, fn_pattern=self.fn_pattern,
+                    det_shape=self.det_shape)
+        except Exception:
+            import traceback
+            self.logger.exception('Failed to calculate virtual image after %s.',
+                                   io.format_duration_hms(perf_counter() - self._tic))
+            self.signals.error.emit(traceback.format_exc())
+            return
+        self.signals.result.emit(img)
+        self.logger.info('Virtual image calculated successfully in %s.',
+                          io.format_duration_hms(perf_counter() - self._tic))
 
 class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction

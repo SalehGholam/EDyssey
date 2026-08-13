@@ -102,7 +102,7 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
     nav_image = vstem.get_image()
     return nav_image
 
-def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=None):
+def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
     """Return a navigation image from an .hdf5 file.
 
     Uses the pre-computed `dose_image` dataset if present; otherwise sums all
@@ -112,40 +112,63 @@ def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=
         fn: Path to the .hdf5 file.
         scanSize: (nx, ny) scan dimensions. Required when `dose_image` is absent and
                   the 4D array is stored flat.
+        mode: 'sum' (default) - per-scan-position sum of frame intensities
+            (or masked-region intensities, when `det_mask` is given). 'variance'
+            computes the per-scan-position variance instead - a virtual image that
+            highlights local structural variation (e.g. amorphous vs. crystalline
+            regions) rather than total scattered dose. The precomputed `dose_image`
+            dataset is always a sum, so it's only used when mode == 'sum'.
 
     Returns:
         numpy.ndarray of shape (ny, nx).
     """
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     with h5py.File(fn, 'r') as f:
         s = da.from_array(f['4D'], chunks=f['4D'].chunks)
         if (det_mask is None):
-            if 'dose_image' in f.keys() and fn_pattern is None:
+            if mode == 'sum' and 'dose_image' in f.keys() and fn_pattern is None:
                 nav_img = f['dose_image'][:]
                 return nav_img
             elif fn_pattern is None:
-                nav_img = s.sum(axis=(-1,-2))
+                nav_img = s.sum(axis=(-1,-2)) if mode == 'sum' else s.var(axis=(-1,-2))
         else:
-            det_mask = det_mask.ravel()
+            det_mask = det_mask.ravel().astype(bool)
             s = s.reshape(*scanSize,-1)
-            nav_img = (s*det_mask).sum(axis=-1)
+            if mode == 'sum':
+                nav_img = (s*det_mask).sum(axis=-1)
+            else:
+                # Variance over only the masked pixels - multiplying by the
+                # mask first (as the sum path does) would pull in a majority
+                # of zeroed-out pixels from outside the mask and bias the
+                # variance low, so the masked-out pixels are dropped via
+                # boolean indexing instead of zeroed.
+                nav_img = s[..., det_mask].var(axis=-1)
 
         if fn_pattern is not None:
             raise NotImplementedError('Smart Scanned is not yet implemented for converted data from tpx3!')
-            
+
         with LoggingProgressBar(logger, 'Loading 4D signal'):
             nav_img = nav_img.compute()
         return nav_img
 
-def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=None):
+def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=None, mode='sum'):
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     s = hs.load(fn, lazy=True)
     if (det_mask is None):
-        nav_img = s.sum(axis=(-1,-2)).data
+        nav_img = (s.sum(axis=(-1,-2)) if mode == 'sum' else s.var(axis=(-1,-2))).data
     else:
-        det_mask = det_mask.ravel()
+        det_mask = det_mask.ravel().astype(bool)
         arr = s.data.reshape(*scanSize,-1)
-        nav_img = (arr*det_mask).sum(axis=-1)
-    
-    if fn_pattern is not None: 
+        if mode == 'sum':
+            nav_img = (arr*det_mask).sum(axis=-1)
+        else:
+            # See calculate_nav_img_hdf5's masked variance branch - only the
+            # masked pixels themselves should enter the variance.
+            nav_img = arr[..., det_mask].var(axis=-1)
+
+    if fn_pattern is not None:
         pattern = np.loadtxt(fn_pattern).astype('int')
         nav_img_2d = da.zeros(shape=np.prod(scanSize), dtype='uint32')
         nav_img_2d[pattern] = nav_img
@@ -160,7 +183,7 @@ def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=No
         return nav_img
 
 def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
-                      n_threads=None, fn_pattern=None, det_shape=(512, 512)):
+                      n_threads=None, fn_pattern=None, det_shape=(512, 512), mode='sum'):
     """Dispatch navigation image computation to the format-specific function.
 
     Args:
@@ -174,25 +197,39 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             matters for concurrent callers.
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
+        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
+            docstring. `.tpx3` has no variance path (eventem's vSTEM only
+            accumulates a running sum); `.dm2`/`.dm3`/`.tif`/`.tiff` are
+            already single 2D images with no per-position frame to take a
+            variance over. Both raise ValueError for mode='variance'.
 
     Returns:
         numpy.ndarray of shape (ny, nx) representing the navigation image.
     """
-
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     if dtype is None:
         dtype = os.path.splitext(fn)[-1]
     if scanSize is None:
         scanSize = get_scan_size(fn, dtype)
 
     if dtype in ['.zspy', '.hspy', '.mib']:
-        nav_img = calculate_nav_img_hs(fn, scanSize, fn_pattern=fn_pattern, logger=logger)
+        nav_img = calculate_nav_img_hs(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype == '.tpx3':
+        if mode == 'variance':
+            raise ValueError(
+                "Variance-mode virtual imaging is not supported for .tpx3 files - "
+                "eventem's vSTEM only computes a running sum over frames.")
         nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                          logger=logger, n_threads=n_threads,
                                          det_shape=det_shape)
     elif dtype == '.hdf5':
-        nav_img = calculate_nav_img_hdf5(fn, scanSize, fn_pattern=fn_pattern, logger=logger)
+        nav_img = calculate_nav_img_hdf5(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
+        if mode == 'variance':
+            raise ValueError(
+                f"Variance-mode virtual imaging does not apply to {dtype} files - "
+                "these are already single 2D images, not a per-position frame stack.")
         nav_img = hs.load(fn).data
     else:
         raise ValueError(f"Unsupported file type '{dtype}' for calculate_nav_img() - "
@@ -243,7 +280,7 @@ def create_virtual_detector_multi(shape, detectors):
 
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detectors=None,
                              logger=None, n_threads=None, fn_pattern=None,
-                             det_shape=(512, 512)):
+                             det_shape=(512, 512), mode='sum'):
     """Compute a navigation image through one or several virtual detectors -
     the masked counterpart of `calculate_nav_img`.
 
@@ -263,16 +300,25 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         fn_pattern: Optional path to a smart-scan pattern file.
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
+        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
+            docstring. Not available for `.tpx3` (eventem's vSTEM only sums);
+            raises ValueError there.
 
     Returns:
         numpy.ndarray of shape (ny, nx).
     """
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     if dtype is None:
         dtype = os.path.splitext(fn)[-1]
     if scanSize is None:
         scanSize = get_scan_size(fn, dtype)
 
     if dtype == '.tpx3':
+        if mode == 'variance':
+            raise ValueError(
+                "Variance-mode virtual imaging is not supported for .tpx3 files - "
+                "eventem's vSTEM only computes a running sum over frames.")
         # eventem's vSTEM sums several detectors natively - no mask array
         # needed, just per-detector radius/center lists (see
         # calculate_nav_img_tpx3's docstring for why `offset` here is
@@ -289,9 +335,9 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         det_mask = create_virtual_detector_multi((det_y, det_x), detectors)
         if dtype == '.hdf5':
             return calculate_nav_img_hdf5(fn, scanSize, det_mask=det_mask,
-                                          fn_pattern=fn_pattern, logger=logger)
+                                          fn_pattern=fn_pattern, logger=logger, mode=mode)
         return calculate_nav_img_hs(fn, scanSize, det_mask=det_mask,
-                                    fn_pattern=fn_pattern, logger=logger)
+                                    fn_pattern=fn_pattern, logger=logger, mode=mode)
 
     raise ValueError(
         f"calculate_nav_img_masked does not support {dtype!r} files - virtual "
