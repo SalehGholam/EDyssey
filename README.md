@@ -2,12 +2,16 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-EDyssey (repo name `py5DED`) is a PyQt5 desktop application for processing
-and analyzing 4D-STEM (scanning electron diffraction) datasets: computing
-navigation images, inspecting individual ROIs, tracking objects across a
-scan series - either with classical OpenCV trackers or Meta's SAM2 AI
-segmentation model - and extracting per-object 3D electron diffraction
-(3DED) data.
+![Icon Image](New Icon.png)
+
+EDyssey is a PyQt5 desktop application for processing
+and analyzing 4D-STEM Tomography data (scanning electron diffraction) datasets. It covers a range of necessary steps to reach the final 3D ED dataset.
+The normal workflow is:
+- Checking the 4D-STEM Files on ROI on 4D tab
+- Create a stack of images from navigation images (with virtual detectors) on Navigator tab
+- Track particles or regions of interest by either classical opencv trackers or MetaAI's SAM2
+- Extract 3D ED frames from the segmented regions
+The software currently supports raw ASI's tpx3, QD's mib, Hyperspy's hspy and zspy data types.
 
 <!-- screenshot: docs/screenshot.png -->
 
@@ -56,6 +60,12 @@ includes both, so SAM2 works immediately after install.
 
   See [EDyssey.spec](EDyssey.spec)'s header comment for the overall
   packaging rationale.
+
+## Acknowledgements 
+Many thanks to Arno Annys for the support.
+
+## AI Usage
+Many parts of the user interface and build of the installers are developed by the help of large language models. The code has been tested to work properly, but not every line has been reviewed by the user. The logo is made by Nano Banana 2.
 
 ## License
 
