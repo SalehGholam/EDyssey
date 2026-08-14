@@ -50,7 +50,7 @@ plt.style.use('dark_background')
 # change is made anywhere in the app, so Help > About always reflects how
 # current the running build actually is. Shown directly in the Help menu
 # and repeated in the About dialog.
-APP_VERSION = '2026-08-14 13:17'
+APP_VERSION = '2026-08-14 13:21'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -273,7 +273,7 @@ class MainWindow(qtw.QMainWindow):
     def show_about_dialog(self):
         qtw.QMessageBox.about(self, 'About EDyssey',
             f'EDyssey\nVersion {APP_VERSION}\n\n'
-            '4D-STEM acquisition, navigation, and tracking toolkit.')
+            '4D-STEM and 4D-STEM Tomography analysis toolkit.')
 
     def closeEvent(self, event):
         for tab in self._all_tabs:
