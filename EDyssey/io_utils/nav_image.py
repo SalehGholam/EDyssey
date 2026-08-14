@@ -150,7 +150,16 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
         var.set_offset([offset[1], offset[0]])
     with redirect_console_to_logger(logger, 'Loading tpx3'):
         var.run()
-    return var.Var_image
+    # Unlike vSTEM.get_image() (a wrapper method - already returns a
+    # properly-shaped (ny, nx) array), Var_image is a raw property with no
+    # such wrapper and comes back flat (confirmed against real hardware
+    # data: a (512, 512) scan returned shape (262144,), i.e. nx*ny with no
+    # reshape applied internally) - reshaped here to match every other
+    # nav-image function's documented (ny, nx) return shape.
+    var_image = np.asarray(var.Var_image)
+    if var_image.ndim == 1:
+        var_image = var_image.reshape(scanSize[1], scanSize[0])
+    return var_image
 
 def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
     """Return a navigation image from an .hdf5 file.
