@@ -188,6 +188,10 @@ class MainWindow(qtw.QMainWindow):
                 border: 1px solid transparent;
             }
             QToolButton:hover { background-color: #3c3c3c; border: 1px solid #555; }
+            QToolButton:checked {
+                background-color: #4a86c8; border: 1px solid #7fb8ec;
+            }
+            QToolButton:checked:hover { background-color: #5a96d8; border: 1px solid #8fc8fc; }
         """)
 
     def _build_menu(self):

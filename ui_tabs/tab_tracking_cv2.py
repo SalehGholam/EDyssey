@@ -847,8 +847,7 @@ class Tab_Tracking_CV2(TabBase):
             RibbonTool('home', 'home', 'Reset the Nav./Tracking canvas view',
                       'action', self.toolbar_nav.home),
         ], parent=self)
-        self.ribbon.toolChanged.connect(
-            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         layout_right_outer.addWidget(self.ribbon)
 
         self._canvas_stack_widget = qtw.QWidget()
@@ -1895,6 +1894,15 @@ class Tab_Tracking_CV2(TabBase):
     def _on_edge_directional_toggled(self):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self.update_canvas()
+
+    def _on_ribbon_tool_changed(self, tool_id):
+        """Slot for ribbon.toolChanged: besides the ribbon button's own
+        highlighted (QToolButton:checked) style, give the active tool a
+        distinct cursor over canvas_nav too (where ROI selection happens) -
+        which mode is armed wasn't obvious enough from the ribbon alone."""
+        self.logger.debug('Ribbon tool changed to %s', tool_id)
+        cursor = {'select_roi': Qt.CrossCursor}.get(tool_id)
+        self.canvas_nav.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):
         """Mouse-button-press handler for canvas_nav: with Ctrl held (or the

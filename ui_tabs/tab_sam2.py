@@ -875,8 +875,7 @@ class Tab_SAM2(TabBase):
             RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
-        self.ribbon.toolChanged.connect(
-            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         layout_right_outer.addWidget(self.ribbon)
 
         #%% progress bar
@@ -1737,6 +1736,15 @@ class Tab_SAM2(TabBase):
         else:
             self.df_obj.at[idx, 'use'] = 0
 #%% canvas
+    def _on_ribbon_tool_changed(self, tool_id):
+        """Slot for ribbon.toolChanged: besides the ribbon button's own
+        highlighted (QToolButton:checked) style, give the active tool a
+        distinct cursor over the canvas too - which mode is armed wasn't
+        obvious enough from the ribbon alone."""
+        self.logger.debug('Ribbon tool changed to %s', tool_id)
+        cursor = {'add_point': Qt.PointingHandCursor}.get(tool_id)
+        self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
+
     def on_click(self, event):
         """Canvas mouse-click handler: middle-click deletes the last added
         point; Ctrl+click on the DP plot (only while auto-centering is off)

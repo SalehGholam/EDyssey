@@ -188,6 +188,26 @@ class Tab_ROI_on_4D(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
+        # Sum/Variance mode - lives here (a general "how to compute the
+        # image" setting) rather than inside the Virtual Imaging box below,
+        # since it applies equally whether or not "Use Virtual Mask" is
+        # checked there (e.g. whole-detector Variance is a valid, common
+        # choice with no mask involved at all).
+        layout_scanSize_mode = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_scanSize_mode)
+        self.label_virtualMode = qtw.QLabel('Mode')
+        layout_scanSize_mode.addWidget(self.label_virtualMode)
+        self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.addItems(['Sum', 'Variance'])
+        self.combo_virtualMode.setToolTip(
+            'How "Load Signal" and "Compute Virtual Image" (see Virtual Imaging '
+            'below) compute the navigation image. Sum: total scattered intensity '
+            'per scan position (standard vSTEM). Variance: variance of intensities '
+            'per scan position instead - highlights local structural variation '
+            '(e.g. amorphous vs. crystalline regions) rather than total dose.')
+        layout_scanSize_mode.addWidget(self.combo_virtualMode)
+        layout_scanSize_mode.addStretch(1)
+
         # scale bars - kept at the bottom of Input Parameters (below scan
         # size/detector size/metadata), real/reciprocal merged onto one row,
         # since it's a display-only calibration rather than an acquisition
@@ -384,16 +404,6 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_vi_row1 = qtw.QHBoxLayout()
         layout_virtualImaging.addLayout(layout_vi_row1)
-        label_vi_mode = qtw.QLabel('Mode')
-        layout_vi_row1.addWidget(label_vi_mode)
-        self.combo_virtualMode = qtw.QComboBox()
-        self.combo_virtualMode.addItems(['Sum', 'Variance'])
-        self.combo_virtualMode.setToolTip(
-            'Sum: total scattered intensity per scan position (standard vSTEM). '
-            'Variance: variance of intensities per scan position instead - '
-            'highlights local structural variation (e.g. amorphous vs. crystalline '
-            'regions) rather than total dose. Not available for .tpx3 files.')
-        layout_vi_row1.addWidget(self.combo_virtualMode)
         self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
         self.checkbox_useVirtualMask.setToolTip(
             'When checked, only the annular region(s) below are used, instead of '
@@ -616,8 +626,7 @@ class Tab_ROI_on_4D(TabBase):
             RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
-        self.ribbon.toolChanged.connect(
-            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         layout_right_outer.addWidget(self.ribbon)
 
         # The app-wide log console lives here (below this tab's own plot
@@ -746,17 +755,19 @@ class Tab_ROI_on_4D(TabBase):
         # making the pattern-file picker unusable for exactly the formats
         # (mib/hspy) that need it most. They manage their own enabled state
         # via activate_lineEdit_patternFile() below instead.
-        # Metadata controls (Load/Browse/Block #) and everything under
-        # box_scale ("Scale bars") are excluded for the same reason -
-        # comment.txt metadata and the scale-bar settings apply to every
-        # format, not just .tpx3, and this loop used to silently disable
-        # them (including the "Load" button message_box_scan_size_required()
-        # itself tells the user to click) for any other format.
+        # Metadata controls (Load/Browse/Block #), Mode (Sum/Variance), and
+        # everything under box_scale ("Scale bars") are excluded for the
+        # same reason - comment.txt metadata, the virtual-imaging mode, and
+        # the scale-bar settings all apply to every format, not just .tpx3,
+        # and this loop used to silently disable them (including the "Load"
+        # button message_box_scan_size_required() itself tells the user to
+        # click) for any other format.
         smart_scan_widgets = (self.checkbox_smartScan, self.lineEdit_patternFile,
                               self.button_browsePattern)
         metadata_widgets = (self.button_loadMetadata, self.button_browseMetadata,
                             self.spinbox_metadataCount)
-        exempt_widgets = (set(smart_scan_widgets) | set(metadata_widgets)
+        mode_widgets = (self.label_virtualMode, self.combo_virtualMode)
+        exempt_widgets = (set(smart_scan_widgets) | set(metadata_widgets) | set(mode_widgets)
                           | {self.box_scale} | set(self.box_scale.findChildren(qtw.QWidget)))
         for wid in self.box_scanSize.findChildren(qtw.QWidget):
             if wid in exempt_widgets:
@@ -858,6 +869,15 @@ class Tab_ROI_on_4D(TabBase):
     def _on_edge_directional_toggled(self):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self._refresh_edge_mask()
+
+    def _on_ribbon_tool_changed(self, tool_id):
+        """Slot for ribbon.toolChanged: besides the ribbon button's own
+        highlighted (QToolButton:checked) style, give the active tool a
+        distinct cursor over the canvas too - which mode is armed wasn't
+        obvious enough from the ribbon alone."""
+        self.logger.debug('Ribbon tool changed to %s', tool_id)
+        cursor = {'select_roi': Qt.CrossCursor, 'add_point': Qt.PointingHandCursor}.get(tool_id)
+        self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):
         """Mouse-press dispatch for the nav/DP canvas: manual DP

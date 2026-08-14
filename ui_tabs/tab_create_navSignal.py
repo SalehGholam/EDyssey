@@ -235,6 +235,26 @@ class Tab_Create_NavSignal(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
+        # Sum/Variance mode - lives here (a general "how to compute the
+        # image" setting) rather than inside the Virtual Detector Mask box
+        # below, since it applies equally whether or not "Use Virtual Mask"
+        # is checked there (e.g. whole-detector Variance is a valid, common
+        # choice with no mask involved at all).
+        layout_scanSize_mode = qtw.QHBoxLayout()
+        layout_scanSize.addLayout(layout_scanSize_mode)
+        label_virtualMode = qtw.QLabel('Mode')
+        layout_scanSize_mode.addWidget(label_virtualMode)
+        self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.addItems(['Sum', 'Variance'])
+        self.combo_virtualMode.setToolTip(
+            'How "Test File" and "Calculate All" compute each navigation image. '
+            'Sum: total scattered intensity per scan position (standard vSTEM, '
+            'the previous/default behavior). Variance: variance of intensities per '
+            'scan position instead - highlights local structural variation (e.g. '
+            'amorphous vs. crystalline regions) rather than total dose.')
+        layout_scanSize_mode.addWidget(self.combo_virtualMode)
+        layout_scanSize_mode.addStretch(1)
+
         # scale bars - moved out of Directories, real/reciprocal merged onto
         # one row; kept at the bottom of Input Parameters (below scan size/
         # detector size/metadata), since it's a display-only calibration
@@ -501,17 +521,6 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_useMask.setToolTip(
             'When checked, the navigation image sums each diffraction pattern only '
             'within the annular region below, instead of the whole detector')
-        label_virtualMode = qtw.QLabel('Mode')
-        layout_mask_mode.addWidget(label_virtualMode)
-        self.combo_virtualMode = qtw.QComboBox()
-        self.combo_virtualMode.addItems(['Sum', 'Variance'])
-        self.combo_virtualMode.setToolTip(
-            'Sum: total scattered intensity per scan position (standard vSTEM, '
-            'the previous/default behavior). Variance: variance of intensities per '
-            'scan position instead - highlights local structural variation (e.g. '
-            'amorphous vs. crystalline regions) rather than total dose. Not '
-            'available for .tpx3 files.')
-        layout_mask_mode.addWidget(self.combo_virtualMode)
         layout_mask_mode.addStretch(1)
 
         # Each row here holds at most one long-label button - a long label
@@ -771,8 +780,7 @@ class Tab_Create_NavSignal(TabBase):
             RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
-        self.ribbon.toolChanged.connect(
-            lambda tool_id: self.logger.debug('Ribbon tool changed to %s', tool_id))
+        self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         layout_right_outer.addWidget(self.ribbon)
 
         layout_slider = qtw.QHBoxLayout()
@@ -1650,6 +1658,15 @@ class Tab_Create_NavSignal(TabBase):
         ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
         ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
         self.canvas.draw_idle()
+
+    def _on_ribbon_tool_changed(self, tool_id):
+        """Slot for ribbon.toolChanged: besides the ribbon button's own
+        highlighted (QToolButton:checked) style, give the active tool a
+        distinct cursor over the canvas too - which mode is armed wasn't
+        obvious enough from the ribbon alone."""
+        self.logger.debug('Ribbon tool changed to %s', tool_id)
+        cursor = {'select_roi': Qt.CrossCursor}.get(tool_id)
+        self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press_navsig(self, event):
         """Start dragging a scan-space ROI on the nav/test image (Ctrl+drag,
