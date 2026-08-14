@@ -73,6 +73,30 @@ class Tab_ROI_on_4D(TabBase):
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
         layout_dir.addRow('4D Signal', layout_dir_entry)
+
+        # Smart-scan (pattern-file) acquisition support - lives here in
+        # Directories rather than its own box, since it's really just
+        # another attribute of the 4D signal being pointed at above.
+        layout_scanSize_row3 = qtw.QHBoxLayout()
+        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        self.checkbox_smartScan.setToolTip(
+            'This 4D signal is a smart-scanned (sparsely acquired) file - a pattern '
+            'file is needed to reshape it correctly. See other_scripts/smart scanning '
+            'guide/ for background on the format.')
+        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_lineEdit_patternFile)
+
+        self.lineEdit_patternFile = qtw.QLineEdit()
+        self.lineEdit_patternFile.setPlaceholderText('Pattern file...')
+        self.lineEdit_patternFile.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.lineEdit_patternFile)
+
+        self.button_browsePattern = qtw.QPushButton('...')
+        self.button_browsePattern.setFixedWidth(30)
+        self.button_browsePattern.setDisabled(True)
+        layout_scanSize_row3.addWidget(self.button_browsePattern)
+        self.button_browsePattern.clicked.connect(self.browse_pattern_file)
+        layout_dir.addRow('Pattern File', layout_scanSize_row3)
         #%% input layout, box input parameters
         self.box_scanSize = qtw.QGroupBox('Input Parameters')
         layout_box_scanSize = qtw.QFormLayout()
@@ -80,50 +104,9 @@ class Tab_ROI_on_4D(TabBase):
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
 
-        layout_scanSize_row1 = qtw.QHBoxLayout()
-        self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
-        self.checkbox_scanSize.setChecked(True)
-
-        self.lineEdit_scanSize_x = qtw.QLineEdit()
-        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
-        self.lineEdit_scanSize_x.setFixedWidth(40)
-        self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
-
-        label_cross = qtw.QLabel('X')
-        layout_scanSize_row1.addWidget(label_cross)
-
-        self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
-        self.lineEdit_scanSize_y.setFixedWidth(40)
-        self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
-        layout_scanSize_row1.addStretch(1)
-        layout_box_scanSize.addRow('Scan Size', layout_scanSize_row1)
-
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-
-        label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
-        self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(60)
-        self.spinbox_dwellTime.setRange(1, 99999999)
-        self.spinbox_dwellTime.setDisabled(True)
-        self.spinbox_dwellTime.setToolTip('Dwell time in microseconds')
-        layout_dwellTime = qtw.QHBoxLayout()
-        layout_dwellTime.addWidget(self.spinbox_dwellTime)
-        layout_dwellTime.addStretch(1)
-        layout_box_scanSize.addRow(label_dwellTime.text(), layout_dwellTime)
-
-        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
-        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
-        # id(self.dp) at the time dp_center was last auto-found - lets
-        # update_canvas() skip re-running find_dp_center_blurred (a real
-        # HyperSpy call) when the DP hasn't actually changed since, e.g. on
-        # every tick of a contrast-slider drag. See _on_auto_center_toggled.
-        self._dp_center_cache_key = None
-
-        # detector size (per side, in pixels) - Auto assumes 512x512.
+        # detector size (per side, in pixels) - Auto assumes 512x512. Kept
+        # first in this box (above Scan Size) since it's read/validated
+        # before the scan-space parameters below it.
         layout_detSize = qtw.QHBoxLayout()
         detSize_tooltip = 'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.'
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
@@ -148,29 +131,82 @@ class Tab_ROI_on_4D(TabBase):
         self.activate_detectorSize_spinboxes()
         self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
 
+        # Scan size + dwell time on one row - both are per-acquisition scan
+        # parameters, entered/checked together.
+        layout_scanSize_row1 = qtw.QHBoxLayout()
+        self.checkbox_scanSize = qtw.QCheckBox('Auto')
+        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
+        self.checkbox_scanSize.setChecked(True)
+
+        self.lineEdit_scanSize_x = qtw.QLineEdit()
+        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
+        self.lineEdit_scanSize_x.setFixedWidth(40)
+        self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
+
+        label_cross = qtw.QLabel('X')
+        layout_scanSize_row1.addWidget(label_cross)
+
+        self.lineEdit_scanSize_y = qtw.QLineEdit()
+        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
+        self.lineEdit_scanSize_y.setFixedWidth(40)
+        self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
+
+        label_dwellTime = qtw.QLabel('Dwell (\u03BCs)')
+        layout_scanSize_row1.addWidget(label_dwellTime)
+        self.spinbox_dwellTime = qtw.QSpinBox()
+        self.spinbox_dwellTime.setFixedWidth(60)
+        self.spinbox_dwellTime.setRange(1, 99999999)
+        self.spinbox_dwellTime.setDisabled(True)
+        self.spinbox_dwellTime.setToolTip('Dwell time in microseconds')
+        layout_scanSize_row1.addWidget(self.spinbox_dwellTime)
+        layout_scanSize_row1.addStretch(1)
+        layout_box_scanSize.addRow('Scan Size', layout_scanSize_row1)
+
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
+
+        self.double_validator = QDoubleValidator(0.0, 1e5, 5)
+        self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
+        # id(self.dp) at the time dp_center was last auto-found - lets
+        # update_canvas() skip re-running find_dp_center_blurred (a real
+        # HyperSpy call) when the DP hasn't actually changed since, e.g. on
+        # every tick of a contrast-slider drag. See _on_auto_center_toggled.
+        self._dp_center_cache_key = None
+
         # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file itself.
         layout_scanSize_row2 = qtw.QHBoxLayout()
-        metadataCount_tooltip = (
-            'Which 0-indexed metadata block to read from comment.txt. Only '
-            'enabled when comment.txt logs more than one measurement')
+        self.button_loadMetadata = qtw.QPushButton('Load Metadata')
+        self.button_loadMetadata.setToolTip(
+            'Fill Scan Size and Dwell Time (above) from a comment.txt file next to '
+            'the 4D signal (tpx3 files only).\n\n'
+            'Expected format - one "key: value" line per parameter, e.g.:\n'
+            '  scan size x: 128\n'
+            '  scan size y: 128\n'
+            '  dwelltime: 500\n\n'
+            '"dwelltime" may include " microseconds" (e.g. "dwelltime: 500 '
+            'microseconds") - it\'s stripped automatically.\n\n'
+            'If comment.txt logs more than one acquisition, separate each block '
+            'with a blank line, then pick which one to read with Block # (right).')
+        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        label_metadataCount = qtw.QLabel('Block #')
+        layout_scanSize_row2.addWidget(label_metadataCount)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
         self.spinbox_metadataCount.setRange(0, 99999)
         self.spinbox_metadataCount.setValue(0)
         self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
+        self.spinbox_metadataCount.setToolTip(
+            'Which 0-indexed metadata block to read from comment.txt. Only '
+            'enabled when comment.txt logs more than one measurement')
         # Re-reads comment.txt (a cheap text-file parse, not the 4D data
         # file itself) for the newly-selected block as soon as the value
-        # changes, instead of requiring an extra "Load" click every time.
+        # changes, instead of requiring an extra "Load Metadata" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_loadMetadata = qtw.QPushButton('Load')
-        self.button_loadMetadata.setToolTip(
-            'Fill scan size / dwell time from comment.txt next to the 4D '
-            'signal file (tpx3 acquisitions only)')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
-        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
         self.button_browseMetadata = qtw.QPushButton('...')
         self.button_browseMetadata.setFixedWidth(30)
@@ -179,41 +215,31 @@ class Tab_ROI_on_4D(TabBase):
         layout_scanSize_row2.addWidget(self.button_browseMetadata)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
         layout_scanSize_row2.addStretch(1)
-        layout_box_scanSize.addRow('Block #', layout_scanSize_row2)
-        layout_box_scanSize.labelForField(layout_scanSize_row2).setToolTip(metadataCount_tooltip)
+        layout_box_scanSize.addRow('Metadata', layout_scanSize_row2)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
-        # Sum/Variance mode - lives here (a general "how to compute the
-        # image" setting) rather than inside the Virtual Imaging box below,
-        # since it applies equally whether or not "Use Virtual Mask" is
-        # checked there (e.g. whole-detector Variance is a valid, common
-        # choice with no mask involved at all).
-        self.combo_virtualMode = qtw.QComboBox()
-        self.combo_virtualMode.addItems(['Sum', 'Variance'])
-        self.combo_virtualMode.setToolTip(
-            'How "Load Signal" and "Compute Virtual Image" (see Virtual Imaging '
-            'below) compute the navigation image. Sum: total scattered intensity '
-            'per scan position (standard vSTEM). Variance: variance of intensities '
-            'per scan position instead - highlights local structural variation '
-            '(e.g. amorphous vs. crystalline regions) rather than total dose.')
-        self.label_virtualMode = qtw.QLabel('Mode')
-        layout_box_scanSize.addRow(self.label_virtualMode, self.combo_virtualMode)
-
         # scale bars - kept at the bottom of Input Parameters (below scan
-        # size/detector size/metadata), each unit its own titled row.
+        # size/detector size/metadata); real/reciprocal share one line.
         self.box_scale = qtw.QGroupBox('Scale bars')
         layout_box_scale = qtw.QFormLayout()
         layout_box_scale.setLabelAlignment(Qt.AlignLeft)
         self.box_scale.setLayout(layout_box_scale)
         layout_box_scanSize.addRow(self.box_scale)
 
+        layout_scale_row = qtw.QHBoxLayout()
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        layout_box_scale.addRow('Real (nm)', self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setFixedWidth(50)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
+        layout_scale_row.addWidget(label_scale_recip)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
-        layout_box_scale.addRow('Recip. (Å<sup>-1</sup>)', self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setFixedWidth(50)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        layout_scale_row.addStretch(1)
+        layout_box_scale.addRow('Real (nm)', layout_scale_row)
 
         self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
         self.checkbox_autoCenterDp.setChecked(True)
@@ -229,49 +255,11 @@ class Tab_ROI_on_4D(TabBase):
         self.lineEdit_scale_real.textChanged.connect(
             lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
 
-        #%% box smart scan (pattern-file) acquisition support
-        self.box_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_box_smartScan = qtw.QFormLayout()
-        layout_box_smartScan.setLabelAlignment(Qt.AlignLeft)
-        self.box_smartScan.setLayout(layout_box_smartScan)
-        layout_userInput.addWidget(self.box_smartScan)
-
-        layout_scanSize_row3 = qtw.QHBoxLayout()
-
-        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
-        self.checkbox_smartScan.setToolTip(
-            'This 4D signal is a smart-scanned (sparsely acquired) file - a pattern '
-            'file is needed to reshape it correctly. See other_scripts/smart scanning '
-            'guide/ for background on the format.')
-        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
-        self.checkbox_smartScan.stateChanged.connect(self.activate_lineEdit_patternFile)
-
-        self.lineEdit_patternFile = qtw.QLineEdit()
-        self.lineEdit_patternFile.setPlaceholderText('Pattern file...')
-        self.lineEdit_patternFile.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.lineEdit_patternFile)
-
-        self.button_browsePattern = qtw.QPushButton('...')
-        self.button_browsePattern.setFixedWidth(30)
-        self.button_browsePattern.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.button_browsePattern)
-        self.button_browsePattern.clicked.connect(self.browse_pattern_file)
-        layout_box_smartScan.addRow('Pattern File', layout_scanSize_row3)
-
-        #%% load button
-        layout_load = qtw.QHBoxLayout()
-        layout_userInput.addLayout(layout_load)
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        self.button_loadNavigation.setFixedHeight(50)
-        layout_load.addWidget(self.button_loadNavigation)
-        self.button_loadNavigation.clicked.connect(self.get_nav_image)
-
-        # Cancel itself is added to layout_userInput as the panel's last
-        # widget (in init_widget, right after the last box) rather than
-        # here next to Load Signal - it needs to stay reachable regardless
-        # of which background job (segmentation, DP computation, ...) is
-        # running, so a single fixed spot at the bottom is easier to find
-        # than one tucked into whichever box happens to be first.
+        # Cancel itself is added inside the Virtual Imaging box below,
+        # beside Compute Virtual Image (see #%% Virtual Imaging) - it's
+        # constructed here, before that box, since it's also used by
+        # SAM2 segmentation/DP computation further down and needs to exist
+        # before any of those wire up to it.
         self.button_cancel = qtw.QPushButton('Cancel')
         self.button_cancel.setFixedHeight(50)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
@@ -280,99 +268,13 @@ class Tab_ROI_on_4D(TabBase):
             'Stop the running SAM2 segmentation or DP computation. Already-running '
             'background computations finish silently; their results are discarded.')
         self.button_cancel.clicked.connect(self.cancel_running_work)
-        #%% SAM2 segmentation
-        self.box_segmentation = qtw.QGroupBox('SAM2 Segmentation')
-        layout_userInput.addWidget(self.box_segmentation)
-        layout_segmentation = qtw.QHBoxLayout()
-        self.box_segmentation.setLayout(layout_segmentation)
-
-        self.button_segment_image = qtw.QPushButton('Segment\nImage')
-        layout_segmentation.addWidget(self.button_segment_image)
-        self.button_segment_image.clicked.connect(self.segment_image)
-        self.button_segment_image.setDisabled(True)
-        self.button_segment_image.setToolTip(
-            'Run SAM2 on the points added below (Shift+Click), optionally combined '
-            'with the last-drawn ROI (Ctrl+Drag) as a box prompt')
-
-        self.button_clear_points = qtw.QPushButton('Clear\nPoints')
-        layout_segmentation.addWidget(self.button_clear_points)
-        self.button_clear_points.clicked.connect(self.clear_seg_points)
-        self.button_clear_points.setDisabled(True)
-        self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
-
-        self.button_clear_roi = qtw.QPushButton('Clear\nROI/Box')
-        layout_segmentation.addWidget(self.button_clear_roi)
-        self.button_clear_roi.clicked.connect(self.clear_roi)
-        self.button_clear_roi.setToolTip(
-            'Remove the drawn ROI so it stops being used as a SAM2 box prompt '
-            '(and as the rectangle for diffraction-pattern extraction)')
-
-        #%% edge detection (mask post-processing)
-        self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
-        layout_userInput.addWidget(self.box_edgeDetection)
-        layout_edgeDetection = qtw.QFormLayout()
-        layout_edgeDetection.setLabelAlignment(Qt.AlignLeft)
-        self.box_edgeDetection.setLayout(layout_edgeDetection)
-
-        layout_edgeDetection_row1 = qtw.QHBoxLayout()
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
-        self.checkbox_edgeOnly.setToolTip(
-            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
-            'before it is displayed or summed - applies to both mask sources below')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
-        self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
-        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
-        self.checkbox_revertMask.setToolTip(
-            'Only applies together with Edge Detection: keep the mask\'s interior '
-            '(and, with "Directional" on, its other sides) but cut out the detected '
-            'edge band, instead of keeping only the edge band')
-        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
-        self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row1.addStretch(1)
-        layout_edgeDetection.addRow(layout_edgeDetection_row1)
-
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection.addRow('Kernel', self.spinbox_edgeKernel)
-
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge band facing one direction (e.g. just the mask\'s '
-            'top edge) instead of the full outline - erosion becomes one-sided, '
-            'along the angle below')
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
-        layout_edgeDetection.addRow(self.checkbox_edgeDirectional)
-
-        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(0, 359.9)
-        self.spinbox_edgeDirection.setDecimals(1)
-        self.spinbox_edgeDirection.setSingleStep(5)
-        self.spinbox_edgeDirection.setValue(0)
-        self.spinbox_edgeDirection.setDisabled(True)
-        self.spinbox_edgeDirection.setToolTip(
-            '0° = right, increasing clockwise (90° = down/bottom edge, '
-            '180° = left, 270° = up/top edge)')
-        self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection.addRow('Angle (°)', self.spinbox_edgeDirection)
-
-        #%% Summed DP from threshold
-        self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
-        layout_userInput.addWidget(self.box_sumDpThreshold)
-        layout_sumDpThreshold = qtw.QHBoxLayout()
-        self.box_sumDpThreshold.setLayout(layout_sumDpThreshold)
-
-        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
-        layout_sumDpThreshold.addWidget(self.button_sumDpFromThreshold)
-        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
-        self.button_sumDpFromThreshold.setToolTip(
-            'Open a window to check/adjust a real-space threshold on the loaded '
-            'navigation image, then sum diffraction patterns only at the scan '
-            'positions above it, instead of a rectangular ROI')
 
         #%% Virtual Imaging
+        # Kept early (right after Input Parameters/Directories, where "Load
+        # Signal" used to sit) since "Compute Virtual Image" below is now
+        # this tab's only way to load a signal in the first place - Edge
+        # Detection/Summed DP Threshold/SAM2 Segmentation below are all
+        # downstream, later-stage steps that need something loaded first.
         self.box_virtualImaging = qtw.QGroupBox('Virtual Imaging')
         layout_userInput.addWidget(self.box_virtualImaging)
         layout_virtualImaging = qtw.QFormLayout()
@@ -385,48 +287,50 @@ class Tab_ROI_on_4D(TabBase):
             'the whole detector')
         layout_virtualImaging.addRow(self.checkbox_useVirtualMask)
 
-        layout_vi_center = qtw.QHBoxLayout()
-        label_vi_centerX = qtw.QLabel('X')
-        layout_vi_center.addWidget(label_vi_centerX)
+        # Center and Radius share one QGridLayout (rather than two
+        # independent QHBoxLayouts) so their cells land in exactly the same
+        # columns - X directly above In, Y directly above Out - instead of
+        # merely hoping two separate row layouts happen to line up.
+        grid_vi_geometry = qtw.QGridLayout()
+        grid_vi_geometry.setContentsMargins(0, 0, 0, 0)
+
+        grid_vi_geometry.addWidget(qtw.QLabel('Center'), 0, 0)
+        grid_vi_geometry.addWidget(qtw.QLabel('X'), 0, 1)
         self.spinbox_vi_centerX = qtw.QSpinBox()
         self.spinbox_vi_centerX.setMaximumWidth(70)
         self.spinbox_vi_centerX.setRange(0, 8192)
         self.spinbox_vi_centerX.setValue(256)
-        layout_vi_center.addWidget(self.spinbox_vi_centerX)
-        label_vi_centerY = qtw.QLabel('Y')
-        layout_vi_center.addWidget(label_vi_centerY)
+        grid_vi_geometry.addWidget(self.spinbox_vi_centerX, 0, 2)
+        grid_vi_geometry.addWidget(qtw.QLabel('Y'), 0, 3)
         self.spinbox_vi_centerY = qtw.QSpinBox()
         self.spinbox_vi_centerY.setMaximumWidth(70)
         self.spinbox_vi_centerY.setRange(0, 8192)
         self.spinbox_vi_centerY.setValue(256)
-        layout_vi_center.addWidget(self.spinbox_vi_centerY)
+        grid_vi_geometry.addWidget(self.spinbox_vi_centerY, 0, 4)
         self.button_vi_autoCenter = qtw.QPushButton('Auto Center')
         self.button_vi_autoCenter.setToolTip(
             'Copy the diffraction pattern\'s beam center (see "Auto-center" above, '
             'in Scale bars) into Center X/Y')
-        layout_vi_center.addWidget(self.button_vi_autoCenter)
         self.button_vi_autoCenter.clicked.connect(self.vi_auto_center)
-        layout_vi_center.addStretch(1)
-        layout_virtualImaging.addRow('Center', layout_vi_center)
+        grid_vi_geometry.addWidget(self.button_vi_autoCenter, 0, 5)
 
-        layout_vi_radii = qtw.QHBoxLayout()
-        label_vi_rIn = qtw.QLabel('In')
-        layout_vi_radii.addWidget(label_vi_rIn)
+        grid_vi_geometry.addWidget(qtw.QLabel('Radius'), 1, 0)
+        grid_vi_geometry.addWidget(qtw.QLabel('In'), 1, 1)
         self.spinbox_vi_rIn = qtw.QSpinBox()
         self.spinbox_vi_rIn.setMaximumWidth(70)
         self.spinbox_vi_rIn.setRange(0, 4096)
         self.spinbox_vi_rIn.setSingleStep(10)
-        layout_vi_radii.addWidget(self.spinbox_vi_rIn)
-        label_vi_rOut = qtw.QLabel('Out')
-        layout_vi_radii.addWidget(label_vi_rOut)
+        grid_vi_geometry.addWidget(self.spinbox_vi_rIn, 1, 2)
+        grid_vi_geometry.addWidget(qtw.QLabel('Out'), 1, 3)
         self.spinbox_vi_rOut = qtw.QSpinBox()
         self.spinbox_vi_rOut.setMaximumWidth(70)
         self.spinbox_vi_rOut.setRange(1, 4096)
         self.spinbox_vi_rOut.setValue(256)
         self.spinbox_vi_rOut.setSingleStep(10)
-        layout_vi_radii.addWidget(self.spinbox_vi_rOut)
-        layout_vi_radii.addStretch(1)
-        layout_virtualImaging.addRow('Radius', layout_vi_radii)
+        grid_vi_geometry.addWidget(self.spinbox_vi_rOut, 1, 4)
+
+        grid_vi_geometry.setColumnStretch(6, 1)  # absorb trailing space, not the value columns
+        layout_virtualImaging.addRow(grid_vi_geometry)
         for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
                    self.spinbox_vi_rIn, self.spinbox_vi_rOut):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
@@ -468,15 +372,34 @@ class Tab_ROI_on_4D(TabBase):
         self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
         layout_virtualImaging.addRow('Detectors', widget_vi_detectors)
 
+        # Mode (Sum/Variance) + the two action buttons that actually run
+        # against it share the bottom row - Mode governs both "Compute
+        # Virtual Image" and Cancel is the one control that needs to stay
+        # reachable regardless of which background job is running, so it
+        # sits right beside the button that most commonly starts one.
+        layout_vi_actions = qtw.QHBoxLayout()
+        self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.addItems(['Sum', 'Variance'])
+        self.combo_virtualMode.setToolTip(
+            'How "Compute Virtual Image" computes the navigation image. Sum: total '
+            'scattered intensity per scan position (standard vSTEM). Variance: '
+            'variance of intensities per scan position instead - highlights local '
+            'structural variation (e.g. amorphous vs. crystalline regions) rather '
+            'than total dose.')
+        layout_vi_actions.addWidget(self.combo_virtualMode)
+
         self.button_computeVirtualImage = qtw.QPushButton('Compute\nVirtual Image')
         self.button_computeVirtualImage.setFixedHeight(50)
         self.button_computeVirtualImage.clicked.connect(self.compute_virtual_image)
         self.button_computeVirtualImage.setToolTip(
-            'Compute a navigation image over the WHOLE scan using the mode/mask '
-            'above (Sum or Variance, optionally restricted to the virtual '
-            'detector(s)) - independent of any ROI/SAM2 mask drawn elsewhere on '
-            'this tab')
-        layout_virtualImaging.addRow(self.button_computeVirtualImage)
+            'Load the 4D signal above (if not already loaded) and compute a '
+            'navigation image over the WHOLE scan using the mode/mask above (Sum '
+            'or Variance, optionally restricted to the virtual detector(s)) - '
+            'independent of any ROI/SAM2 mask drawn elsewhere on this tab')
+        layout_vi_actions.addWidget(self.button_computeVirtualImage)
+
+        layout_vi_actions.addWidget(self.button_cancel)
+        layout_virtualImaging.addRow(layout_vi_actions)
 
         # Artists for the virtual-detector circle overlay drawn on the DP
         # axis, redrawn by update_virtual_mask_overlay() - spinbox/list
@@ -484,10 +407,114 @@ class Tab_ROI_on_4D(TabBase):
         # edit the values directly instead.
         self._vi_mask_artists = []
 
-        layout_userInput.addWidget(self.button_cancel)
-        # Absorbs leftover vertical space below Cancel, so the whole panel's
-        # content stays pinned to the top instead of stretching to fill a
-        # taller window.
+        #%% edge detection (mask post-processing)
+        self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
+        layout_userInput.addWidget(self.box_edgeDetection)
+        layout_edgeDetection = qtw.QFormLayout()
+        layout_edgeDetection.setLabelAlignment(Qt.AlignLeft)
+        self.box_edgeDetection.setLayout(layout_edgeDetection)
+
+        # The box title ("Edge Detection") already says what this toggle
+        # activates, so the checkbox itself just says "Activate" -
+        # Directional/Revert Mask (both toggles too) share its row.
+        layout_edgeDetection_row1 = qtw.QHBoxLayout()
+        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
+        self.checkbox_edgeOnly.setToolTip(
+            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
+            'before it is displayed or summed - applies to both mask sources below')
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
+        self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge band facing one direction (e.g. just the mask\'s '
+            'top edge) instead of the full outline - erosion becomes one-sided, '
+            'along the angle to the right')
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
+        self.checkbox_revertMask.setToolTip(
+            'Only applies together with Activate: keep the mask\'s interior '
+            '(and, with "Directional" on, its other sides) but cut out the detected '
+            'edge band, instead of keeping only the edge band')
+        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
+        self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection_row1.addStretch(1)
+        layout_edgeDetection.addRow(layout_edgeDetection_row1)
+
+        # Kernel (erosion width) and Angle (direction, only when
+        # "Directional" is on) share one "Erosion" row - both just tune the
+        # same erosion operation the checkboxes above switch on.
+        layout_edgeDetection_row2 = qtw.QHBoxLayout()
+        layout_edgeDetection_row2.addWidget(qtw.QLabel('Kernel'))
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
+        layout_edgeDetection_row2.addWidget(qtw.QLabel('Angle (°)'))
+        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
+        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setDecimals(1)
+        self.spinbox_edgeDirection.setSingleStep(5)
+        self.spinbox_edgeDirection.setValue(0)
+        self.spinbox_edgeDirection.setDisabled(True)
+        self.spinbox_edgeDirection.setToolTip(
+            'Only used when "Directional" is checked. 0° = right, increasing '
+            'clockwise (90° = down/bottom edge, 180° = left, 270° = up/top edge)')
+        self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
+        layout_edgeDetection_row2.addStretch(1)
+        layout_edgeDetection.addRow('Erosion', layout_edgeDetection_row2)
+
+        #%% Summed DP from threshold
+        self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
+        layout_userInput.addWidget(self.box_sumDpThreshold)
+        layout_sumDpThreshold = qtw.QHBoxLayout()
+        self.box_sumDpThreshold.setLayout(layout_sumDpThreshold)
+
+        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
+        layout_sumDpThreshold.addWidget(self.button_sumDpFromThreshold)
+        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_sumDpFromThreshold.setToolTip(
+            'Open a window to check/adjust a real-space threshold on the loaded '
+            'navigation image, then sum diffraction patterns only at the scan '
+            'positions above it, instead of a rectangular ROI')
+
+        #%% SAM2 segmentation
+        self.box_segmentation = qtw.QGroupBox('SAM2 Segmentation')
+        layout_userInput.addWidget(self.box_segmentation)
+        layout_segmentation = qtw.QHBoxLayout()
+        self.box_segmentation.setLayout(layout_segmentation)
+
+        self.button_segment_image = qtw.QPushButton('Segment\nImage')
+        layout_segmentation.addWidget(self.button_segment_image)
+        self.button_segment_image.clicked.connect(self.segment_image)
+        self.button_segment_image.setDisabled(True)
+        self.button_segment_image.setToolTip('Run SAM2 on the points added below (Shift+Click)')
+
+        self.button_clear_points = qtw.QPushButton('Clear\nPoints')
+        layout_segmentation.addWidget(self.button_clear_points)
+        self.button_clear_points.clicked.connect(self.clear_seg_points)
+        self.button_clear_points.setDisabled(True)
+        self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
+
+        self.button_clear_roi = qtw.QPushButton('Clear\nROI/Box')
+        layout_segmentation.addWidget(self.button_clear_roi)
+        self.button_clear_roi.clicked.connect(self.clear_roi)
+        # Deactivated for now, at Saleh's request, pending his own review of
+        # the box-prompt path - segment_image() no longer reads self.roi
+        # either (see its docstring), so there's nothing left for this
+        # button to affect while it's off.
+        self.button_clear_roi.setDisabled(True)
+        self.button_clear_roi.setToolTip(
+            'Temporarily deactivated - SAM2 no longer uses the drawn ROI as a box '
+            'prompt (pending review). The ROI itself still works for diffraction-'
+            'pattern extraction; draw a new one to replace it instead of clearing.')
+
+        # Absorbs leftover vertical space below SAM2 Segmentation, so the
+        # whole panel's content stays pinned to the top instead of
+        # stretching to fill a taller window.
         layout_userInput.addStretch(1)
         #%% canvas layout
         self._right_widget = qtw.QWidget()
@@ -529,9 +556,9 @@ class Tab_ROI_on_4D(TabBase):
 
         # Image artists + colorbars are created once here (not in
         # reset_canvas, which only clears their data) - re-imshow()ing on
-        # every "Load Signal" click would otherwise stack a new AxesImage
-        # (and, once colorbars existed, a new colorbar axes) on top of the
-        # old ones each time, growing the figure without bound.
+        # every "Compute Virtual Image" click would otherwise stack a new
+        # AxesImage (and, once colorbars existed, a new colorbar axes) on
+        # top of the old ones each time, growing the figure without bound.
         self._setup_canvas()
 
         self.rect = None            # Currently drawn rectangle
@@ -589,7 +616,7 @@ class Tab_ROI_on_4D(TabBase):
         # RibbonPanel.active_tool there).
         self.ribbon = RibbonPanel([
             RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav. Image to '
-                      'draw a new ROI (also usable as a SAM2 box prompt)\n'
+                      'draw a new ROI (used for diffraction-pattern extraction)\n'
                       '(same as holding Ctrl and dragging)', 'tool'),
             RibbonTool('add_point', 'add_point', 'Add SAM2 point: click on the Nav. Image '
                       '(left = positive, right = negative)\n(same as holding Shift and clicking)',
@@ -624,9 +651,8 @@ class Tab_ROI_on_4D(TabBase):
         layout_canvas.addWidget(self.log_console)
 
         # keyboard shortcuts (matching the equivalent actions on the other tabs)
-        QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
+        QShortcut(QKeySequence('Ctrl+O'), self, self.button_computeVirtualImage.click)
         QShortcut(QKeySequence('Ctrl+T'), self, self.button_segment_image.click)
-        QShortcut(QKeySequence('Ctrl+R'), self, self.button_clear_roi.click)
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
@@ -670,37 +696,10 @@ class Tab_ROI_on_4D(TabBase):
             scanSize = None
         return scanSize
     
-    def get_nav_image(self):
-        """Validate the entered scan size (if required) and kick off a
-        background Worker_NavImg to compute the navigation image; see
-        image_handler() for the result slot."""
-        self.reset_canvas()
-        self.fn = self.lineEdit_dir_signal.text()
-        self.scanSize = self.get_scan_size()
-        self.dwellTime = self.spinbox_dwellTime.value()
-        dtype = os.path.splitext(self.fn)[-1]
-        if self._scan_size_required(dtype) and self.scanSize is None:
-            self.logger.warning('Cannot load %s: scan size is required.', self.fn)
-            self.message_box_scan_size_required(dtype)
-            return
-
-        self.logger.info('Loading 4D signal from %s...', self.fn)
-        self._cancelling = False
-        self.button_cancel.setEnabled(True)
-        worker = Worker_NavImg(self.fn, self.scanSize, self.dwellTime, self.get_fn_pattern(),
-                              self.get_detector_shape(self.fn))
-
-        worker.signals.result.connect(self.image_handler)
-        self.threadpool.start(worker)
-
-# =============================================================================
-#         self.navImg = io.calculate_nav_signal(self.fn, scanSize=scanSize)
-#         self.update_canvas('nav')
-# =============================================================================
-
     def image_handler(self, result):
-        """Slot for Worker_NavImg's result: store the navigation image and
-        reset the nav axis view/toolbar history to it."""
+        """Store a newly computed navigation image (see
+        compute_virtual_image/_on_virtual_image_computed) and reset the nav
+        axis view/toolbar history to it."""
         self.navImg = result
         self.dp_center = None  # a new signal may have a different DP shape/center
         self._dp_center_cache_key = None
@@ -729,33 +728,24 @@ class Tab_ROI_on_4D(TabBase):
     
     def enable_dwellTime_spinbox(self, txt):
         """Enable the scan-size/dwell-time widgets only for .tpx3 files
-        (smart-scan controls are handled separately - see
-        activate_lineEdit_patternFile()); auto-loads metadata when enabling."""
+        (smart-scan controls live in the Directories box now and are
+        handled separately - see activate_lineEdit_patternFile()); auto-
+        loads metadata when enabling."""
         enable = False
         if os.path.isfile(txt):
             dtype = os.path.splitext(txt)[1]
             if dtype == '.tpx3':
                 enable = True
-        # Smart-scan controls (checkbox_smartScan/lineEdit_patternFile/
-        # button_browsePattern) are excluded from this blanket tpx3-only
-        # enable/disable - .mib/.hspy/.zspy can be smart-scanned too, and
-        # this loop used to silently disable them for every non-tpx3 file,
-        # making the pattern-file picker unusable for exactly the formats
-        # (mib/hspy) that need it most. They manage their own enabled state
-        # via activate_lineEdit_patternFile() below instead.
-        # Metadata controls (Load/Browse/Block #), Mode (Sum/Variance), and
-        # everything under box_scale ("Scale bars") are excluded for the
-        # same reason - comment.txt metadata, the virtual-imaging mode, and
-        # the scale-bar settings all apply to every format, not just .tpx3,
-        # and this loop used to silently disable them (including the "Load"
+        # Metadata controls (Load Metadata/Browse/Block #) and everything
+        # under box_scale ("Scale bars") are excluded from this blanket
+        # tpx3-only enable/disable - comment.txt metadata and the scale-bar
+        # settings both apply to every format, not just .tpx3, and this loop
+        # used to silently disable them (including the "Load Metadata"
         # button message_box_scan_size_required() itself tells the user to
         # click) for any other format.
-        smart_scan_widgets = (self.checkbox_smartScan, self.lineEdit_patternFile,
-                              self.button_browsePattern)
         metadata_widgets = (self.button_loadMetadata, self.button_browseMetadata,
                             self.spinbox_metadataCount)
-        mode_widgets = (self.label_virtualMode, self.combo_virtualMode)
-        exempt_widgets = (set(smart_scan_widgets) | set(metadata_widgets) | set(mode_widgets)
+        exempt_widgets = (set(metadata_widgets)
                           | {self.box_scale} | set(self.box_scale.findChildren(qtw.QWidget)))
         for wid in self.box_scanSize.findChildren(qtw.QWidget):
             if wid in exempt_widgets:
@@ -994,9 +984,6 @@ class Tab_ROI_on_4D(TabBase):
         self.press = None
         self.canvas.draw()
         self.logger.info('ROI: %s', self.roi)
-        # A box alone is a valid SAM2 prompt (see segment_image()), so
-        # drawing one enables Segment Image even without any points yet.
-        self.button_segment_image.setEnabled(True)
         if not hasattr(self, 'dwellTime'):
             try:
                 self.dwellTime = self.spinbox_dwellTime.value()
@@ -1041,10 +1028,10 @@ class Tab_ROI_on_4D(TabBase):
     
     def _setup_canvas(self):
         """One-time creation of the image artists and their colorbars.
-        reset_canvas() (called on every "Load Signal") only clears their
-        data afterwards - re-imshow()ing here on every load would otherwise
-        stack a new image (and, now, a new colorbar axes) on the figure
-        each time."""
+        reset_canvas() (called on every "Compute Virtual Image") only
+        clears their data afterwards - re-imshow()ing here on every load
+        would otherwise stack a new image (and, now, a new colorbar axes)
+        on the figure each time."""
         self.img_display = {}
         img_temp = np.zeros((512,512), dtype='uint16')
         self.img_display['nav'] = self.ax_nav.imshow(img_temp, cmap='viridis')
@@ -1072,7 +1059,7 @@ class Tab_ROI_on_4D(TabBase):
             spine.set_visible(False)
         self.ax_nav.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         self.ax_nav.set_xlabel(
-            'Hold "ctrl" + Drag => New ROI (also usable as a SAM2 box prompt)\n'
+            'Hold "ctrl" + Drag => New ROI (diffraction-pattern extraction)\n'
             'Hold "shift" + Click => Add SAM2 point (Left=positive, Right=negative)\n'
             'Middle Click => Remove last SAM2 point', fontsize=9)
         self.ax_nav.xaxis.label.set_visible(True)
@@ -1358,14 +1345,27 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas.draw_idle()
 
     def compute_virtual_image(self):
-        """Kick off a background computation of the navigation image over
-        the WHOLE scan, using the Sum/Variance mode and (optionally) the
-        virtual detector(s) configured above - independent of whatever
-        ROI/SAM2 mask is currently drawn elsewhere on this tab."""
-        if not hasattr(self, 'fn') or not self.fn:
-            qtw.QMessageBox.critical(self, 'No Signal Loaded',
-                'Load a 4D signal first (see "Load Signal" above).')
+        """Load the 4D signal pointed at above and compute its navigation
+        image over the WHOLE scan, using the Sum/Variance mode and
+        (optionally) the virtual detector(s) configured above - independent
+        of whatever ROI/SAM2 mask is currently drawn elsewhere on this tab.
+        This is the tab's only entry point for loading a signal (there is
+        no separate "Load Signal" button) - the default Sum mode with no
+        virtual mask reproduces what that used to do."""
+        self.reset_canvas()
+        self.fn = self.lineEdit_dir_signal.text()
+        if not self.fn or not os.path.exists(self.fn):
+            qtw.QMessageBox.critical(self, 'No Signal Selected',
+                'Select a 4D signal file first (see "4D Signal" above).')
             return
+        self.scanSize = self.get_scan_size()
+        self.dwellTime = self.spinbox_dwellTime.value()
+        dtype = os.path.splitext(self.fn)[-1]
+        if self._scan_size_required(dtype) and self.scanSize is None:
+            self.logger.warning('Cannot load %s: scan size is required.', self.fn)
+            self.message_box_scan_size_required(dtype)
+            return
+
         mode = self.combo_virtualMode.currentText().lower()
         detectors = self.get_active_virtual_detectors() if self.checkbox_useVirtualMask.isChecked() else None
         self.logger.info('Computing virtual image (mode=%s, %s)...', mode,
@@ -1455,10 +1455,10 @@ class Tab_ROI_on_4D(TabBase):
             self.logger.info('Cleared SAM2 points and segmentation mask.')
 
     def clear_roi(self):
-        """Remove the drawn ROI so it stops being used as a SAM2 box prompt
-        or as the rectangle for diffraction-pattern extraction - without
-        this, a stale box from an earlier draw would keep silently feeding
-        into segment_image() even after the user no longer wants a box."""
+        """Remove the drawn ROI so it stops being used as the rectangle for
+        diffraction-pattern extraction. Not reachable via the (currently
+        deactivated) "Clear ROI/Box" button - only called internally, e.g.
+        by reset_canvas() - draw a new ROI to replace the old one instead."""
         had_roi = self.roi is not None
         self.roi = None
         if self.rect is not None:
@@ -1520,23 +1520,22 @@ class Tab_ROI_on_4D(TabBase):
 
     def segment_image(self):
         """Run SAM2's single-image predictor on the currently loaded nav
-        image using the point prompts added via Shift+Click, optionally
-        combined with the last-drawn ROI (Ctrl+drag) as a box prompt - SAM2
-        accepts points and a box together, the box narrowing the region and
-        the points refining it further. Otherwise this mirrors the SAM2
-        tab's "Seg Image" feature, just without object tracking."""
-        has_roi = getattr(self, 'roi', None) is not None
-        if not self.seg_points and not has_roi:
-            self.logger.warning('Segment Image requested but no points or ROI have been added.')
-            qtw.QMessageBox.critical(self, 'No Points or ROI Added',
+        image using the point prompts added via Shift+Click. Otherwise this
+        mirrors the SAM2 tab's "Seg Image" feature, just without object
+        tracking.
+
+        Box-prompt support (combining points with the last-drawn ROI as a
+        box, the way the box narrows the region and points refine it
+        further) is temporarily deactivated - see button_clear_roi/
+        clear_roi's own docstring."""
+        if not self.seg_points:
+            self.logger.warning('Segment Image requested but no points have been added.')
+            qtw.QMessageBox.critical(self, 'No Points Added',
                 'Hold Shift and click on the image to add at least one point '
-                '(left click = positive, right click = negative), and/or hold '
-                'Ctrl and drag to draw a box, before segmenting.')
+                '(left click = positive, right click = negative) before segmenting.')
             return
 
-        self.logger.info(
-            'Starting SAM2 image segmentation (%d point(s), %s)...',
-            len(self.seg_points), f'box={self.roi}' if has_roi else 'no box')
+        self.logger.info('Starting SAM2 image segmentation (%d point(s))...', len(self.seg_points))
         self.button_segment_image.setDisabled(True)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
@@ -1546,9 +1545,6 @@ class Tab_ROI_on_4D(TabBase):
         seg_input_dict = {'image': img_8bit,
                           'points': np.array(self.seg_points),
                           'labels': np.array(self.seg_labels)}
-        if has_roi:
-            x, y, w, h = self.roi
-            seg_input_dict['box'] = np.array([x, y, x + w, y + h])
         seg_input = pd.Series(seg_input_dict)
         seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
 
@@ -1765,38 +1761,6 @@ class WorkerSignals(QObject):
     finished = pyqtSignal()
     result = pyqtSignal(object)
     error = pyqtSignal(object)  # Formatted traceback string, emitted on failure
-
-class Worker_NavImg(QRunnable):
-    """Background QRunnable that computes a 4D signal's navigation image,
-    emitting it via signals.result."""
-    def __init__(self, fn, scanSize=None, dwellTime=None, fn_pattern=None,
-                det_shape=(512, 512)):
-        super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
-        self._tic = perf_counter()
-        self.logger.info('Calculating navigation image...')
-        self.fn = fn
-        self.scanSize = scanSize
-        self.dwellTime = dwellTime
-        self.fn_pattern = fn_pattern
-        self.det_shape = det_shape
-        self.signals = WorkerSignals()
-
-    def run(self):
-        try:
-            navImg = io.calculate_nav_img(self.fn, scanSize=self.scanSize,
-                                             dwellTime=self.dwellTime, logger=self.logger,
-                                             fn_pattern=self.fn_pattern, det_shape=self.det_shape)
-        except Exception:
-            self.logger.exception('Failed to calculate navigation image after %s.',
-                                   io.format_duration_hms(perf_counter() - self._tic))
-            self.signals.finished.emit()
-            return
-
-        self.signals.result.emit(navImg)
-        self.logger.info('Navigation image calculated successfully in %s.',
-                          io.format_duration_hms(perf_counter() - self._tic))
-        self.signals.finished.emit()
 
 class Worker_VirtualImage(QRunnable):
     """Background QRunnable that computes a navigation image over the whole
