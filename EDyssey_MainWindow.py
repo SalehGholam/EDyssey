@@ -50,7 +50,7 @@ plt.style.use('dark_background')
 # change is made anywhere in the app, so Help > About always reflects how
 # current the running build actually is. Shown directly in the Help menu
 # and repeated in the About dialog.
-APP_VERSION = '2026-08-14 12:09'
+APP_VERSION = '2026-08-14 13:17'
 
 #%% window
 class MainWindow(qtw.QMainWindow):

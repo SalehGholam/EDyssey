@@ -848,6 +848,11 @@ class Tab_Tracking_CV2(TabBase):
                       'action', self.toolbar_nav.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
+        # Deferred (see _apply_ribbon_cursor's docstring) - reapplies the
+        # ribbon cursor after mpl's own NavigationToolbar2 cursor-restore
+        # logic (wrapped around every canvas_nav.draw()) has already run.
+        self.canvas_nav.mpl_connect(
+            'draw_event', lambda evt: QTimer.singleShot(0, self._apply_ribbon_cursor))
         layout_right_outer.addWidget(self.ribbon)
 
         self._canvas_stack_widget = qtw.QWidget()
@@ -1896,12 +1901,21 @@ class Tab_Tracking_CV2(TabBase):
         self.update_canvas()
 
     def _on_ribbon_tool_changed(self, tool_id):
-        """Slot for ribbon.toolChanged: besides the ribbon button's own
-        highlighted (QToolButton:checked) style, give the active tool a
-        distinct cursor over canvas_nav too (where ROI selection happens) -
-        which mode is armed wasn't obvious enough from the ribbon alone."""
         self.logger.debug('Ribbon tool changed to %s', tool_id)
-        cursor = {'select_roi': Qt.CrossCursor}.get(tool_id)
+        self._apply_ribbon_cursor()
+
+    def _apply_ribbon_cursor(self):
+        """Set canvas_nav's cursor (where ROI selection happens) to match
+        the ribbon's active tool - besides the ribbon button's own
+        highlighted (QToolButton:checked) style, this gives the active tool
+        a distinct cursor too, since which mode is armed wasn't obvious
+        enough from the ribbon alone. Also called (deferred - see the
+        'draw_event' connection in init_widget) on every canvas redraw:
+        NavigationToolbar2's _wait_cursor_for_draw_cm() wraps every
+        canvas.draw() call and restores its own internally-tracked cursor
+        afterward, which would otherwise silently undo this on the very
+        next on_press/etc. redraw."""
+        cursor = {'select_roi': Qt.CrossCursor}.get(self.ribbon.active_tool)
         self.canvas_nav.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):

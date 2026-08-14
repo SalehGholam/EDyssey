@@ -10,7 +10,7 @@ Created on Wed Oct  2 15:34:09 2024
 import os
 import json
 from time import perf_counter
-from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess)
+from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess, QTimer)
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QIntValidator, QDoubleValidator, QKeySequence
 from PyQt5.QtWidgets import QShortcut
@@ -54,35 +54,33 @@ class Tab_ROI_on_4D(TabBase):
         #%% directory
         self.box_dir = qtw.QGroupBox('Directories')
         layout_userInput.addWidget(self.box_dir)
-        layout_dir = qtw.QVBoxLayout()
+        # QFormLayout throughout this panel - a left column of parameter
+        # titles, a right column of the widget(s) that set them, aligned
+        # consistently across every row in the box instead of each row
+        # hand-placing its own label.
+        layout_dir = qtw.QFormLayout()
+        layout_dir.setLabelAlignment(Qt.AlignLeft)
         self.box_dir.setLayout(layout_dir)
-        
+
         # nav signal dir
         layout_dir_entry = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_dir_entry)
-        label_dir = qtw.QLabel('4D Signal')
-        layout_dir_entry.addWidget(label_dir)
-        
         self.lineEdit_dir_signal = qtw.QLineEdit()
         layout_dir_entry.addWidget(self.lineEdit_dir_signal)
         self.lineEdit_dir_signal.textChanged.connect(lambda:self.enable_dwellTime_spinbox(
             self.lineEdit_dir_signal.text()))
-        
+
         self.button_dir_navSignal = qtw.QPushButton('...')
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
+        layout_dir.addRow('4D Signal', layout_dir_entry)
         #%% input layout, box input parameters
         self.box_scanSize = qtw.QGroupBox('Input Parameters')
-        layout_box_scanSize = qtw.QVBoxLayout()
+        layout_box_scanSize = qtw.QFormLayout()
+        layout_box_scanSize.setLabelAlignment(Qt.AlignLeft)
         self.box_scanSize.setLayout(layout_box_scanSize)
         layout_userInput.addWidget(self.box_scanSize)
 
         layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row1)
-
-        label_scanSize = qtw.QLabel('Scan Size')
-        layout_scanSize_row1.addWidget(label_scanSize)
-
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         layout_scanSize_row1.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
@@ -100,20 +98,22 @@ class Tab_ROI_on_4D(TabBase):
         layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
         self.lineEdit_scanSize_y.setFixedWidth(40)
         self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
+        layout_scanSize_row1.addStretch(1)
+        layout_box_scanSize.addRow('Scan Size', layout_scanSize_row1)
 
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
         label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
-        label_dwellTime.setToolTip('Dwell time in microseconds')
         self.spinbox_dwellTime = qtw.QSpinBox()
         self.spinbox_dwellTime.setFixedWidth(60)
         self.spinbox_dwellTime.setRange(1, 99999999)
         self.spinbox_dwellTime.setDisabled(True)
-        for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_scanSize_row1.addWidget(wid)
-
-        layout_scanSize_row1.addStretch(1)
+        self.spinbox_dwellTime.setToolTip('Dwell time in microseconds')
+        layout_dwellTime = qtw.QHBoxLayout()
+        layout_dwellTime.addWidget(self.spinbox_dwellTime)
+        layout_dwellTime.addStretch(1)
+        layout_box_scanSize.addRow(label_dwellTime.text(), layout_dwellTime)
 
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
@@ -125,14 +125,10 @@ class Tab_ROI_on_4D(TabBase):
 
         # detector size (per side, in pixels) - Auto assumes 512x512.
         layout_detSize = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_detSize)
-        label_detSize = qtw.QLabel('Detector Size')
-        label_detSize.setToolTip(
-            'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.')
-        layout_detSize.addWidget(label_detSize)
+        detSize_tooltip = 'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.'
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
         self.checkbox_detectorSizeAuto.setChecked(True)
-        self.checkbox_detectorSizeAuto.setToolTip(label_detSize.toolTip())
+        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
         layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
         self.spinbox_detectorSize_x = qtw.QSpinBox()
         self.spinbox_detectorSize_x.setFixedWidth(55)
@@ -146,20 +142,18 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_detectorSize_y.setRange(1, 8192)
         self.spinbox_detectorSize_y.setValue(512)
         layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        layout_detSize.addStretch(1)
+        layout_box_scanSize.addRow('Detector Size', layout_detSize)
+        layout_box_scanSize.labelForField(layout_detSize).setToolTip(detSize_tooltip)
         self.activate_detectorSize_spinboxes()
         self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-        layout_detSize.addStretch(1)
 
         # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file itself.
         layout_scanSize_row2 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row2)
-
-        label_metadataCount = qtw.QLabel('Block #')
-        label_metadataCount.setToolTip(
+        metadataCount_tooltip = (
             'Which 0-indexed metadata block to read from comment.txt. Only '
             'enabled when comment.txt logs more than one measurement')
-        layout_scanSize_row2.addWidget(label_metadataCount)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
         self.spinbox_metadataCount.setRange(0, 99999)
@@ -185,6 +179,8 @@ class Tab_ROI_on_4D(TabBase):
         layout_scanSize_row2.addWidget(self.button_browseMetadata)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
         layout_scanSize_row2.addStretch(1)
+        layout_box_scanSize.addRow('Block #', layout_scanSize_row2)
+        layout_box_scanSize.labelForField(layout_scanSize_row2).setToolTip(metadataCount_tooltip)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
@@ -193,10 +189,6 @@ class Tab_ROI_on_4D(TabBase):
         # since it applies equally whether or not "Use Virtual Mask" is
         # checked there (e.g. whole-detector Variance is a valid, common
         # choice with no mask involved at all).
-        layout_scanSize_mode = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_mode)
-        self.label_virtualMode = qtw.QLabel('Mode')
-        layout_scanSize_mode.addWidget(self.label_virtualMode)
         self.combo_virtualMode = qtw.QComboBox()
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
@@ -205,32 +197,23 @@ class Tab_ROI_on_4D(TabBase):
             'per scan position (standard vSTEM). Variance: variance of intensities '
             'per scan position instead - highlights local structural variation '
             '(e.g. amorphous vs. crystalline regions) rather than total dose.')
-        layout_scanSize_mode.addWidget(self.combo_virtualMode)
-        layout_scanSize_mode.addStretch(1)
+        self.label_virtualMode = qtw.QLabel('Mode')
+        layout_box_scanSize.addRow(self.label_virtualMode, self.combo_virtualMode)
 
         # scale bars - kept at the bottom of Input Parameters (below scan
-        # size/detector size/metadata), real/reciprocal merged onto one row,
-        # since it's a display-only calibration rather than an acquisition
-        # parameter.
+        # size/detector size/metadata), each unit its own titled row.
         self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
+        layout_box_scale = qtw.QFormLayout()
+        layout_box_scale.setLabelAlignment(Qt.AlignLeft)
         self.box_scale.setLayout(layout_box_scale)
-        layout_box_scanSize.addWidget(self.box_scale)
+        layout_box_scanSize.addRow(self.box_scale)
 
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
+        layout_box_scale.addRow('Real (nm)', self.lineEdit_scale_real)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
+        layout_box_scale.addRow('Recip. (Å<sup>-1</sup>)', self.lineEdit_scale_recip)
 
         self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
         self.checkbox_autoCenterDp.setChecked(True)
@@ -239,7 +222,7 @@ class Tab_ROI_on_4D(TabBase):
             'direct beam automatically (found via a large-sigma blur) after '
             'every redraw. When unchecked, hold Ctrl and click on the '
             'diffraction pattern to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        layout_box_scale.addRow(self.checkbox_autoCenterDp)
         self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
         self.lineEdit_scale_recip.textChanged.connect(
             lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
@@ -248,12 +231,12 @@ class Tab_ROI_on_4D(TabBase):
 
         #%% box smart scan (pattern-file) acquisition support
         self.box_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_box_smartScan = qtw.QVBoxLayout()
+        layout_box_smartScan = qtw.QFormLayout()
+        layout_box_smartScan.setLabelAlignment(Qt.AlignLeft)
         self.box_smartScan.setLayout(layout_box_smartScan)
         layout_userInput.addWidget(self.box_smartScan)
 
         layout_scanSize_row3 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row3)
 
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
@@ -273,6 +256,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_browsePattern.setDisabled(True)
         layout_scanSize_row3.addWidget(self.button_browsePattern)
         self.button_browsePattern.clicked.connect(self.browse_pattern_file)
+        layout_box_smartScan.addRow('Pattern File', layout_scanSize_row3)
 
         #%% load button
         layout_load = qtw.QHBoxLayout()
@@ -326,27 +310,17 @@ class Tab_ROI_on_4D(TabBase):
         #%% edge detection (mask post-processing)
         self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
         layout_userInput.addWidget(self.box_edgeDetection)
-        layout_edgeDetection = qtw.QVBoxLayout()
+        layout_edgeDetection = qtw.QFormLayout()
+        layout_edgeDetection.setLabelAlignment(Qt.AlignLeft)
         self.box_edgeDetection.setLayout(layout_edgeDetection)
 
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
-        layout_edgeDetection.addLayout(layout_edgeDetection_row1)
-
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
         self.checkbox_edgeOnly.setToolTip(
             'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
             'before it is displayed or summed - applies to both mask sources below')
         layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
-
-        label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection_row1.addWidget(label_edgeKernel)
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection_row1.addWidget(self.spinbox_edgeKernel)
-        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
             'Only applies together with Edge Detection: keep the mask\'s interior '
@@ -355,20 +329,23 @@ class Tab_ROI_on_4D(TabBase):
         layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
         layout_edgeDetection_row1.addStretch(1)
+        layout_edgeDetection.addRow(layout_edgeDetection_row1)
 
-        layout_edgeDetection_row2 = qtw.QHBoxLayout()
-        layout_edgeDetection.addLayout(layout_edgeDetection_row2)
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
+        layout_edgeDetection.addRow('Kernel', self.spinbox_edgeKernel)
 
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
             'Keep only the edge band facing one direction (e.g. just the mask\'s '
             'top edge) instead of the full outline - erosion becomes one-sided, '
             'along the angle below')
-        layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
         self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        layout_edgeDetection.addRow(self.checkbox_edgeDirectional)
 
-        label_edgeDirection = qtw.QLabel('Angle (°)')
-        layout_edgeDetection_row2.addWidget(label_edgeDirection)
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
         self.spinbox_edgeDirection.setRange(0, 359.9)
         self.spinbox_edgeDirection.setDecimals(1)
@@ -378,9 +355,8 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.setToolTip(
             '0° = right, increasing clockwise (90° = down/bottom edge, '
             '180° = left, 270° = up/top edge)')
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row2.addStretch(1)
+        layout_edgeDetection.addRow('Angle (°)', self.spinbox_edgeDirection)
 
         #%% Summed DP from threshold
         self.box_sumDpThreshold = qtw.QGroupBox('Summed DP from Threshold')
@@ -399,28 +375,25 @@ class Tab_ROI_on_4D(TabBase):
         #%% Virtual Imaging
         self.box_virtualImaging = qtw.QGroupBox('Virtual Imaging')
         layout_userInput.addWidget(self.box_virtualImaging)
-        layout_virtualImaging = qtw.QVBoxLayout()
+        layout_virtualImaging = qtw.QFormLayout()
+        layout_virtualImaging.setLabelAlignment(Qt.AlignLeft)
         self.box_virtualImaging.setLayout(layout_virtualImaging)
 
-        layout_vi_row1 = qtw.QHBoxLayout()
-        layout_virtualImaging.addLayout(layout_vi_row1)
         self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
         self.checkbox_useVirtualMask.setToolTip(
             'When checked, only the annular region(s) below are used, instead of '
             'the whole detector')
-        layout_vi_row1.addWidget(self.checkbox_useVirtualMask)
-        layout_vi_row1.addStretch(1)
+        layout_virtualImaging.addRow(self.checkbox_useVirtualMask)
 
         layout_vi_center = qtw.QHBoxLayout()
-        layout_virtualImaging.addLayout(layout_vi_center)
-        label_vi_centerX = qtw.QLabel('Center X')
+        label_vi_centerX = qtw.QLabel('X')
         layout_vi_center.addWidget(label_vi_centerX)
         self.spinbox_vi_centerX = qtw.QSpinBox()
         self.spinbox_vi_centerX.setMaximumWidth(70)
         self.spinbox_vi_centerX.setRange(0, 8192)
         self.spinbox_vi_centerX.setValue(256)
         layout_vi_center.addWidget(self.spinbox_vi_centerX)
-        label_vi_centerY = qtw.QLabel('Center Y')
+        label_vi_centerY = qtw.QLabel('Y')
         layout_vi_center.addWidget(label_vi_centerY)
         self.spinbox_vi_centerY = qtw.QSpinBox()
         self.spinbox_vi_centerY.setMaximumWidth(70)
@@ -433,17 +406,18 @@ class Tab_ROI_on_4D(TabBase):
             'in Scale bars) into Center X/Y')
         layout_vi_center.addWidget(self.button_vi_autoCenter)
         self.button_vi_autoCenter.clicked.connect(self.vi_auto_center)
+        layout_vi_center.addStretch(1)
+        layout_virtualImaging.addRow('Center', layout_vi_center)
 
         layout_vi_radii = qtw.QHBoxLayout()
-        layout_virtualImaging.addLayout(layout_vi_radii)
-        label_vi_rIn = qtw.QLabel('Inner R')
+        label_vi_rIn = qtw.QLabel('In')
         layout_vi_radii.addWidget(label_vi_rIn)
         self.spinbox_vi_rIn = qtw.QSpinBox()
         self.spinbox_vi_rIn.setMaximumWidth(70)
         self.spinbox_vi_rIn.setRange(0, 4096)
         self.spinbox_vi_rIn.setSingleStep(10)
         layout_vi_radii.addWidget(self.spinbox_vi_rIn)
-        label_vi_rOut = qtw.QLabel('Outer R')
+        label_vi_rOut = qtw.QLabel('Out')
         layout_vi_radii.addWidget(label_vi_rOut)
         self.spinbox_vi_rOut = qtw.QSpinBox()
         self.spinbox_vi_rOut.setMaximumWidth(70)
@@ -452,6 +426,7 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_vi_rOut.setSingleStep(10)
         layout_vi_radii.addWidget(self.spinbox_vi_rOut)
         layout_vi_radii.addStretch(1)
+        layout_virtualImaging.addRow('Radius', layout_vi_radii)
         for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
                    self.spinbox_vi_rIn, self.spinbox_vi_rOut):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
@@ -464,8 +439,14 @@ class Tab_ROI_on_4D(TabBase):
         # list just keeps the spinbox-defined detector above as the only one
         # used - matches the Navigator tab's identical convention.
         self._extra_detectors_vi = []
+        # Buttons + list grouped under one "Detectors" title (a QWidget
+        # wrapper, since a QFormLayout row's field side is one item -
+        # stacking the pieces vertically inside it).
+        widget_vi_detectors = qtw.QWidget()
+        layout_vi_detectors = qtw.QVBoxLayout(widget_vi_detectors)
+        layout_vi_detectors.setContentsMargins(0, 0, 0, 0)
         layout_vi_list_buttons = qtw.QHBoxLayout()
-        layout_virtualImaging.addLayout(layout_vi_list_buttons)
+        layout_vi_detectors.addLayout(layout_vi_list_buttons)
         self.button_vi_addDetector = qtw.QPushButton('Add Detector')
         self.button_vi_addDetector.setToolTip(
             'Add the center/radii above as another virtual detector - once one or '
@@ -483,22 +464,19 @@ class Tab_ROI_on_4D(TabBase):
             'Additional virtual detectors, combined with each other (but not with '
             'the center/radii spinboxes above unless also added here)')
         self.list_detectors_vi.setMaximumHeight(60)
-        layout_virtualImaging.addWidget(self.list_detectors_vi)
+        layout_vi_detectors.addWidget(self.list_detectors_vi)
         self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
+        layout_virtualImaging.addRow('Detectors', widget_vi_detectors)
 
-        layout_vi_compute = qtw.QHBoxLayout()
-        layout_virtualImaging.addLayout(layout_vi_compute)
-        layout_vi_compute.addStretch(1)
         self.button_computeVirtualImage = qtw.QPushButton('Compute\nVirtual Image')
         self.button_computeVirtualImage.setFixedHeight(50)
-        layout_vi_compute.addWidget(self.button_computeVirtualImage)
         self.button_computeVirtualImage.clicked.connect(self.compute_virtual_image)
         self.button_computeVirtualImage.setToolTip(
             'Compute a navigation image over the WHOLE scan using the mode/mask '
             'above (Sum or Variance, optionally restricted to the virtual '
             'detector(s)) - independent of any ROI/SAM2 mask drawn elsewhere on '
             'this tab')
-        layout_vi_compute.addStretch(1)
+        layout_virtualImaging.addRow(self.button_computeVirtualImage)
 
         # Artists for the virtual-detector circle overlay drawn on the DP
         # axis, redrawn by update_virtual_mask_overlay() - spinbox/list
@@ -627,6 +605,16 @@ class Tab_ROI_on_4D(TabBase):
                       'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
+        # NavigationToolbar2's _wait_cursor_for_draw_cm() wraps every
+        # canvas.draw() call and restores its own internally-tracked cursor
+        # in a `finally` block that runs after 'draw_event' listeners fire -
+        # so reapplying the ribbon's cursor directly from 'draw_event' still
+        # gets silently overwritten a moment later by mpl itself (verified:
+        # this was happening on every on_press-triggered redraw). Deferring
+        # via singleShot(0, ...) runs it on the next event-loop tick,
+        # after that synchronous mpl-internal reset has already finished.
+        self.canvas.mpl_connect(
+            'draw_event', lambda evt: QTimer.singleShot(0, self._apply_ribbon_cursor))
         layout_right_outer.addWidget(self.ribbon)
 
         # The app-wide log console lives here (below this tab's own plot
@@ -871,12 +859,21 @@ class Tab_ROI_on_4D(TabBase):
         self._refresh_edge_mask()
 
     def _on_ribbon_tool_changed(self, tool_id):
-        """Slot for ribbon.toolChanged: besides the ribbon button's own
-        highlighted (QToolButton:checked) style, give the active tool a
-        distinct cursor over the canvas too - which mode is armed wasn't
-        obvious enough from the ribbon alone."""
         self.logger.debug('Ribbon tool changed to %s', tool_id)
-        cursor = {'select_roi': Qt.CrossCursor, 'add_point': Qt.PointingHandCursor}.get(tool_id)
+        self._apply_ribbon_cursor()
+
+    def _apply_ribbon_cursor(self):
+        """Set the canvas cursor to match the ribbon's active tool - besides
+        the ribbon button's own highlighted (QToolButton:checked) style,
+        this gives the active tool a distinct cursor too, since which mode
+        is armed wasn't obvious enough from the ribbon alone. Also called
+        on every canvas redraw (see the 'draw_event' connection in
+        init_widget) - matplotlib's own toolbar/backend resets the cursor
+        to a plain arrow on canvas.draw() (e.g. right after on_press draws
+        the in-progress ROI rectangle), which would otherwise silently undo
+        this on the very next interaction."""
+        cursor = {'select_roi': Qt.CrossCursor, 'add_point': Qt.PointingHandCursor}.get(
+            self.ribbon.active_tool)
         self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):
