@@ -53,22 +53,22 @@ class Tab_ROI_on_4D(TabBase):
         # cluster of controls - what used to be one QGroupBox) separated by
         # vertical lines, so the canvas below gets the tab's full width
         # instead of being squeezed to the right of a tall left column.
-        # Scrollable horizontally in case not every group fits at once,
-        # the same way Word's own ribbon collapses on a narrow window.
-        self._ribbon_param_scroll = qtw.QScrollArea()
-        self._ribbon_param_scroll.setWidgetResizable(True)
-        self._ribbon_param_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._ribbon_param_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._ribbon_param_scroll.setFixedHeight(150)
+        # No scrollbar and no leftover blank strip on the right: every group
+        # is horizontally Expanding and added with a stretch weight
+        # (roughly proportional to how much content it holds - see the
+        # `stretch=` argument at each _ribbon_group_start call below), so
+        # the groups themselves always divide up the tab's full width
+        # between them, wider ones getting more of it than narrow ones like
+        # Scale. The band's height is not fixed - it sizes itself to
+        # whichever group needs the most vertical space.
         ribbon_page = qtw.QWidget()
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
-        self._ribbon_param_scroll.setWidget(ribbon_page)
-        self.layout.addWidget(self._ribbon_param_scroll)
+        self.layout.addWidget(ribbon_page)
 
         #%% directory (ribbon group: "File")
-        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon)
+        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=2)
 
         layout_dir_entry = qtw.QHBoxLayout()
         layout_dir_entry.addWidget(qtw.QLabel('4D Signal'))
@@ -109,7 +109,7 @@ class Tab_ROI_on_4D(TabBase):
         self._ribbon_group_end(layout_ribbon, layout_dir, 'File')
 
         #%% input parameters (ribbon group: "Input Parameters")
-        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon)
+        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=3)
 
         # detector size (per side, in pixels) - Auto assumes 512x512. Kept
         # first in this group (above Scan Size) since it's read/validated
@@ -231,7 +231,7 @@ class Tab_ROI_on_4D(TabBase):
 
         #%% scale bars (ribbon group: "Scale") - Real, Recip., and
         # Auto-center all share one line.
-        self.box_scale, layout_box_scale = self._ribbon_group_start(layout_ribbon)
+        self.box_scale, layout_box_scale = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_scale_row = qtw.QHBoxLayout()
         layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
@@ -283,7 +283,7 @@ class Tab_ROI_on_4D(TabBase):
         # now this tab's only way to load a signal in the first place -
         # Edge Detection/Summed DP Threshold/SAM2 Segmentation are all
         # downstream, later-stage steps that need something loaded first.
-        self.box_virtualImaging, layout_virtualImaging = self._ribbon_group_start(layout_ribbon)
+        self.box_virtualImaging, layout_virtualImaging = self._ribbon_group_start(layout_ribbon, stretch=5)
 
         self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
         self.checkbox_useVirtualMask.setToolTip(
@@ -333,8 +333,6 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_vi_rOut.setSingleStep(10)
         grid_vi_geometry.addWidget(self.spinbox_vi_rOut, 1, 4)
 
-        grid_vi_geometry.setColumnStretch(6, 1)  # absorb trailing space, not the value columns
-        layout_virtualImaging.addLayout(grid_vi_geometry)
         for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
                    self.spinbox_vi_rIn, self.spinbox_vi_rOut):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
@@ -372,7 +370,20 @@ class Tab_ROI_on_4D(TabBase):
         self.list_detectors_vi.setMaximumHeight(60)
         layout_vi_detectors.addWidget(self.list_detectors_vi)
         self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
-        layout_virtualImaging.addWidget(widget_vi_detectors)
+
+        # Center/Radius grid and the Detectors list now sit side by side
+        # (rather than stacked, as they were in the old narrow left-panel
+        # column) - two different concepts sharing a row (numeric geometry
+        # vs. a list of saved detectors), so a separator marks the boundary,
+        # same convention as elsewhere on this ribbon. This is the one
+        # group wide enough (stretch=5, the ribbon's largest) to make a
+        # side-by-side arrangement worthwhile instead of just leaving blank
+        # space below a full-width grid.
+        layout_vi_middle = qtw.QHBoxLayout()
+        layout_vi_middle.addLayout(grid_vi_geometry)
+        self._ribbon_inline_separator(layout_vi_middle)
+        layout_vi_middle.addWidget(widget_vi_detectors, 1)
+        layout_virtualImaging.addLayout(layout_vi_middle)
 
         # Mode (a setting) | Compute Virtual Image + Cancel (the actions
         # that run against it) - separated as distinct concepts. Cancel is
@@ -412,46 +423,48 @@ class Tab_ROI_on_4D(TabBase):
         self._ribbon_group_end(layout_ribbon, layout_virtualImaging, 'Virtual Imaging')
 
         #%% edge detection (ribbon group: "Edge Detection")
-        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon)
+        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=2)
 
         # The group caption ("Edge Detection") already says what this
-        # toggle activates, so the checkbox itself just says "Activate" -
-        # Directional/Revert Mask (both toggles too) share its row.
-        layout_edgeDetection_row1 = qtw.QHBoxLayout()
+        # toggle activates, so the checkbox itself just says "Activate".
+        # Directional/Revert Mask (both toggles) and Kernel/Angle (both
+        # numeric) now all share one row instead of two - this group's
+        # stretch width (2) gives it enough room, and everything here is
+        # tightly related (they all only matter once Activate is checked),
+        # so a single row reads better than splitting it in two.
+        layout_edgeDetection_row = qtw.QHBoxLayout()
         self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
         self.checkbox_edgeOnly.setToolTip(
             'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
             'before it is displayed or summed - applies to both mask sources below')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
+        layout_edgeDetection_row.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
             'Keep only the edge band facing one direction (e.g. just the mask\'s '
             'top edge) instead of the full outline - erosion becomes one-sided, '
             'along the angle to the right')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
+        layout_edgeDetection_row.addWidget(self.checkbox_edgeDirectional)
         self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
             'Only applies together with Activate: keep the mask\'s interior '
             '(and, with "Directional" on, its other sides) but cut out the detected '
             'edge band, instead of keeping only the edge band')
-        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
+        layout_edgeDetection_row.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection.addLayout(layout_edgeDetection_row1)
 
-        # Kernel (erosion width) | Angle (direction, only when "Directional"
-        # is on) - different concepts sharing a row, separated.
-        layout_edgeDetection_row2 = qtw.QHBoxLayout()
-        layout_edgeDetection_row2.addWidget(qtw.QLabel('Kernel'))
+        self._ribbon_inline_separator(layout_edgeDetection_row)
+        layout_edgeDetection_row.addWidget(qtw.QLabel('Kernel'))
         self.spinbox_edgeKernel = qtw.QSpinBox()
         self.spinbox_edgeKernel.setRange(1, 99)
         self.spinbox_edgeKernel.setValue(3)
         self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
         self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
-        self._ribbon_inline_separator(layout_edgeDetection_row2)
-        layout_edgeDetection_row2.addWidget(qtw.QLabel('Angle (°)'))
+        layout_edgeDetection_row.addWidget(self.spinbox_edgeKernel)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row)
+        layout_edgeDetection_row.addWidget(qtw.QLabel('Angle (°)'))
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
         self.spinbox_edgeDirection.setRange(0, 359.9)
         self.spinbox_edgeDirection.setDecimals(1)
@@ -462,12 +475,12 @@ class Tab_ROI_on_4D(TabBase):
             'Only used when "Directional" is checked. 0° = right, increasing '
             'clockwise (90° = down/bottom edge, 180° = left, 270° = up/top edge)')
         self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
-        layout_edgeDetection.addLayout(layout_edgeDetection_row2)
+        layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
+        layout_edgeDetection.addLayout(layout_edgeDetection_row)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection')
 
         #%% Summed DP from threshold (ribbon group)
-        self.box_sumDpThreshold, layout_sumDpThreshold = self._ribbon_group_start(layout_ribbon)
+        self.box_sumDpThreshold, layout_sumDpThreshold = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
         layout_sumDpThreshold.addWidget(self.button_sumDpFromThreshold)
@@ -479,7 +492,7 @@ class Tab_ROI_on_4D(TabBase):
         self._ribbon_group_end(layout_ribbon, layout_sumDpThreshold, 'Summed DP Threshold')
 
         #%% SAM2 segmentation (ribbon group - last, no trailing separator)
-        self.box_segmentation, layout_segmentation = self._ribbon_group_start(layout_ribbon)
+        self.box_segmentation, layout_segmentation = self._ribbon_group_start(layout_ribbon, stretch=1)
         layout_segmentation_row = qtw.QHBoxLayout()
 
         self.button_segment_image = qtw.QPushButton('Segment\nImage')
@@ -508,10 +521,6 @@ class Tab_ROI_on_4D(TabBase):
             'pattern extraction; draw a new one to replace it instead of clearing.')
         layout_segmentation.addLayout(layout_segmentation_row)
         self._ribbon_group_end(layout_ribbon, layout_segmentation, 'SAM2 Segmentation', separator=False)
-
-        # Absorbs leftover horizontal space after the last group, so groups
-        # stay packed to the left instead of stretching across the ribbon.
-        layout_ribbon.addStretch(1)
 
         #%% canvas layout (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -838,7 +847,7 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self._refresh_edge_mask()
 
-    def _ribbon_group_start(self, layout_ribbon):
+    def _ribbon_group_start(self, layout_ribbon, stretch=1):
         """Start a new parameter-ribbon group (Word-ribbon style: a
         compact, borderless vertical stack of rows, captioned at the
         bottom) - replaces what used to be one QGroupBox in the old left
@@ -846,12 +855,19 @@ class Tab_ROI_on_4D(TabBase):
         can keep a self.box_X reference the way the old QGroupBox-based
         code did (e.g. enable_dwellTime_spinbox's findChildren), the
         layout to add the group's own rows into. Call _ribbon_group_end()
-        once those rows are added."""
+        once those rows are added.
+
+        The group is horizontally Expanding and added with `stretch`
+        (roughly proportional to how much content the group holds), so the
+        whole ribbon's groups divide up its full width between them - no
+        leftover blank strip, no horizontal scrollbar, and busier groups
+        (e.g. Virtual Imaging) end up wider than sparse ones (e.g. Scale)."""
         widget = qtw.QWidget()
+        widget.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Preferred)
         layout_group = qtw.QVBoxLayout(widget)
         layout_group.setContentsMargins(6, 4, 6, 2)
         layout_group.setSpacing(3)
-        layout_ribbon.addWidget(widget)
+        layout_ribbon.addWidget(widget, stretch)
         return widget, layout_group
 
     def _ribbon_group_end(self, layout_ribbon, layout_group, caption, separator=True):
