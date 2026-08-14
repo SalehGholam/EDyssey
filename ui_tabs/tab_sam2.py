@@ -851,37 +851,28 @@ class Tab_SAM2(TabBase):
         layout_canvas.addWidget(self.toolbar)
 
         #%% ribbon
-        # Docked along the right edge - an additional click-driven way to
-        # reach actions already available via Ctrl-click on the canvas (see
-        # on_click) and the buttons in the left panel; none of those are
-        # removed or changed by this. 'add_point' is the only tool mode
-        # on_click actually checks (see RibbonPanel.active_tool there) -
-        # left/right click still choose positive/negative, and Shift still
-        # chooses new-object-vs-append, exactly as before. Everything else
-        # here is a one-shot action wired straight to the button it
-        # duplicates.
+        # Docked along the right edge - an additional way to reach the same
+        # canvas interaction already available via Ctrl-click (see on_click)
+        # and matplotlib's own toolbar (below); deliberately does NOT
+        # duplicate the left panel's buttons (Seg Image, Track, Extract All,
+        # Save Results, ...), only actions that act directly on the plot
+        # itself. 'add_point' is the only tool mode on_click actually checks
+        # (see RibbonPanel.active_tool there) - left/right click still
+        # choose positive/negative, and Shift still chooses
+        # new-object-vs-append, exactly as before.
         self.ribbon = RibbonPanel([
-            RibbonTool('add_point', '+/− Pt', 'Add point: click on Navigation '
+            RibbonTool('add_point', 'add_point', 'Add point: click on Navigation '
                       '(left = positive, right = negative)\nAdd Shift to add to the '
                       'selected object instead of starting a new one\n'
                       '(same as holding Ctrl and clicking)', 'tool'),
-            RibbonTool('sep1', kind='separator'),
-            RibbonTool('remove_point', 'Undo\nPt', 'Remove last point (same as middle-click)',
+            RibbonTool('remove_point', 'remove_point', 'Remove last point (same as middle-click)',
                       'action', self.delete_last_point),
-            RibbonTool('seg_img', 'Seg\nImage', 'Segment the current frame only (same as "Seg Image")',
-                      'action', self.button_runSeg_img.click),
-            RibbonTool('track', 'Track', 'Track objects across all frames (same as "Track")',
-                      'action', self.button_runSeg_clip.click),
-            RibbonTool('extract', 'Extract\nAll', 'Extract 3D ED patterns (same as "Extract All")',
-                      'action', self.button_3ded.click),
-            RibbonTool('save', 'Save', 'Save results (same as "Save Results")', 'action',
-                      self.button_save_results.click),
-            RibbonTool('sep2', kind='separator'),
-            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
-            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
                       'action', self.toolbar.zoom),
-            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+            RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(

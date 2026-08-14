@@ -33,7 +33,7 @@ def _read_scansize_hdf5(fn):
 
 
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
-                             detectors_json=None, fn_pattern=None, det_shape=None):
+                             detectors_json=None, fn_pattern=None, det_shape=None, mode='sum'):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
     print the saved path to stdout - instead of the array itself, base64+
     pickle-encoded. Transferring a multi-MB encoded array through the
@@ -63,6 +63,8 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         fn_pattern: Optional path to a smart-scan pattern file for `fn` (empty
             string/'None' for a normal dense file) - see `loaders.load_tpx3`/
             `loaders._load_mib_smart_scan`.
+        mode: 'sum' (default) or 'variance' - see
+            EDyssey.io_utils.nav_image.calculate_nav_img_hdf5's docstring.
     """
     try:
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
@@ -93,6 +95,7 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         # per-file throughput to collapse as more workers piled up
         # concurrently - pinning each process to 1 internal thread makes
         # total concurrency match what the user actually configured.
+        mode = 'sum' if mode in (None, '', 'None') else mode
         if detectors_json not in (None, 'None'):
             detectors = json.loads(detectors_json)
             for d in detectors:
@@ -100,11 +103,11 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
             result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                                  dwellTime=dwellTime, detectors=detectors,
                                                  n_threads=1, fn_pattern=fn_pattern,
-                                                 det_shape=det_shape)
+                                                 det_shape=det_shape, mode=mode)
         else:
             result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
                                           dwellTime=dwellTime, n_threads=1,
-                                          fn_pattern=fn_pattern, det_shape=det_shape)
+                                          fn_pattern=fn_pattern, det_shape=det_shape, mode=mode)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')
         np.save(fn_out, result)

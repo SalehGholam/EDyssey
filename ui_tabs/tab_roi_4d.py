@@ -523,12 +523,9 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas = FigureCanvas(self.figure)
         layout_canvas.addWidget(self.canvas)
         
-        # 2x2 grid (was a single row of 3) - added a 4th axis (ax_virtual)
-        # for "Compute Virtual Image" (see #%% Virtual Imaging above).
-        self.ax_nav = self.figure.add_subplot(221)
-        self.ax_nav_roi = self.figure.add_subplot(222)
-        self.ax_dp = self.figure.add_subplot(223)
-        self.ax_virtual = self.figure.add_subplot(224)
+        self.ax_nav = self.figure.add_subplot(131)
+        self.ax_nav_roi = self.figure.add_subplot(132)
+        self.ax_dp = self.figure.add_subplot(133)
 
 # =============================================================================
 #         gs = gridspec.GridSpec(2, 2, height_ratios=[1, 2], width_ratios=[1, 1])  # Top row: equal, bottom: double height
@@ -595,34 +592,28 @@ class Tab_ROI_on_4D(TabBase):
 
         #%% ribbon
         # Docked along the right edge (see layout_right_outer above) - an
-        # additional click-driven way to reach the same actions already
-        # available via Ctrl/Shift-click on the canvas (see on_press) and
-        # the buttons in the left panel; none of those are removed or
-        # changed by this. 'select_roi'/'add_point' are the only two tool
-        # modes on_press actually checks (see RibbonPanel.active_tool
-        # there) - everything else here is a one-shot action wired straight
-        # to the method/button it duplicates.
+        # additional way to reach the same canvas interactions already
+        # available via Ctrl/Shift-click (see on_press) and matplotlib's own
+        # toolbar (below); deliberately does NOT duplicate the left panel's
+        # buttons (Segment Image, Clear Points/ROI, ...), only actions that
+        # act directly on the plot itself. 'select_roi'/'add_point' are the
+        # only two tool modes on_press actually checks (see
+        # RibbonPanel.active_tool there).
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on the Nav. Image to draw a '
-                      'new ROI (also usable as a SAM2 box prompt)\n(same as holding Ctrl and dragging)',
-                      'tool'),
-            RibbonTool('add_point', '+/− Pt', 'Add SAM2 point: click on the Nav. Image '
+            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav. Image to '
+                      'draw a new ROI (also usable as a SAM2 box prompt)\n'
+                      '(same as holding Ctrl and dragging)', 'tool'),
+            RibbonTool('add_point', 'add_point', 'Add SAM2 point: click on the Nav. Image '
                       '(left = positive, right = negative)\n(same as holding Shift and clicking)',
                       'tool'),
-            RibbonTool('sep1', kind='separator'),
-            RibbonTool('remove_point', 'Undo\nPt', 'Remove last SAM2 point (same as middle-click)',
+            RibbonTool('remove_point', 'remove_point', 'Remove last SAM2 point (same as middle-click)',
                       'action', self.delete_last_seg_point),
-            RibbonTool('clear_points', 'Clear\nPts', 'Clear all SAM2 points', 'action',
-                      self.clear_seg_points),
-            RibbonTool('clear_roi', 'Clear\nROI', 'Clear the drawn ROI', 'action', self.clear_roi),
-            RibbonTool('segment', 'Seg-\nment', 'Run SAM2 segmentation (same as "Segment Image")',
-                      'action', self.button_segment_image.click),
-            RibbonTool('sep2', kind='separator'),
-            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
-            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
                       'action', self.toolbar.zoom),
-            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+            RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(
@@ -1045,8 +1036,6 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display['dp'] = self.ax_dp.imshow(img_temp, cmap='inferno')
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
 
-        self.img_display['virtual'] = self.ax_virtual.imshow(img_temp, cmap='viridis')
-
         # SAM2 segmentation mask overlay, drawn on top of a crop of the nav
         # image in the "ROI Image" axis (show_seg_mask() re-targets nav_roi's
         # own image + view to that crop, then this sits on top of it).
@@ -1057,8 +1046,6 @@ class Tab_ROI_on_4D(TabBase):
         self.ax_nav.set_title('Nav. Image')
         self.ax_nav_roi.set_title('ROI Image')
         self.ax_dp.set_title('Dif. Pattern')
-        self.ax_virtual.set_title('Virtual Image')
-        self.ax_virtual.set_axis_off()
 
         self.ax_nav_roi.set_axis_off()
         # ax_nav/ax_dp keep their x-axis label visible (for the interaction
@@ -1090,8 +1077,6 @@ class Tab_ROI_on_4D(TabBase):
             self.img_display['nav_roi'], ax=self.ax_nav_roi, fraction=0.046, pad=0.04)
         self.colorbars['dp'] = self.figure.colorbar(
             self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
-        self.colorbars['virtual'] = self.figure.colorbar(
-            self.img_display['virtual'], ax=self.ax_virtual, fraction=0.046, pad=0.04)
 
         # self.figure.tight_layout()
 
@@ -1103,9 +1088,7 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display['nav'].set_data(img_temp)
         self.img_display['nav_roi'].set_data(img_temp)
         self.img_display['dp'].set_data(img_temp)
-        self.img_display['virtual'].set_data(img_temp)
         self.ax_nav_roi.set_title('ROI Image')
-        self.ax_virtual.set_title('Virtual Image')
         self.clear_seg_points()
         self.clear_roi()
         for artist in self._vi_mask_artists:
@@ -1336,11 +1319,16 @@ class Tab_ROI_on_4D(TabBase):
             self.canvas.draw_idle()
             return
         detectors = self.get_active_virtual_detectors()
-        # Dashed/grey once detectors have actually been added to the list
-        # (all of them are then in play together); solid/red while still
-        # just previewing the live spinbox values.
-        style = (dict(fill=False, edgecolor='0.7', linestyle='--') if self._extra_detectors_vi
-                else dict(fill=False, edgecolor='r', linestyle='-'))
+        # Dashed/magenta once detectors have actually been added to the list
+        # (all of them are then in play together); solid/lime while still
+        # just previewing the live spinbox values - matching the Navigator
+        # tab's color choice for its own detector overlay (see
+        # Tab_Create_NavSignal.update_mask_overlay): red reads poorly
+        # against the DP axis's inferno colormap, whose brightest values are
+        # themselves yellow/orange/red near the direct beam, exactly where
+        # a virtual detector ring usually sits.
+        style = (dict(fill=False, edgecolor='magenta', linestyle='--') if self._extra_detectors_vi
+                else dict(fill=False, edgecolor='lime', linestyle='-'))
         for detector in detectors:
             cx, cy = detector['center']
             circle_out = patches.Circle((cx, cy), detector['r_out'], **style)
@@ -1375,16 +1363,13 @@ class Tab_ROI_on_4D(TabBase):
         self.threadpool.start(worker)
 
     def _on_virtual_image_computed(self, img):
+        """A virtual image IS a navigation image (just possibly computed
+        with a non-default mode/mask instead of "Load Signal"'s plain
+        whole-detector sum) - reuse image_handler() so it replaces
+        self.navImg/the "Nav. Image" panel exactly like Load Signal does,
+        rather than showing up as a separate plot."""
         self.button_computeVirtualImage.setEnabled(True)
-        self.button_cancel.setDisabled(True)
-        self.img_display['virtual'].set_data(img)
-        self.img_display['virtual'].set_clim(vmin=img.min(), vmax=img.max())
-        shape_y, shape_x = img.shape
-        self.img_display['virtual'].set_extent([0, shape_x, shape_y, 0])
-        self.ax_virtual.set_xlim(0, shape_x)
-        self.ax_virtual.set_ylim(shape_y, 0)
-        self.ax_virtual.set_title(f'Virtual Image ({self.combo_virtualMode.currentText()})')
-        self.canvas.draw_idle()
+        self.image_handler(img)
         self.logger.info('Virtual image computed successfully.')
 
     def _on_virtual_image_failed(self, traceback_text):

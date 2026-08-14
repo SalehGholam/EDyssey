@@ -102,6 +102,56 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
     nav_image = vstem.get_image()
     return nav_image
 
+def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
+                                    offset=None, repetitions=1, fn_pattern=None, logger=None,
+                                    n_threads=None, det_shape=(512, 512)):
+    """Compute a per-scan-position variance image from a .tpx3 file using
+    eventem's Var processor - the variance-mode counterpart of
+    calculate_nav_img_tpx3's vSTEM-based sum.
+
+    Unlike vSTEM, eventem.Var only supports a single annular (or full-disk)
+    region per run - its inner_radius/outer_radius/offset are scalars/one
+    (x, y) pair, not the lists vSTEM's inner_radia/outer_radia/set_offsets
+    take for combining several virtual detectors into one pass. That's not
+    just an API gap: variance over the union of several disjoint regions
+    isn't the sum of their individual variances the way a vSTEM signal is,
+    so there's no single well-defined "combined" result to compute here
+    even in principle - callers combining several detectors for variance
+    mode need to call this once per detector instead.
+
+    Args mirror calculate_nav_img_tpx3 (see its docstring), except r_in/
+    r_out/offset here are a single scalar/scalar/(x, y) pair rather than
+    lists.
+
+    Returns:
+        numpy.ndarray of shape (ny, nx) with float values.
+    """
+    var = eventem.Var(repetitions)
+    if n_threads is not None:
+        var.n_threads = n_threads
+    var.b_cumulative = True
+    var.set_file(fn)
+    var.nx = scanSize[0]
+    var.ny = scanSize[1]
+    # See calculate_nav_img_tpx3's identical guard - only applied when it
+    # differs from what eventem itself already reports, since a genuine
+    # mismatch segfaults .run() instead of gracefully reshaping/cropping.
+    if det_shape != (var.detector_size_x, var.detector_size_y):
+        var.detector_size_x, var.detector_size_y = det_shape
+    var.inner_radius = r_in
+    var.outer_radius = r_out
+    var.set_dwell_time(dwellTime*1000)
+    if fn_pattern:
+        var.set_pattern_file(fn_pattern)
+    if offset:
+        # (x, y) -> [y, x]: matches the flip calculate_nav_img_tpx3 applies
+        # for vSTEM's set_offsets, which this single-detector set_offset is
+        # the Var-processor equivalent of.
+        var.set_offset([offset[1], offset[0]])
+    with redirect_console_to_logger(logger, 'Loading tpx3'):
+        var.run()
+    return var.Var_image
+
 def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
     """Return a navigation image from an .hdf5 file.
 
@@ -198,10 +248,11 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
         mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
-            docstring. `.tpx3` has no variance path (eventem's vSTEM only
-            accumulates a running sum); `.dm2`/`.dm3`/`.tif`/`.tiff` are
-            already single 2D images with no per-position frame to take a
-            variance over. Both raise ValueError for mode='variance'.
+            docstring. `.tpx3`'s variance path runs eventem's Var processor
+            (see calculate_nav_img_variance_tpx3) over the whole detector.
+            `.dm2`/`.dm3`/`.tif`/`.tiff` are already single 2D images with
+            no per-position frame to take a variance over - raises
+            ValueError for mode='variance' there.
 
     Returns:
         numpy.ndarray of shape (ny, nx) representing the navigation image.
@@ -217,12 +268,13 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         nav_img = calculate_nav_img_hs(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype == '.tpx3':
         if mode == 'variance':
-            raise ValueError(
-                "Variance-mode virtual imaging is not supported for .tpx3 files - "
-                "eventem's vSTEM only computes a running sum over frames.")
-        nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
-                                         logger=logger, n_threads=n_threads,
-                                         det_shape=det_shape)
+            nav_img = calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
+                                                       logger=logger, n_threads=n_threads,
+                                                       det_shape=det_shape)
+        else:
+            nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
+                                             logger=logger, n_threads=n_threads,
+                                             det_shape=det_shape)
     elif dtype == '.hdf5':
         nav_img = calculate_nav_img_hdf5(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
@@ -301,8 +353,10 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
         mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
-            docstring. Not available for `.tpx3` (eventem's vSTEM only sums);
-            raises ValueError there.
+            docstring. For `.tpx3` in variance mode, exactly one detector is
+            required (see calculate_nav_img_variance_tpx3 - eventem's Var
+            processor, unlike vSTEM, has no way to combine several regions
+            into one pass); raises ValueError for more than one.
 
     Returns:
         numpy.ndarray of shape (ny, nx).
@@ -316,9 +370,19 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
 
     if dtype == '.tpx3':
         if mode == 'variance':
-            raise ValueError(
-                "Variance-mode virtual imaging is not supported for .tpx3 files - "
-                "eventem's vSTEM only computes a running sum over frames.")
+            if len(detectors) != 1:
+                raise ValueError(
+                    f"Variance-mode virtual imaging on .tpx3 files supports exactly one "
+                    f"virtual detector at a time (got {len(detectors)}) - eventem's Var "
+                    "processor has no equivalent of vSTEM's multi-detector combining, and "
+                    "variance over the union of several regions isn't the sum of their "
+                    "individual variances anyway. Remove all but one detector, or switch "
+                    "Mode back to Sum.")
+            det = detectors[0]
+            return calculate_nav_img_variance_tpx3(
+                fn, scanSize, dwellTime, r_in=det.get('r_in', 0), r_out=det['r_out'],
+                offset=det['center'], fn_pattern=fn_pattern, logger=logger,
+                n_threads=n_threads, det_shape=det_shape)
         # eventem's vSTEM sums several detectors natively - no mask array
         # needed, just per-detector radius/center lists (see
         # calculate_nav_img_tpx3's docstring for why `offset` here is

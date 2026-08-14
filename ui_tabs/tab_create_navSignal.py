@@ -494,11 +494,25 @@ class Tab_Create_NavSignal(TabBase):
         layout_mask = qtw.QVBoxLayout()
         self.box_mask.setLayout(layout_mask)
 
+        layout_mask_mode = qtw.QHBoxLayout()
+        layout_mask.addLayout(layout_mask_mode)
         self.checkbox_useMask = qtw.QCheckBox('Use Virtual Mask')
-        layout_mask.addWidget(self.checkbox_useMask)
+        layout_mask_mode.addWidget(self.checkbox_useMask)
         self.checkbox_useMask.setToolTip(
             'When checked, the navigation image sums each diffraction pattern only '
             'within the annular region below, instead of the whole detector')
+        label_virtualMode = qtw.QLabel('Mode')
+        layout_mask_mode.addWidget(label_virtualMode)
+        self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.addItems(['Sum', 'Variance'])
+        self.combo_virtualMode.setToolTip(
+            'Sum: total scattered intensity per scan position (standard vSTEM, '
+            'the previous/default behavior). Variance: variance of intensities per '
+            'scan position instead - highlights local structural variation (e.g. '
+            'amorphous vs. crystalline regions) rather than total dose. Not '
+            'available for .tpx3 files.')
+        layout_mask_mode.addWidget(self.combo_virtualMode)
+        layout_mask_mode.addStretch(1)
 
         # Each row here holds at most one long-label button - a long label
         # can't shrink below its text's natural width (no eliding on
@@ -732,34 +746,29 @@ class Tab_Create_NavSignal(TabBase):
         layout_canvas.addWidget(self.toolbar)
 
         #%% ribbon
-        # Docked along the right edge - an additional click-driven way to
-        # reach actions already available via Ctrl-click/drag on the canvas
-        # (see on_press_navsig) and the buttons in the left panel; none of
-        # those are removed or changed by this. 'select_roi' is the only
-        # tool mode on_press_navsig actually checks (see
-        # RibbonPanel.active_tool there) - everything else is a one-shot
-        # action wired straight to the method/button it duplicates. The
-        # virtual-detector mask drag (on_press_mask) isn't exposed here -
-        # it's a spinbox/drag hybrid rather than a simple click tool, so it
-        # keeps working exactly as before, only via Ctrl+drag on the
-        # Summed DP preview.
+        # Docked along the right edge - an additional way to reach the same
+        # canvas interactions already available via Ctrl-click/drag (see
+        # on_press_navsig) and matplotlib's own toolbar (below);
+        # deliberately does NOT duplicate the left panel's buttons (Compute
+        # Summed DP, Add Detector, ...), only actions that act directly on
+        # the plot itself. 'select_roi' is the only tool mode
+        # on_press_navsig actually checks (see RibbonPanel.active_tool
+        # there). The virtual-detector mask drag (on_press_mask) isn't
+        # exposed here - it's a spinbox/drag hybrid rather than a simple
+        # click tool, so it keeps working exactly as before, only via
+        # Ctrl+drag on the Summed DP preview.
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on the Nav./Test Image to draw '
-                      'a scan-space ROI (for "Summed DP from ROI")\n(same as holding Ctrl and dragging)',
-                      'tool'),
-            RibbonTool('sep1', kind='separator'),
-            RibbonTool('clear_roi', 'Clear\nROI', 'Clear the drawn scan-space ROI (same as right-click)',
+            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav./Test Image '
+                      'to draw a scan-space ROI (for "Summed DP from ROI")\n'
+                      '(same as holding Ctrl and dragging)', 'tool'),
+            RibbonTool('clear_roi', 'clear_roi', 'Clear the drawn scan-space ROI (same as right-click)',
                       'action', self.clear_navsig_roi),
-            RibbonTool('compute_dp', 'Sum\nDP', 'Compute Summed DP (find the detector center)',
-                      'action', self.button_computeSumDp.click),
-            RibbonTool('add_detector', 'Add\nDetector', 'Add the current virtual detector to the list',
-                      'action', self.button_addDetector.click),
-            RibbonTool('sep2', kind='separator'),
-            RibbonTool('pan', 'Pan', 'Toggle pan mode (same as the toolbar below)',
+            RibbonTool('sep1', kind='separator'),
+            RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
-            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
                       'action', self.toolbar.zoom),
-            RibbonTool('home', 'Home', 'Reset the view (same as the toolbar below)',
+            RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
                       'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(
@@ -1149,15 +1158,16 @@ class Tab_Create_NavSignal(TabBase):
         dwellTime = self._get_dwell_time_for(fn)
         fn_pattern = self._get_fn_pattern_for(fn)
         det_shape = self.get_detector_shape(fn)
-        self.logger.info('Testing navigation image for %s...', fn)
+        mode = self.combo_virtualMode.currentText().lower()
+        self.logger.info('Testing navigation image for %s (mode=%s)...', fn, mode)
         if self.checkbox_useMask.isChecked():
             worker = WorkerThread_General(
                 io.calculate_nav_img_masked, 0, fn, dtype=dtype, scanSize=scanSize,
-                dwellTime=dwellTime, detectors=self.get_active_detectors(),
+                dwellTime=dwellTime, detectors=self.get_active_detectors(), mode=mode,
                 logger=self.logger, fn_pattern=fn_pattern, det_shape=det_shape)
         else:
             worker = WorkerThread_General(io.calculate_nav_img, 0, fn, dtype=dtype,
-                                          scanSize=scanSize, dwellTime=dwellTime,
+                                          scanSize=scanSize, dwellTime=dwellTime, mode=mode,
                                           logger=self.logger, fn_pattern=fn_pattern,
                                           det_shape=det_shape)
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
@@ -1800,6 +1810,18 @@ class Tab_Create_NavSignal(TabBase):
             mask_params = detectors
             self.logger.info('Using %d virtual detector(s): %s', len(detectors), detectors)
 
+        mode = self.combo_virtualMode.currentText().lower()
+        if mode == 'variance' and dtype == '.tpx3' and mask_params is not None and len(mask_params) != 1:
+            self.logger.warning(
+                'Cannot start: Variance mode on .tpx3 files supports only one virtual detector '
+                '(%d configured).', len(mask_params))
+            qtw.QMessageBox.critical(self, 'Variance Mode Limitation',
+                f'Variance-mode virtual imaging on .tpx3 files supports exactly one virtual '
+                f'detector at a time (you have {len(mask_params)} in the list) - eventem\'s Var '
+                'processor has no equivalent of vSTEM\'s multi-detector combining. Remove all '
+                'but one detector, or switch Mode back to "Sum".')
+            return
+
         # Captured now (while these are all known) rather than re-derived at
         # save time, since "Save Results" can be clicked well after
         # "Calculate All" finishes - see _save_results_impl/metadata.json.
@@ -1815,6 +1837,7 @@ class Tab_Create_NavSignal(TabBase):
                 'detectors': [{'center': list(d['center']), 'r_in': d['r_in'], 'r_out': d['r_out']}
                              for d in mask_params] if mask_params else None,
             },
+            'mode': mode,
             'comment_txt_metadata_source': {
                 'path': self.metadata_path_override or self.path_main,
                 'block': self.spinbox_metadataCount.value(),
@@ -1841,7 +1864,8 @@ class Tab_Create_NavSignal(TabBase):
 
         self.button_cancel.setEnabled(True)
         self.button_save_results.setDisabled(True)
-        self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params, fns_pattern)
+        self.create_navigation_signal(fns, dtype, scanSize, dwellTime, mask_params, fns_pattern,
+                                      mode=mode)
 
     def _resolve_smart_scan_fns(self):
         """Resolve the ordered (fns, dtype, fns_pattern, rows) to use for
@@ -1884,7 +1908,7 @@ class Tab_Create_NavSignal(TabBase):
         return fns, dtype, fns_pattern, resolved
 
     def create_navigation_signal(self, fns, dtype, scanSize, dwellTime, mask_params=None,
-                                 fns_pattern=None):
+                                 fns_pattern=None, mode='sum'):
         """Queue one nav-image task per file and launch the first batch of
         worker processes (up to spinbox_cpuCores), to be drained one at a
         time by launch_next_nav_task/handle_finished_nav."""
@@ -1909,7 +1933,7 @@ class Tab_Create_NavSignal(TabBase):
         for i, fn in enumerate(fns):
             fn_pattern = fns_pattern[i] if fns_pattern is not None else None
             self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params, fn_pattern,
-                              det_shape))
+                              det_shape, mode))
         self.running_processes = []
         self.process_task_map = {}
         self.process_output_buffers = {}
@@ -1923,17 +1947,18 @@ class Tab_Create_NavSignal(TabBase):
         wiring up its output/finished/error signals."""
         if not self.tasks or len(self.running_processes) >= self.max_processes:
             return
-        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern, det_shape = \
+        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern, det_shape, mode = \
             self.tasks.popleft()
         scanSize_str = str(scanSize) if scanSize is not None else 'None'
         args = [fn, dtype, scanSize_str, str(dwellTime), str(i_index), self._navimg_temp_dir]
-        # detectors_json/fn_pattern/det_shape are always appended together
-        # (even as 'None'/'' sentinels) so each lands in its correct
-        # positional slot in calculate_nav_img_worker's signature in
+        # detectors_json/fn_pattern/det_shape/mode are always appended
+        # together (even as 'None'/'' sentinels) so each lands in its
+        # correct positional slot in calculate_nav_img_worker's signature in
         # worker_nav_img.py, regardless of which are actually in use.
         args += [json.dumps(mask_params) if mask_params is not None else 'None']
         args += [fn_pattern or '']
         args += [str(det_shape)]
+        args += [mode]
         program, arguments = worker_command('nav_img', args)
         process = QProcess()
         process.setProgram(program)

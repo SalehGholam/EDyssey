@@ -45,6 +45,13 @@ from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
 
+# Version is a plain "last updated" timestamp (YYYY-MM-DD HH:MM, local time)
+# rather than a semantic x.y.z number - update this whenever a user-facing
+# change is made anywhere in the app, so Help > About always reflects how
+# current the running build actually is. Shown directly in the Help menu
+# and repeated in the About dialog.
+APP_VERSION = '2026-08-14 12:09'
+
 #%% window
 class MainWindow(qtw.QMainWindow):
     def __init__(self):
@@ -88,6 +95,14 @@ class MainWindow(qtw.QMainWindow):
         self._primary_tabs = set(self._all_tabs)
 
         self.tabs.setTabsClosable(True)
+        # setTabsClosable(True) adds a close ("x") button to every tab that
+        # exists right now, and to every one added afterward - the 4
+        # original tabs shouldn't offer one (see _on_tab_close_requested,
+        # which refuses to close them anyway), so it's stripped back off
+        # just for these 4 indices; duplicates added later keep theirs.
+        for i in range(self.tabs.count()):
+            self.tabs.tabBar().setTabButton(i, qtw.QTabBar.RightSide, None)
+            self.tabs.tabBar().setTabButton(i, qtw.QTabBar.LeftSide, None)
         self.tabs.tabCloseRequested.connect(self._on_tab_close_requested)
         self._build_menu()
 
@@ -196,6 +211,9 @@ class MainWindow(qtw.QMainWindow):
         action_exit.triggered.connect(self.close)
 
         menu_help = self.menuBar().addMenu('&Help')
+        action_version = menu_help.addAction(f'Version {APP_VERSION}')
+        action_version.setEnabled(False)  # informational only, not clickable
+        menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
 
@@ -250,7 +268,8 @@ class MainWindow(qtw.QMainWindow):
 
     def show_about_dialog(self):
         qtw.QMessageBox.about(self, 'About EDyssey',
-            'EDyssey\n\n4D-STEM acquisition, navigation, and tracking toolkit.')
+            f'EDyssey\nVersion {APP_VERSION}\n\n'
+            '4D-STEM acquisition, navigation, and tracking toolkit.')
 
     def closeEvent(self, event):
         for tab in self._all_tabs:

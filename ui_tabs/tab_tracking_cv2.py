@@ -824,33 +824,27 @@ class Tab_Tracking_CV2(TabBase):
         self.toolbar_extract = NavigationToolbar(self.canvas_extract, self)
 
         #%% ribbon
-        # Docked along the right edge - an additional click-driven way to
-        # reach actions already available via Ctrl-click/drag on canvas_nav
-        # (see on_press) and the buttons in the left panel; none of those
-        # are removed or changed by this. 'select_roi' is the only tool
-        # mode on_press actually checks (see RibbonPanel.active_tool
-        # there) - it covers both a new ROI (on ax_nav) and a ROI-in-ROI
-        # (on ax_track), same as Ctrl+drag already does on each. Everything
-        # else here is a one-shot action wired straight to the button it
-        # duplicates. Pan/Zoom/Home act on canvas_nav (where ROI selection
-        # happens) - canvas_extract keeps its own toolbar_extract below it.
+        # Docked along the right edge - an additional way to reach the same
+        # canvas interactions already available via Ctrl-click/drag on
+        # canvas_nav (see on_press) and matplotlib's own toolbar_nav;
+        # deliberately does NOT duplicate the left panel's buttons (Track!,
+        # Extract All, Save Results, ...), only actions that act directly on
+        # the plot itself. 'select_roi' is the only tool mode on_press
+        # actually checks (see RibbonPanel.active_tool there) - it covers
+        # both a new ROI (on ax_nav) and a ROI-in-ROI (on ax_track), same as
+        # Ctrl+drag already does on each. Pan/Zoom/Home act on canvas_nav
+        # (where ROI selection happens) - canvas_extract keeps its own
+        # toolbar_extract below it.
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', '▭ ROI', 'Select ROI: click+drag on Nav./Tracking Results to draw '
-                      'a new ROI (or ROI-in-ROI, on the right axis)\n'
+            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on Nav./Tracking Results '
+                      'to draw a new ROI (or ROI-in-ROI, on the right axis)\n'
                       '(same as holding Ctrl and dragging)', 'tool'),
             RibbonTool('sep1', kind='separator'),
-            RibbonTool('track', 'Track', 'Run tracking (same as "Track!")', 'action',
-                      self.button_track.click),
-            RibbonTool('extract', 'Extract\nAll', 'Extract all diffraction patterns (same as "Extract All")',
-                      'action', self.button_3ded.click),
-            RibbonTool('save', 'Save', 'Save results (same as "Save Results")', 'action',
-                      self.button_save_results.click),
-            RibbonTool('sep2', kind='separator'),
-            RibbonTool('pan', 'Pan', 'Toggle pan mode on the Nav./Tracking canvas',
+            RibbonTool('pan', 'pan', 'Toggle pan mode on the Nav./Tracking canvas',
                       'action', self.toolbar_nav.pan),
-            RibbonTool('zoom', 'Zoom', 'Toggle rectangle-zoom mode on the Nav./Tracking canvas',
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode on the Nav./Tracking canvas',
                       'action', self.toolbar_nav.zoom),
-            RibbonTool('home', 'Home', 'Reset the Nav./Tracking canvas view',
+            RibbonTool('home', 'home', 'Reset the Nav./Tracking canvas view',
                       'action', self.toolbar_nav.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(

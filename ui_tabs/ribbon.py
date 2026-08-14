@@ -1,19 +1,99 @@
 # -*- coding: utf-8 -*-
 """Shared vertical icon-strip ("ribbon") widget docked to the right of each
-tab's canvas - an additional, click-driven entry point for the same actions
-already reachable via Ctrl/Shift-click and keyboard modifiers on the canvas
-itself (see each tab's on_press/on_click handlers). Existing modifier-key
-interactions are left untouched; a ribbon "tool" button only changes what a
-*plain* click/drag on the canvas does, by setting `active_tool`, which each
-tab's mouse handlers additionally check alongside their existing modifier
-checks. No bundled icon set exists in this repo yet (see ui_tabs/logo/, just
-the app icon/splash) - buttons use short Unicode glyphs/text instead of
-image icons, kept deliberately simple rather than blocking this on artwork.
+tab's canvas - an additional entry point for interacting with the plot
+itself (pan/zoom/select/point-placement), alongside the Ctrl/Shift-click
+modifiers already used for the same actions on the canvas (see each tab's
+on_press/on_click handlers). It deliberately does NOT duplicate buttons that
+already exist in each tab's left panel (Track, Save, Segment, ...) - only
+things that act directly on the subplot/canvas belong here.
+
+Icons: Pan/Zoom/Home reuse matplotlib's own bundled toolbar icons (the same
+images NavigationToolbar2QT itself shows on the toolbar strip below each
+canvas), so they read as the same action in both places. The handful of
+tools with no matplotlib equivalent (Select ROI, Add point, Remove point)
+are drawn on the fly with QPainter instead - this repo has no bundled icon
+set of its own (see ui_tabs/logo/, just the app icon/splash) to draw from.
 """
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional
+import matplotlib
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtCore import Qt, QSize, QPointF, QRectF, pyqtSignal
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
+
+_MPL_IMAGE_DIR = os.path.join(matplotlib.get_data_path(), 'images')
+_MPL_ICON_FILES = {
+    'pan': 'move.png',
+    'zoom': 'zoom_to_rect.png',
+    'home': 'home.png',
+}
+_ICON_COLOR = QColor('#f0f0f0')  # matches the app's light-on-dark theme
+_ICON_SIZE = 26
+
+
+def _mpl_icon(key):
+    path = os.path.join(_MPL_IMAGE_DIR, _MPL_ICON_FILES[key])
+    return QIcon(path) if os.path.isfile(path) else QIcon()
+
+
+def _drawn_icon(kind, size=_ICON_SIZE):
+    """Render a small QPainter-drawn icon for a tool with no matplotlib
+    equivalent - a light-colored glyph on a transparent background, so it
+    sits directly on the (dark) QToolButton surface like a normal icon."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(_ICON_COLOR)
+    pen.setWidthF(1.8)
+    painter.setPen(pen)
+    margin = size * 0.18
+    cx = cy = size / 2
+
+    if kind == 'select_roi':
+        # A dashed selection-marquee rectangle.
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
+    elif kind == 'add_point':
+        # A target/crosshair - a circle with a small "+" at its center.
+        r = size / 2 - margin
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        d = r * 0.5
+        painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
+        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+    elif kind == 'remove_point':
+        # The same target, minus the "+" (a plain ring reads as "undo the
+        # last point placed" paired with add_point's filled crosshair).
+        r = size / 2 - margin
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        d = r * 0.5
+        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+    elif kind == 'clear_roi':
+        # A selection rectangle crossed out - "remove the current selection".
+        painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
+        painter.drawLine(QPointF(margin, margin), QPointF(size - margin, size - margin))
+        painter.drawLine(QPointF(size - margin, margin), QPointF(margin, size - margin))
+    else:
+        raise ValueError(f'Unknown drawn-icon kind {kind!r}')
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+_DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi'}
+
+
+def build_icon(key):
+    """QIcon for ribbon icon key `key` - one of _MPL_ICON_FILES' keys
+    (reuses matplotlib's bundled toolbar images) or _DRAWN_ICON_KINDS (hand
+    -drawn via QPainter, see _drawn_icon)."""
+    if key in _MPL_ICON_FILES:
+        return _mpl_icon(key)
+    if key in _DRAWN_ICON_KINDS:
+        return _drawn_icon(key)
+    raise ValueError(f'Unknown ribbon icon key {key!r}')
 
 
 @dataclass
@@ -22,8 +102,9 @@ class RibbonTool:
 
     id: Stable identifier - the value `RibbonPanel.active_tool` takes when
         this tool is selected (only meaningful for kind='tool').
-    label: Short glyph/text shown on the button.
-    tooltip: Full description shown on hover.
+    icon: Key into build_icon() - required for kind in ('tool', 'action').
+    tooltip: Full description shown on hover (the button itself shows only
+        the icon - see RibbonPanel).
     kind: 'tool' - checkable, mutually exclusive with every other 'tool' in
         the same panel; selecting it sets `active_tool` and stays pressed
         until another tool (or the same one again, to deselect) is clicked.
@@ -32,14 +113,15 @@ class RibbonTool:
     callback: Called with no arguments on click, for kind='action' only.
     """
     id: str
-    label: str = ''
+    icon: str = ''
     tooltip: str = ''
     kind: str = 'tool'
     callback: Optional[Callable[[], None]] = None
 
 
 class RibbonPanel(qtw.QWidget):
-    """Vertical strip of QToolButtons docked to the right of a tab's canvas.
+    """Vertical strip of icon QToolButtons docked to the right of a tab's
+    canvas.
 
     At most one 'tool' button is checked at a time; selecting one updates
     `active_tool` and emits toolChanged. Re-clicking the active tool's own
@@ -53,7 +135,7 @@ class RibbonPanel(qtw.QWidget):
         super().__init__(parent)
         self._active_tool = None
         self._tool_buttons = {}
-        self.setFixedWidth(64)
+        self.setFixedWidth(48)
         layout = qtw.QVBoxLayout(self)
         layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(3)
@@ -68,10 +150,11 @@ class RibbonPanel(qtw.QWidget):
                 continue
 
             btn = qtw.QToolButton()
-            btn.setText(tool.label)
+            btn.setIcon(build_icon(tool.icon))
+            btn.setIconSize(QSize(_ICON_SIZE, _ICON_SIZE))
+            btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
             btn.setToolTip(tool.tooltip)
-            btn.setFixedSize(56, 40)
-            btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            btn.setFixedSize(40, 36)
             layout.addWidget(btn)
 
             if tool.kind == 'tool':
@@ -106,7 +189,7 @@ class RibbonPanel(qtw.QWidget):
     def clear_active_tool(self):
         """Deselect whichever tool button is currently checked, if any -
         for callers that want a tool to stop being "armed" once its action
-        has fired (e.g. after Segment Image runs)."""
+        has fired."""
         if self._active_tool is None:
             return
         btn = self._tool_buttons.get(self._active_tool)
