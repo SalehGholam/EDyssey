@@ -12,7 +12,7 @@ import json
 from time import perf_counter
 from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess, QTimer)
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QIntValidator, QDoubleValidator, QKeySequence
+from PyQt5.QtGui import QDoubleValidator, QKeySequence
 from PyQt5.QtWidgets import QShortcut
 from matplotlib.colors import SymLogNorm
 import matplotlib.colors as mcolors
@@ -49,129 +49,128 @@ class Tab_ROI_on_4D(TabBase):
 
         #%% ribbon (top parameter ribbon, Word-style)
         # Replaces the old left parameter panel: one horizontal band across
-        # the top of the tab, made of compact groups (each a captioned
+        # the top of the tab, made of compact columns (each a captioned
         # cluster of controls - what used to be one QGroupBox) separated by
         # vertical lines, so the canvas below gets the tab's full width
         # instead of being squeezed to the right of a tall left column.
-        # No scrollbar and no leftover blank strip on the right: every group
-        # is horizontally Expanding and added with a stretch weight
-        # (roughly proportional to how much content it holds - see the
-        # `stretch=` argument at each _ribbon_group_start call below), so
-        # the groups themselves always divide up the tab's full width
-        # between them, wider ones getting more of it than narrow ones like
-        # Scale. The band's height is not fixed - it sizes itself to
-        # whichever group needs the most vertical space.
+        # Three columns total (down from the original seven): related
+        # groups that don't each need a full-height column of their own are
+        # stacked vertically inside one column instead, divided by HLine
+        # separators - see the Edge Detection/SAM2 Segmentation/Summed DP
+        # Threshold column below for the pattern. No scrollbar and no
+        # leftover blank strip on the right: every column is horizontally
+        # Expanding and added with a stretch weight (the `stretch=`
+        # argument at each _ribbon_group_start call below), so the columns
+        # always divide up the tab's full width between them. The band's
+        # height is not fixed - it sizes itself to whichever column needs
+        # the most vertical space, and should end up the same across tabs
+        # as long as each one's busiest column has a similar number of
+        # stacked rows.
         ribbon_page = qtw.QWidget()
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
         self.layout.addWidget(ribbon_page)
 
-        #%% directory (ribbon group: "File")
-        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=2)
+        #%% Experiment Info (ribbon group) - merges what used to be three
+        # separate groups (File, Input Parameters, Scale) into one column:
+        # 4D Signal/Smart Scan, then a QGridLayout for Detector
+        # Size/Scan Size/Dwell Time/Metadata (so their labels and X/Y value
+        # cells line up in columns instead of each row picking its own
+        # widths), then the Scale bars row.
+        self.box_dir, layout_exp = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        layout_dir_entry = qtw.QHBoxLayout()
-        layout_dir_entry.addWidget(qtw.QLabel('4D Signal'))
+        layout_file_entry = qtw.QHBoxLayout()
+        layout_file_entry.addWidget(qtw.QLabel('4D Signal'))
         self.lineEdit_dir_signal = qtw.QLineEdit()
-        self.lineEdit_dir_signal.setMinimumWidth(220)
-        layout_dir_entry.addWidget(self.lineEdit_dir_signal)
+        layout_file_entry.addWidget(self.lineEdit_dir_signal)
         self.lineEdit_dir_signal.textChanged.connect(lambda:self.enable_dwellTime_spinbox(
             self.lineEdit_dir_signal.text()))
 
         self.button_dir_navSignal = qtw.QPushButton('...')
-        layout_dir_entry.addWidget(self.button_dir_navSignal)
+        layout_file_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
-        layout_dir.addLayout(layout_dir_entry)
+        layout_exp.addLayout(layout_file_entry)
 
         # Smart-scan (pattern-file) acquisition support - lives here in
         # File rather than its own group, since it's really just another
         # attribute of the 4D signal being pointed at above.
-        layout_scanSize_row3 = qtw.QHBoxLayout()
+        layout_file_dir = qtw.QHBoxLayout()
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
             'This 4D signal is a smart-scanned (sparsely acquired) file - a pattern '
             'file is needed to reshape it correctly. See other_scripts/smart scanning '
             'guide/ for background on the format.')
-        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
+        layout_file_dir.addWidget(self.checkbox_smartScan)
         self.checkbox_smartScan.stateChanged.connect(self.activate_lineEdit_patternFile)
 
         self.lineEdit_patternFile = qtw.QLineEdit()
         self.lineEdit_patternFile.setPlaceholderText('Pattern file...')
         self.lineEdit_patternFile.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.lineEdit_patternFile)
+        layout_file_dir.addWidget(self.lineEdit_patternFile)
 
         self.button_browsePattern = qtw.QPushButton('...')
         self.button_browsePattern.setFixedWidth(30)
         self.button_browsePattern.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.button_browsePattern)
+        layout_file_dir.addWidget(self.button_browsePattern)
         self.button_browsePattern.clicked.connect(self.browse_pattern_file)
-        layout_dir.addLayout(layout_scanSize_row3)
-        self._ribbon_group_end(layout_ribbon, layout_dir, 'File')
+        layout_exp.addLayout(layout_file_dir)
 
-        #%% input parameters (ribbon group: "Input Parameters")
-        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=3)
-
-        # detector size (per side, in pixels) - Auto assumes 512x512. Kept
-        # first in this group (above Scan Size) since it's read/validated
-        # before the scan-space parameters below it.
-        layout_detSize = qtw.QHBoxLayout()
-        layout_detSize.addWidget(qtw.QLabel('Detector Size'))
+        # Detector Size / Scan Size / Dwell Time / Metadata all share one
+        # QGridLayout (9 columns) so their labels and X/Y value cells land
+        # in the same columns row-to-row, instead of each row's QHBoxLayout
+        # picking its own widths independently. Detector Size is read/
+        # validated before the scan-space parameters below it, so it's
+        # listed first.
+        layout_exp_items = qtw.QGridLayout()
+        layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
         detSize_tooltip = 'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.'
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
         self.checkbox_detectorSizeAuto.setChecked(True)
         self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
-        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        layout_exp_items.addWidget(self.checkbox_detectorSizeAuto, 0, 2)
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 0, 3)
         self.spinbox_detectorSize_x = qtw.QSpinBox()
-        self.spinbox_detectorSize_x.setFixedWidth(55)
-        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setRange(1, 10000)
         self.spinbox_detectorSize_x.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_x)
-        label_detSize_cross = qtw.QLabel('X')
-        layout_detSize.addWidget(label_detSize_cross)
+        layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
         self.spinbox_detectorSize_y = qtw.QSpinBox()
-        self.spinbox_detectorSize_y.setFixedWidth(55)
-        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setRange(1, 10000)
         self.spinbox_detectorSize_y.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_y)
-        layout_box_scanSize.addLayout(layout_detSize)
+        layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
+        layout_exp.addLayout(layout_exp_items)
         self.activate_detectorSize_spinboxes()
         self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
 
-        # Scan Size | Dwell Time - two different concepts sharing a row,
-        # so a small separator marks the boundary between them.
-        layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_scanSize_row1.addWidget(qtw.QLabel('Scan Size'))
+        # Scan Size (row 1 of the same grid)
+        layout_exp_items.addWidget(qtw.QLabel('Scan Size'), 1, 0, 1, 2)
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
+        layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
         self.checkbox_scanSize.setChecked(True)
 
-        self.lineEdit_scanSize_x = qtw.QLineEdit()
-        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
-        self.lineEdit_scanSize_x.setFixedWidth(40)
-        self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
+        self.spinbox_scanSize_x = qtw.QSpinBox()
+        layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
+        self.spinbox_scanSize_x.setRange(1, 10000)
 
-        label_cross = qtw.QLabel('X')
-        layout_scanSize_row1.addWidget(label_cross)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
+        self.spinbox_scanSize_y = qtw.QSpinBox()
+        layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
+        self.spinbox_scanSize_y.setRange(1, 10000)
 
-        self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
-        self.lineEdit_scanSize_y.setFixedWidth(40)
-        self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
-        self._ribbon_inline_separator(layout_scanSize_row1)
-        label_dwellTime = qtw.QLabel('Dwell (\u03BCs)')
-        layout_scanSize_row1.addWidget(label_dwellTime)
+        # Dwell Time (row 2 of the same grid)
+        layout_exp_items.addWidget(qtw.QLabel('Dwell (\u03BCs)'), 2, 0, 1, 2)
         self.spinbox_dwellTime = qtw.QSpinBox()
         self.spinbox_dwellTime.setFixedWidth(60)
         self.spinbox_dwellTime.setRange(1, 99999999)
         self.spinbox_dwellTime.setDisabled(True)
         self.spinbox_dwellTime.setToolTip('Dwell time in microseconds')
-        layout_scanSize_row1.addWidget(self.spinbox_dwellTime)
-        layout_box_scanSize.addLayout(layout_scanSize_row1)
+        layout_exp_items.addWidget(self.spinbox_dwellTime, 2, 2, 1, 2)
 
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
@@ -181,11 +180,9 @@ class Tab_ROI_on_4D(TabBase):
         # every tick of a contrast-slider drag. See _on_auto_center_toggled.
         self._dp_center_cache_key = None
 
-        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
-        # size/dwell time there, alongside the .tpx3 file itself. Load
-        # Metadata (an action) | Block # (a value) - different concepts
-        # sharing a row, so a small separator marks the boundary.
-        layout_scanSize_row2 = qtw.QHBoxLayout()
+        # Metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
+        # size/dwell time there, alongside the .tpx3 file itself (row 3 of
+        # the same grid: Load Metadata/Browse, then Block #).
         self.button_loadMetadata = qtw.QPushButton('Load Metadata')
         self.button_loadMetadata.setToolTip(
             'Fill Scan Size and Dwell Time (above) from a comment.txt file next to '
@@ -198,12 +195,17 @@ class Tab_ROI_on_4D(TabBase):
             'microseconds") - it\'s stripped automatically.\n\n'
             'If comment.txt logs more than one acquisition, separate each block '
             'with a blank line, then pick which one to read with Block # (right).')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        layout_exp_items.addWidget(self.button_loadMetadata, 3, 0, 1, 2)
         self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
-        self._ribbon_inline_separator(layout_scanSize_row2)
-        label_metadataCount = qtw.QLabel('Block #')
-        layout_scanSize_row2.addWidget(label_metadataCount)
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip(
+            'Browse for the metadata file (defaults to comment.txt next to the 4D signal)')
+        layout_exp_items.addWidget(self.button_browseMetadata, 3, 2, 1, 2)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+
+        layout_exp_items.addWidget(qtw.QLabel('Block #'), 3, 4)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
         self.spinbox_metadataCount.setRange(0, 99999)
@@ -216,35 +218,23 @@ class Tab_ROI_on_4D(TabBase):
         # file itself) for the newly-selected block as soon as the value
         # changes, instead of requiring an extra "Load Metadata" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
-        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_browseMetadata = qtw.QPushButton('...')
-        self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt next to the 4D signal)')
-        layout_scanSize_row2.addWidget(self.button_browseMetadata)
-        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
-        layout_box_scanSize.addLayout(layout_scanSize_row2)
+        layout_exp_items.addWidget(self.spinbox_metadataCount, 3, 5)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
-        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters')
 
-        #%% scale bars (ribbon group: "Scale") - Real, Recip., and
-        # Auto-center all share one line.
-        self.box_scale, layout_box_scale = self._ribbon_group_start(layout_ribbon, stretch=1)
-
+        # Scale bars - Real, Recip., and Auto-center all share one line,
+        # below the grid (not part of it - a differently-shaped row).
         layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
+        label_scaleReal = qtw.QLabel('Real (nm)')
+        label_scaleReal.setFixedWidth(50)
+        layout_scale_row.addWidget(label_scaleReal)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        self.lineEdit_scale_real.setFixedWidth(45)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self._ribbon_inline_separator(layout_scale_row)
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        layout_scale_row.addWidget(label_scale_recip)
+        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
-        self.lineEdit_scale_recip.setFixedWidth(45)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
 
         self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
@@ -255,13 +245,13 @@ class Tab_ROI_on_4D(TabBase):
             'every redraw. When unchecked, hold Ctrl and click on the '
             'diffraction pattern to set the center manually.')
         layout_scale_row.addWidget(self.checkbox_autoCenterDp)
-        layout_box_scale.addLayout(layout_scale_row)
+        layout_exp.addLayout(layout_scale_row)
         self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
         self.lineEdit_scale_recip.textChanged.connect(
             lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
         self.lineEdit_scale_real.textChanged.connect(
             lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
-        self._ribbon_group_end(layout_ribbon, layout_box_scale, 'Scale')
+        self._ribbon_group_end(layout_ribbon, layout_exp, 'Experiment Info')
 
         # Cancel itself is added inside the Virtual Imaging box below,
         # beside Compute Virtual Image (see #%% Virtual Imaging) - it's
@@ -278,12 +268,12 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
         #%% Virtual Imaging (ribbon group)
-        # Kept early (right after Input Parameters/Directories/Scale, where
-        # "Load Signal" used to sit) since "Compute Virtual Image" below is
-        # now this tab's only way to load a signal in the first place -
-        # Edge Detection/Summed DP Threshold/SAM2 Segmentation are all
-        # downstream, later-stage steps that need something loaded first.
-        self.box_virtualImaging, layout_virtualImaging = self._ribbon_group_start(layout_ribbon, stretch=5)
+        # Kept early (right after Experiment Info, where "Load Signal" used
+        # to sit) since "Compute Virtual Image" below is now this tab's
+        # only way to load a signal in the first place - Edge Detection/
+        # SAM2 Segmentation/Summed DP Threshold are all downstream,
+        # later-stage steps that need something loaded first.
+        self.box_virtualImaging, layout_virtualImaging = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
         self.checkbox_useVirtualMask.setToolTip(
@@ -371,14 +361,11 @@ class Tab_ROI_on_4D(TabBase):
         layout_vi_detectors.addWidget(self.list_detectors_vi)
         self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
 
-        # Center/Radius grid and the Detectors list now sit side by side
-        # (rather than stacked, as they were in the old narrow left-panel
-        # column) - two different concepts sharing a row (numeric geometry
-        # vs. a list of saved detectors), so a separator marks the boundary,
-        # same convention as elsewhere on this ribbon. This is the one
-        # group wide enough (stretch=5, the ribbon's largest) to make a
-        # side-by-side arrangement worthwhile instead of just leaving blank
-        # space below a full-width grid.
+        # Center/Radius grid and the Detectors list sit side by side (rather
+        # than stacked, as they were in the old narrow left-panel column) -
+        # two different concepts sharing a row (numeric geometry vs. a list
+        # of saved detectors), so a separator marks the boundary, same
+        # convention as elsewhere on this ribbon.
         layout_vi_middle = qtw.QHBoxLayout()
         layout_vi_middle.addLayout(grid_vi_geometry)
         self._ribbon_inline_separator(layout_vi_middle)
@@ -391,6 +378,9 @@ class Tab_ROI_on_4D(TabBase):
         # background job is running, so it sits right beside the button
         # that most commonly starts one.
         layout_vi_actions = qtw.QHBoxLayout()
+        layout_vi_actions_mode = qtw.QVBoxLayout()
+        layout_vi_actions.addLayout(layout_vi_actions_mode)
+        layout_vi_actions_mode.addWidget(qtw.QLabel('Mode'))
         self.combo_virtualMode = qtw.QComboBox()
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
@@ -399,8 +389,7 @@ class Tab_ROI_on_4D(TabBase):
             'variance of intensities per scan position instead - highlights local '
             'structural variation (e.g. amorphous vs. crystalline regions) rather '
             'than total dose.')
-        layout_vi_actions.addWidget(self.combo_virtualMode)
-        self._ribbon_inline_separator(layout_vi_actions)
+        layout_vi_actions_mode.addWidget(self.combo_virtualMode)
 
         self.button_computeVirtualImage = qtw.QPushButton('Compute\nVirtual Image')
         self.button_computeVirtualImage.setFixedHeight(50)
@@ -422,16 +411,26 @@ class Tab_ROI_on_4D(TabBase):
         self._vi_mask_artists = []
         self._ribbon_group_end(layout_ribbon, layout_virtualImaging, 'Virtual Imaging')
 
-        #%% edge detection (ribbon group: "Edge Detection")
-        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=2)
+        #%% Edge Detection / SAM2 Segmentation / Summed DP Threshold
+        # These three used to each be their own full-height ribbon column;
+        # they're now stacked vertically inside ONE column (box_edgeDetection)
+        # instead, each sub-section separated by an HLine and captioned on
+        # its own - a deliberate way to fit more, lower-priority/action-
+        # oriented groups into fewer ribbon columns. _ribbon_group_end() is
+        # called once per sub-section (all still targeting the same
+        # layout_edgeDetection), with `stretch=False` only for the very
+        # first one (Edge Detection - its controls should sit right above
+        # its caption, not be pushed down by addStretch) and
+        # `separator=False` for the second and third (no vertical-line
+        # ribbon separator needed between them - the HLine above already
+        # marks the boundary; only the group's outer edge needs one).
+        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         # The group caption ("Edge Detection") already says what this
         # toggle activates, so the checkbox itself just says "Activate".
         # Directional/Revert Mask (both toggles) and Kernel/Angle (both
-        # numeric) now all share one row instead of two - this group's
-        # stretch width (2) gives it enough room, and everything here is
-        # tightly related (they all only matter once Activate is checked),
-        # so a single row reads better than splitting it in two.
+        # numeric) all share one row - everything here is tightly related
+        # (they all only matter once Activate is checked).
         layout_edgeDetection_row = qtw.QHBoxLayout()
         self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
         self.checkbox_edgeOnly.setToolTip(
@@ -477,37 +476,34 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
         layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
         layout_edgeDetection.addLayout(layout_edgeDetection_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection')
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection',
+                               stretch=False, separator=False)
+        
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
 
-        #%% Summed DP from threshold (ribbon group)
-        self.box_sumDpThreshold, layout_sumDpThreshold = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
-        layout_sumDpThreshold.addWidget(self.button_sumDpFromThreshold)
-        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
-        self.button_sumDpFromThreshold.setToolTip(
-            'Open a window to check/adjust a real-space threshold on the loaded '
-            'navigation image, then sum diffraction patterns only at the scan '
-            'positions above it, instead of a rectangular ROI')
-        self._ribbon_group_end(layout_ribbon, layout_sumDpThreshold, 'Summed DP Threshold')
-
-        #%% SAM2 segmentation (ribbon group - last, no trailing separator)
-        self.box_segmentation, layout_segmentation = self._ribbon_group_start(layout_ribbon, stretch=1)
+        #%% SAM2 segmentation (stacked below Edge Detection in the same
+        # ribbon column - see the module-level note above _ribbon_group_end)
         layout_segmentation_row = qtw.QHBoxLayout()
 
         self.button_segment_image = qtw.QPushButton('Segment\nImage')
+        self.button_segment_image.setFixedHeight(50)
         layout_segmentation_row.addWidget(self.button_segment_image)
         self.button_segment_image.clicked.connect(self.segment_image)
         self.button_segment_image.setDisabled(True)
         self.button_segment_image.setToolTip('Run SAM2 on the points added below (Shift+Click)')
 
         self.button_clear_points = qtw.QPushButton('Clear\nPoints')
+        self.button_clear_points.setFixedHeight(50)
         layout_segmentation_row.addWidget(self.button_clear_points)
         self.button_clear_points.clicked.connect(self.clear_seg_points)
         self.button_clear_points.setDisabled(True)
         self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
 
         self.button_clear_roi = qtw.QPushButton('Clear\nROI/Box')
+        self.button_clear_roi.setFixedHeight(50)
         layout_segmentation_row.addWidget(self.button_clear_roi)
         self.button_clear_roi.clicked.connect(self.clear_roi)
         # Deactivated for now, at Saleh's request, pending his own review of
@@ -519,8 +515,28 @@ class Tab_ROI_on_4D(TabBase):
             'Temporarily deactivated - SAM2 no longer uses the drawn ROI as a box '
             'prompt (pending review). The ROI itself still works for diffraction-'
             'pattern extraction; draw a new one to replace it instead of clearing.')
-        layout_segmentation.addLayout(layout_segmentation_row)
-        self._ribbon_group_end(layout_ribbon, layout_segmentation, 'SAM2 Segmentation', separator=False)
+        layout_edgeDetection.addLayout(layout_segmentation_row)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', separator=False, stretch=True)
+        
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+        #%% Summed DP from threshold (stacked below SAM2 Segmentation, same column)
+        self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
+        layout_edgeDetection.addWidget(self.button_sumDpFromThreshold, alignment=Qt.AlignCenter)
+        self.button_sumDpFromThreshold.setFixedSize(140, 50)
+        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_sumDpFromThreshold.setToolTip(
+            'Open a window to check/adjust a real-space threshold on the loaded '
+            'navigation image, then sum diffraction patterns only at the scan '
+            'positions above it, instead of a rectangular ROI')
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Summed DP Threshold', separator=False, stretch=True)
+        
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
 
         #%% canvas layout (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -655,11 +671,11 @@ class Tab_ROI_on_4D(TabBase):
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
-            self.lineEdit_scanSize_x.setDisabled(True)
-            self.lineEdit_scanSize_y.setDisabled(True)
+            self.spinbox_scanSize_x.setDisabled(True)
+            self.spinbox_scanSize_y.setDisabled(True)
         else:
-            self.lineEdit_scanSize_x.setEnabled(True)
-            self.lineEdit_scanSize_y.setEnabled(True)
+            self.spinbox_scanSize_x.setEnabled(True)
+            self.spinbox_scanSize_y.setEnabled(True)
 
     def activate_detectorSize_spinboxes(self):
         auto = self.checkbox_detectorSizeAuto.isChecked()
@@ -686,8 +702,8 @@ class Tab_ROI_on_4D(TabBase):
         None if "Auto" is checked or the fields don't hold valid integers."""
         if not self.checkbox_scanSize.isChecked():
             try:
-                x = int(self.lineEdit_scanSize_x.text())
-                y = int(self.lineEdit_scanSize_y.text())
+                x = int(self.spinbox_scanSize_x.text())
+                y = int(self.spinbox_scanSize_y.text())
                 scanSize = (x,y)
             except ValueError:
                 scanSize = None
@@ -727,30 +743,25 @@ class Tab_ROI_on_4D(TabBase):
     
     def enable_dwellTime_spinbox(self, txt):
         """Enable the scan-size/dwell-time widgets only for .tpx3 files
-        (smart-scan controls live in the Directories box now and are
-        handled separately - see activate_lineEdit_patternFile()); auto-
-        loads metadata when enabling."""
+        (smart-scan controls live in the File box and are handled
+        separately - see activate_lineEdit_patternFile()); auto-loads
+        metadata when enabling."""
         enable = False
         if os.path.isfile(txt):
             dtype = os.path.splitext(txt)[1]
             if dtype == '.tpx3':
                 enable = True
-        # Metadata controls (Load Metadata/Browse/Block #) are excluded
-        # from this blanket tpx3-only enable/disable - comment.txt metadata
-        # applies to every format, not just .tpx3, and this loop used to
-        # silently disable them (including the "Load Metadata" button
-        # message_box_scan_size_required() itself tells the user to click)
-        # for any other format. Scale is its own ribbon group now (not
-        # nested inside Input Parameters), so it's simply never found by
-        # the findChildren() below and needs no explicit exemption.
-        metadata_widgets = (self.button_loadMetadata, self.button_browseMetadata,
-                            self.spinbox_metadataCount)
-        exempt_widgets = set(metadata_widgets)
-        for wid in self.box_scanSize.findChildren(qtw.QWidget):
-            if wid in exempt_widgets:
-                continue
+        # Explicit widget list rather than a findChildren() scan over the
+        # whole "Experiment Info" group - that group now also holds the 4D
+        # Signal/Smart Scan/Metadata/Scale controls (merged into one ribbon
+        # column), none of which should be tpx3-gated the way Detector
+        # Size/Scan Size/Dwell Time are.
+        scan_widgets = (self.checkbox_detectorSizeAuto, self.spinbox_detectorSize_x,
+                        self.spinbox_detectorSize_y, self.checkbox_scanSize,
+                        self.spinbox_scanSize_x, self.spinbox_scanSize_y,
+                        self.spinbox_dwellTime)
+        for wid in scan_widgets:
             wid.setEnabled(enable)
-            # print(e)
         self.checkbox_scanSize.setChecked(not enable)
         self.checkbox_scanSize.setDisabled(enable)
         # Attempted for every format, not just .tpx3 - comment.txt is
@@ -793,8 +804,8 @@ class Tab_ROI_on_4D(TabBase):
             if not metadata:
                 raise ValueError('comment.txt contained no parsable metadata')
             if 'scan size x' in metadata and 'scan size y' in metadata:
-                self.lineEdit_scanSize_x.setText(str(int(metadata['scan size x'])))
-                self.lineEdit_scanSize_y.setText(str(int(metadata['scan size y'])))
+                self.spinbox_scanSize_x.setValue(int(metadata['scan size x']))
+                self.spinbox_scanSize_y.setValue(int(metadata['scan size y']))
             if 'dwelltime' in metadata:
                 self.spinbox_dwellTime.setValue(int(metadata['dwelltime']))
             self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
@@ -847,7 +858,7 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self._refresh_edge_mask()
 
-    def _ribbon_group_start(self, layout_ribbon, stretch=1):
+    def _ribbon_group_start(self, layout_ribbon, stretch=1, width=None):
         """Start a new parameter-ribbon group (Word-ribbon style: a
         compact, borderless vertical stack of rows, captioned at the
         bottom) - replaces what used to be one QGroupBox in the old left
@@ -863,19 +874,24 @@ class Tab_ROI_on_4D(TabBase):
         leftover blank strip, no horizontal scrollbar, and busier groups
         (e.g. Virtual Imaging) end up wider than sparse ones (e.g. Scale)."""
         widget = qtw.QWidget()
-        widget.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Preferred)
+        if width:
+            widget.setFixedWidth(width)
+            widget.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+        else:
+            widget.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Preferred)
         layout_group = qtw.QVBoxLayout(widget)
         layout_group.setContentsMargins(6, 4, 6, 2)
         layout_group.setSpacing(3)
         layout_ribbon.addWidget(widget, stretch)
         return widget, layout_group
 
-    def _ribbon_group_end(self, layout_ribbon, layout_group, caption, separator=True):
+    def _ribbon_group_end(self, layout_ribbon, layout_group, caption, separator=True, stretch=True):
         """Finish a ribbon group: pin its rows to the top, add its caption
         label at the bottom (Word-ribbon style - small, muted, centered),
         then a vertical separator before the next group (skip for the
         last group in the ribbon - see `separator`)."""
-        layout_group.addStretch(1)
+        if stretch:
+            layout_group.addStretch(1)
         label = qtw.QLabel(caption)
         label.setAlignment(Qt.AlignHCenter)
         label.setStyleSheet('color: #999999; font-size: 8pt;')
