@@ -31,6 +31,7 @@ from .threshold_dialog import ThresholdDialog
 from .worker_thread import ProcessStderrBuffer
 from .worker_launch import worker_command
 from .ribbon import RibbonPanel, RibbonTool
+from .clipping_thresholds import ClippingThresholdsWidget
 from worker_extract_frame import load_dp
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
@@ -543,6 +544,17 @@ class Tab_ROI_on_4D(TabBase):
         layout_right_outer = qtw.QHBoxLayout(self._right_widget)
         layout_right_outer.setContentsMargins(0, 0, 0, 0)
         layout_right_outer.setSpacing(0)
+
+        # Clipping Thresholds (vertical vmin/vmax sliders, see
+        # ui_tabs/clipping_thresholds.py) sit directly beside the two edge
+        # subplots of the 3-subplot canvas below - Nav. Image is the
+        # leftmost subplot, Dif. Pattern the rightmost, so a narrow column
+        # on each side of the canvas ends up beside its matching axis. The
+        # middle "ROI Image" subplot doesn't get its own (main nav image
+        # only, matching the other tabs).
+        self.clip_nav = ClippingThresholdsWidget()
+        layout_right_outer.addWidget(self.clip_nav)
+
         self._canvas_container = qtw.QWidget()
         layout_right_outer.addWidget(self._canvas_container, 1)
         layout_canvas = qtw.QVBoxLayout(self._canvas_container)
@@ -590,34 +602,13 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas.mpl_connect('button_release_event', self.on_release)
         self.canvas.mpl_connect('motion_notify_event', self.on_motion)
         self.canvas.mpl_connect('scroll_event', self.on_scroll)
-        #%% slider layout
-        layout_slider = qtw.QHBoxLayout()
-        layout_canvas.addLayout(layout_slider)
-        
-        self.label_vmin = qtw.QLabel('vmin')
-        layout_slider.addWidget(self.label_vmin)
-        
-        self.slider_vmin = qtw.QSlider(self)
-        self.slider_vmin.setOrientation(1)  # Horizontal slider
-        self.slider_vmin.setRange(0,0)
-        layout_slider.addWidget(self.slider_vmin)
-        
-        self.label_vmax = qtw.QLabel('vmax')
-        layout_slider.addWidget(self.label_vmax)
-        
-        self.slider_vmax = qtw.QSlider(self)
-        self.slider_vmax.setOrientation(1)  # Horizontal slider
-        self.slider_vmax.setRange(0,0)
-        layout_slider.addWidget(self.slider_vmax)
-
-        self.slider_vmin.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
-        self.slider_vmax.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
-        
-        self.button_reset_slider = qtw.QPushButton('Reset Sliders')
-        layout_slider.addWidget(self.button_reset_slider)
-        self.button_reset_slider.clicked.connect(self.reset_sliders)
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
+
+        self.clip_dp = ClippingThresholdsWidget()
+        layout_right_outer.addWidget(self.clip_dp)
+        self.clip_nav.valueChanged.connect(lambda: self.update_canvas(ax='nav'))
+        self.clip_dp.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
 
         #%% ribbon
         # Docked along the right edge (see layout_right_outer above) - an
@@ -717,6 +708,7 @@ class Tab_ROI_on_4D(TabBase):
         self.navImg = result
         self.dp_center = None  # a new signal may have a different DP shape/center
         self._dp_center_cache_key = None
+        self.clip_nav.set_range(self.navImg.min(), self.navImg.max())
         self.update_canvas('nav')
         # Reset the view to the newly loaded image's full extent (in case
         # the user had already zoomed in on a previous signal, which
@@ -1073,21 +1065,18 @@ class Tab_ROI_on_4D(TabBase):
         # axis was previously showing - clear any leftover SAM2 mask overlay
         # so it doesn't linger on top of this unrelated crop.
         self.img_display['seg_mask'].set_data(np.zeros((512, 512, 4)))
-        self.update_slider_range()
-        self.slider_vmax.setValue(self.dp.max())
-        self.slider_vmin.setValue(1)
+        self._reset_dp_clip_range()
         self.update_canvas(roiUpdate=True)
         self.update_virtual_mask_overlay()
-    
-    def reset_sliders(self):
-        # Only the DP colormap's vmin/vmax change here - no need for
-        # roiUpdate=True (which refreshes the "ROI Image" panel from
-        # self.navImg_cut, only ever set by a rectangle-ROI DP calculation
-        # and not by the SAM2-mask/threshold DP paths).
-        self.slider_vmin.setValue(0)
-        self.slider_vmax.setValue(self.dp.max())
-        self.update_canvas()
-    
+
+    def _reset_dp_clip_range(self):
+        """(Re)anchor clip_dp's Clipping Thresholds to the freshly-loaded
+        self.dp's own range, starting at vmin=1 (not the data's true
+        minimum, usually 0) - matches this tab's long-standing convention
+        for the DP display specifically."""
+        self.clip_dp.set_range(self.dp.min(), self.dp.max())
+        self.clip_dp.slider_vmin.setValue(1)
+
     def _setup_canvas(self):
         """One-time creation of the image artists and their colorbars.
         reset_canvas() (called on every "Compute Virtual Image") only
@@ -1165,33 +1154,17 @@ class Tab_ROI_on_4D(TabBase):
         self._vi_mask_artists.clear()
         self.canvas.draw_idle()
 
-    def update_slider_range(self):
-        self.slider_vmin.setRange(0, int(self.dp.max()/2))
-        self.slider_vmax.setRange(1, self.dp.max())
-        self.slider_vmin.setSingleStep(1)
-        self.slider_vmax.setSingleStep(1)
-    
     def update_canvas(self, ax='dp', roiUpdate=False):
         """Refresh the 'dp' or 'nav' image display from current data -
         roiUpdate=True also refreshes the "ROI Image" crop. Scale bars and
         reciprocal-space circles are redrawn on every call regardless of
         `ax`."""
         if ax == 'dp':
-            vmax = self.slider_vmax.value()
-            self.label_vmax.setText(f'vmax: {vmax:.0f}')
-            vmin = self.slider_vmin.value()
-            if vmin >= vmax:
-                vmin = vmax - 1
-                self.slider_vmin.setValue(vmin)
-            self.label_vmin.setText(f'vmin: {vmin:.0f}')
-            
+            vmin, vmax = self.clip_dp.values()
             self.img_display['dp'].set_data(self.dp)
 
-            # self.img_display['dp'].set_clim(vmin, vmax)
-            # self.img_display['dp'].set_norm(SymLogNorm(linthresh=0.1, vmin=vmin, vmax=vmax))
             shape_x, shape_y = self.dp.shape
             self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
-            # self.img_display['dp'].set_clim(self.dp.min(), self.dp.max())
             self.img_display['dp'].set_clim(vmin, vmax)
             # ax_dp/ax_nav_roi show a per-ROI crop whose size varies with
             # each ROI selection, so (unlike ax_nav) their view is reset to
@@ -1210,10 +1183,11 @@ class Tab_ROI_on_4D(TabBase):
                 self.ax_nav_roi.set_ylim(shape_x, 0)
 
         elif ax == 'nav':
+            vmin, vmax = self.clip_nav.values()
             self.img_display['nav'].set_data(self.navImg)
             shape_x, shape_y = self.navImg.shape
             self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-            self.img_display['nav'].set_clim(vmin=self.navImg.min(), vmax=self.navImg.max())
+            self.img_display['nav'].set_clim(vmin=vmin, vmax=vmax)
         
         # scale bars
         #TODO adding and removing the artist is not efficient
@@ -1687,9 +1661,7 @@ class Tab_ROI_on_4D(TabBase):
     def get_dp_from_mask(self, dp):
         self.dp = dp
         self.ax_dp.set_title('DP (SAM2 Mask)')
-        self.update_slider_range()
-        self.slider_vmax.setValue(self.dp.max())
-        self.slider_vmin.setValue(1)
+        self._reset_dp_clip_range()
         self.update_canvas(ax='dp')
         self.update_virtual_mask_overlay()
 
@@ -1766,9 +1738,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setDisabled(True)
         self.dp = dp
         self.ax_dp.set_title('Summed DP (thresholded)')
-        self.update_slider_range()
-        self.slider_vmax.setValue(self.dp.max())
-        self.slider_vmin.setValue(1)
+        self._reset_dp_clip_range()
         self.update_canvas(ax='dp')
         self.update_virtual_mask_overlay()
 
