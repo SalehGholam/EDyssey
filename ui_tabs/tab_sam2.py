@@ -34,7 +34,8 @@ from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
-from .base_tab import TabBase, compute_left_panel_width, get_existing_directory, build_left_panel
+from .base_tab import TabBase, get_existing_directory
+from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
@@ -79,26 +80,24 @@ class Tab_SAM2(TabBase):
         self.setWindowTitle("SAM2 Segmentation")
         
         self.central_widget = qtw.QWidget(self)
-        self.layout = qtw.QHBoxLayout(self)
-        self._splitter = qtw.QSplitter(Qt.Horizontal)
-        self.layout.addWidget(self._splitter)
+        self.layout = qtw.QVBoxLayout(self)
 
         button_w = 95
         button_h_lrg = 50
-        # height_layout_top = 200
-        width_userInput = compute_left_panel_width()
 
-        # layout top
-        layout_userInput = build_left_panel(self._splitter, width_userInput)
-        #%% directory
-        self.box_dir = qtw.QGroupBox('Directories', self)
-        self.box_dir.setFixedHeight(225)
-        # self.box_dir.setFixedWidth(width_userInput)
-        layout_dir = qtw.QVBoxLayout()
-        # self.layout.addLayout(layout_dir)
-        layout_userInput.addWidget(self.box_dir)
-        self.box_dir.setLayout(layout_dir)
-        
+        #%% ribbon (top parameter ribbon, Word-style - see Tab_ROI_on_4D for
+        # the original design, and TabBase for the shared helpers). Same
+        # column shape as Tab_Tracking_CV2 (this tab's structure is nearly
+        # identical), minus the Threshold/Deviation rows SAM2 doesn't need.
+        ribbon_page = qtw.QWidget()
+        layout_ribbon = qtw.QHBoxLayout(ribbon_page)
+        layout_ribbon.setContentsMargins(4, 2, 4, 2)
+        layout_ribbon.setSpacing(2)
+        self.layout.addWidget(ribbon_page)
+
+        #%% Files (ribbon column)
+        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=1)
+
         # nav signal dir
         layout_dir_entry = qtw.QHBoxLayout()
         layout_dir.addLayout(layout_dir_entry)
@@ -169,14 +168,13 @@ class Tab_SAM2(TabBase):
         self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg)
         layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
+        self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
 
-        #%% box input parameters (scan dims, scale bars, detector size, dwell
-        # time, metadata block - everything needed to extract DPs for 3DED,
-        # except smart-scan-specific inputs, which get their own box below)
-        self.box_scanSize = qtw.QGroupBox('Input Parameters')
-        layout_box_scanSize = qtw.QVBoxLayout()
-        self.box_scanSize.setLayout(layout_box_scanSize)
-        layout_userInput.addWidget(self.box_scanSize)
+        #%% Input Parameters (ribbon column) - scan dims, scale bars,
+        # detector size, dwell time, metadata block - everything needed to
+        # extract DPs for 3DED, except smart-scan-specific inputs, which
+        # get their own column next.
+        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_scanSize_row1 = qtw.QHBoxLayout()
         layout_box_scanSize.addLayout(layout_scanSize_row1)
@@ -304,29 +302,19 @@ class Tab_SAM2(TabBase):
         self._nav_4d_files = None
         self._nav_4d_directory = None
 
-        # scale bars - moved out of Directories, real/reciprocal merged onto
-        # one row; kept at the bottom of Input Parameters (below scan size/
-        # detector size/metadata), since it's a display-only calibration
-        # rather than an acquisition parameter.
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_box_scanSize.addWidget(self.box_scale)
-
+        # Scale bars - Real | Recip. share one row, below everything else
+        # in this column, matching the other 3 tabs' identical merge.
         layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
+        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
+        self._ribbon_inline_separator(layout_scale_row)
+        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
+        layout_box_scanSize.addLayout(layout_scale_row)
 
         self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
         self.checkbox_autoCenterDp.setChecked(True)
@@ -335,20 +323,18 @@ class Tab_SAM2(TabBase):
             'direct beam automatically (found via a large-sigma blur) after '
             'every redraw. When unchecked, hold Ctrl and click on the DP '
             'plot to set the center manually.')
-        layout_box_scale.addWidget(self.checkbox_autoCenterDp)
+        layout_box_scanSize.addWidget(self.checkbox_autoCenterDp)
         self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
 
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
+        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters')
 
-        #%% box smart scan (pattern-file) support: the 4D signals folder holds a
+        #%% Smart Scan (ribbon column) - the 4D signals folder holds a
         # detection + acquisition tpx3/mib file pair per tracked frame -
         # extraction always reads the acquisition (smart-scanned) file, with
         # its matching pattern file - see EDyssey/io_utils/smart_scan.py.
-        self.box_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_box_smartScan = qtw.QVBoxLayout()
-        self.box_smartScan.setLayout(layout_box_smartScan)
-        layout_userInput.addWidget(self.box_smartScan)
+        self.box_smartScan, layout_box_smartScan = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_scanSize_row3 = qtw.QHBoxLayout()
         layout_box_smartScan.addLayout(layout_scanSize_row3)
@@ -434,18 +420,23 @@ class Tab_SAM2(TabBase):
         layout_scanSize_row4.addStretch(1)
 
         self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
+        self._ribbon_group_end(layout_ribbon, layout_box_smartScan, 'Smart Scan')
 
-        #%% display contrast (8-bit conversion used for both display and SAM2/tracking)
+        #%% Display Contrast (ribbon column) - see the identical treatment
+        # in Tab_Tracking_CV2 for why this is added directly rather than
+        # via _ribbon_group_start/_end.
         self.box_contrast = ContrastScalingBox()
-        layout_userInput.addWidget(self.box_contrast)
+        layout_ribbon.addWidget(self.box_contrast, 1)
         self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        sep_contrast = qtw.QFrame()
+        sep_contrast.setFrameShape(qtw.QFrame.VLine)
+        sep_contrast.setFrameShadow(qtw.QFrame.Sunken)
+        layout_ribbon.addWidget(sep_contrast)
 
-        #%% feature handling
-        self.box_table = qtw.QGroupBox('Feature Handling')
-        layout_userInput.addWidget(self.box_table)
-        layout_features = qtw.QVBoxLayout()
-        self.box_table.setLayout(layout_features)
-        
+        #%% Feature Handling (ribbon column) - tree_objects is height-capped
+        # to fit the ribbon (same treatment as the other 2 tabs' tall lists).
+        self.box_table, layout_features = self._ribbon_group_start(layout_ribbon, stretch=1)
+
         # tree
         self.tree_objects = qtw.QTreeWidget()
         layout_features.addWidget(self.tree_objects)
@@ -460,12 +451,9 @@ class Tab_SAM2(TabBase):
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setColumnWidth(i, col_widths[col])
         self.tree_objects.setMinimumWidth(200)
-        # A generous baseline height (rather than the few rows its bare
-        # sizeHint would give) - the panel now lives in a QScrollArea, which
-        # sizes its content to this natural/minimum size regardless of the
-        # window's actual height, instead of stretching to fill whatever
-        # space happens to be available the way a plain splitter pane would.
-        self.tree_objects.setMinimumHeight(280)
+        # Height-capped (rather than the generous min-height=280 this had
+        # in the old left panel) to fit the ribbon's height budget.
+        self.tree_objects.setMaximumHeight(110)
         self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         
@@ -543,19 +531,22 @@ class Tab_SAM2(TabBase):
             wid.setDisabled(True)
         for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
             wid.setDisabled(True)
-        # Deliberately kept outside box_3ded/box_table (whose contents are
-        # disabled/enabled together elsewhere) so it stays clickable
-        # regardless of tracking/segmentation/extraction state. Added to
-        # layout_userInput as the panel's last widget (in init_widget,
-        # right after box_3ded), directly below it with no extra gap.
+        self._ribbon_group_end(layout_ribbon, layout_features, 'Feature Handling')
+
+        #%% Edge Detection / Extract (combined ribbon column, stacked like
+        # Tab_Tracking_CV2's Threshold/Edge Detection column) - SAM2
+        # doesn't need a Threshold/Deviation section (segmentation comes
+        # from SAM2 itself), so Edge Detection pairs with Extract directly
+        # instead of needing a 3rd column.
+        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        # Cancel needs to stay clickable regardless of tracking/segmentation/
+        # extraction state (unlike the rest of this column, whose widgets
+        # are enabled/disabled together elsewhere) - built here, before
+        # disable_3ded_widgets() runs, since that sweep checks
+        # `wid is self.button_cancel`.
         self.button_cancel = qtw.QPushButton('Cancel')
-        # Matches the height of the tab's other action buttons (Extract!,
-        # Save Results) rather than the shorter button_h_sml - a narrower
-        # width is enough to read as "secondary", it doesn't need to be
-        # shorter too.
-        # self.button_cancel.setFixedSize(int(button_w * 0.64), button_h_lrg)
         self.button_cancel.setFixedHeight(button_h_lrg)
-        self.button_cancel.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Fixed)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.setToolTip(
@@ -563,19 +554,8 @@ class Tab_SAM2(TabBase):
             'Already-running background computations finish silently; their results are discarded.')
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
-        #%% extract 3DED
-        self.box_3ded = qtw.QGroupBox('Extract 3DED')
-        layout_box_3ded = qtw.QVBoxLayout()
-        self.box_3ded.setLayout(layout_box_3ded)
-        layout_userInput.addWidget(self.box_3ded)
-
-        self.box_edgeDetection = qtw.QGroupBox('Edge Detection')
-        layout_box_3ded.addWidget(self.box_edgeDetection)
-        layout_edgeDetection = qtw.QVBoxLayout()
-        self.box_edgeDetection.setLayout(layout_edgeDetection)
-
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
-        layout_edgeDetection.addLayout(layout_edgeDetection_row1)
+        layout_box_3ded.addLayout(layout_edgeDetection_row1)
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
         self.checkbox_edgeOnly.setToolTip(
             'Reduce each frame\'s SAM2 mask to just its outline (via binary erosion) '
@@ -600,7 +580,7 @@ class Tab_SAM2(TabBase):
         layout_edgeDetection_row1.addStretch(1)
 
         layout_edgeDetection_row2 = qtw.QHBoxLayout()
-        layout_edgeDetection.addLayout(layout_edgeDetection_row2)
+        layout_box_3ded.addLayout(layout_edgeDetection_row2)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
             'Keep only the edge band facing one direction (e.g. just the mask\'s '
@@ -622,12 +602,16 @@ class Tab_SAM2(TabBase):
         layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
         layout_edgeDetection_row2.addStretch(1)
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', stretch=False)
+
+        sep_3ded = qtw.QFrame()
+        sep_3ded.setFrameShape(qtw.QFrame.HLine)
+        sep_3ded.setFrameShadow(qtw.QFrame.Sunken)
+        layout_box_3ded.addWidget(sep_3ded)
 
         layout_threadNum = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_threadNum)
-        
-        # layout_threadNum.addItem(spacer)
-        
+
         label_threadNo = qtw.QLabel('CPU Cores')
         layout_threadNum.addWidget(label_threadNo)
         self.spinbox_threadNum = qtw.QSpinBox(self)
@@ -695,21 +679,14 @@ class Tab_SAM2(TabBase):
         for btn in (self.button_3ded, self.button_extractCurrentFrame, self.button_save_results):
             btn.setFixedWidth(extract_btn_width)
 
+        layout_box_3ded.addWidget(self.button_cancel)
         self.disable_3ded_widgets(True)
-        layout_userInput.addWidget(self.button_cancel)
-        # No trailing addStretch here - box_table (Feature Handling, given a
-        # stretch factor above) already claims all leftover vertical space,
-        # via its own Expanding size policy set alongside it, so Cancel
-        # naturally lands at the panel's bottom edge instead of leaving a
-        # separate empty gap below it.
-        #%% canvas
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract', separator=False)
+        layout_ribbon.addStretch(1)
+
+        #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
-        self._splitter.addWidget(self._right_widget)
-        # self._splitter.setStretchFactor(0, 0)
-        # self._splitter.setStretchFactor(1, 1)
-        # self._splitter.setSizes([300, 900])
-        # Canvas (existing vertical stack) + the ribbon toolbar, side by
-        # side - see Tab_ROI_on_4D.init_widget for the identical pattern.
+        self.layout.addWidget(self._right_widget, 1)
         layout_right_outer = qtw.QHBoxLayout(self._right_widget)
         layout_right_outer.setContentsMargins(0, 0, 0, 0)
         layout_right_outer.setSpacing(0)
@@ -881,6 +858,15 @@ class Tab_SAM2(TabBase):
         # logic (wrapped around every canvas.draw()) has already run.
         self.canvas.mpl_connect(
             'draw_event', lambda evt: QTimer.singleShot(0, self._apply_ribbon_cursor))
+
+        # Clipping Thresholds beside ax_dp (the rightmost of the 3
+        # subplots) - only the DP axis, per the decision that Display
+        # Contrast already covers the nav image on this tab.
+        self.clip_dp = ClippingThresholdsWidget()
+        layout_right_outer.addWidget(self.clip_dp)
+        self._dp_clip_initialized = False
+        self.clip_dp.valueChanged.connect(self._update_dp_clip)
+
         layout_right_outer.addWidget(self.ribbon)
 
         #%% progress bar
@@ -1910,7 +1896,7 @@ class Tab_SAM2(TabBase):
             if preview is not None and preview['obj_id'] == obj_id and preview['imgNo'] == imgNo:
                 dp = preview['dp']
                 self.img_display['dp'].set_data(dp)
-                self.img_display['dp'].set_clim(vmin=dp.min(), vmax=dp.max())
+                self._apply_dp_clip(dp)
                 shape_x, shape_y = dp.shape
                 self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
             else:
@@ -2034,10 +2020,29 @@ class Tab_SAM2(TabBase):
             imgNo = self.slider_imgNo.value()
         img = self.df_obj.loc[obj_id, 'dp'][imgNo]
         self.img_display['dp'].set_data(img)
-        self.img_display['dp'].set_clim(vmin=img.min(), vmax=img.max())
-        # self.img_display['dp'].set_clim(vmin=1, vmax=img.max())
+        self._apply_dp_clip(img)
         shape_x, shape_y = img.shape
         self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+
+    def _apply_dp_clip(self, img):
+        """Anchor clip_dp's Clipping Thresholds to a newly-displayed DP's
+        range and apply them as set_clim. Like Tab_Tracking_CV2, DP changes
+        every frame here, so the range only resets to "no clipping" once,
+        the first time real data appears - after that the user's chosen
+        thresholds persist across frame/object changes."""
+        self.clip_dp.set_range(img.min(), img.max(), reset=not self._dp_clip_initialized)
+        self._dp_clip_initialized = True
+        vmin, vmax = self.clip_dp.values()
+        self.img_display['dp'].set_clim(vmin=vmin, vmax=vmax)
+
+    def _update_dp_clip(self):
+        """clip_dp.valueChanged slot: re-apply its current vmin/vmax to the
+        already-displayed DP image (no new data) and redraw."""
+        if 'dp' not in self.img_display:
+            return
+        vmin, vmax = self.clip_dp.values()
+        self.img_display['dp'].set_clim(vmin=vmin, vmax=vmax)
+        self.canvas.draw_idle()
 #%% SAM2 video segmentation
     def update_stack_guide(self):
         """Rebuild the stack-navigation button strip for the currently selected object.
@@ -2886,9 +2891,14 @@ class Tab_SAM2(TabBase):
         self.threadpool.setMaxThreadCount(value)
         
     def disable_3ded_widgets(self, state):
+        # button_cancel now lives inside box_3ded too (see init_ui) but
+        # must stay independent of this sweep - it needs to stay clickable
+        # regardless of tracking/segmentation/extraction state, managed by
+        # its own enable/disable calls elsewhere.
         for wid in self.box_3ded.findChildren(qtw.QWidget):
-            if not isinstance(wid, qtw.QLabel):
-                wid.setDisabled(state)
+            if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
+                continue
+            wid.setDisabled(state)
     
     def update_progress_bar(self, value, total):
         self.progress_bar.setRange(0, total)
