@@ -57,15 +57,14 @@ class Tab_ROI_on_4D(TabBase):
         # groups that don't each need a full-height column of their own are
         # stacked vertically inside one column instead, divided by HLine
         # separators - see the Edge Detection/SAM2 Segmentation/Summed DP
-        # Threshold column below for the pattern. No scrollbar and no
-        # leftover blank strip on the right: every column is horizontally
-        # Expanding and added with a stretch weight (the `stretch=`
-        # argument at each _ribbon_group_start call below), so the columns
-        # always divide up the tab's full width between them. The band's
-        # height is not fixed - it sizes itself to whichever column needs
-        # the most vertical space, and should end up the same across tabs
-        # as long as each one's busiest column has a similar number of
-        # stacked rows.
+        # Threshold column below for the pattern. No scrollbar: columns are
+        # packed to the left at their natural content width, with a
+        # trailing addStretch(1) absorbing any extra space on the right
+        # (deliberate - do not change this to a full-width stretch fill).
+        # The band's height is not fixed - it sizes itself to whichever
+        # column needs the most vertical space, and should end up the same
+        # across tabs as long as each one's busiest column has a similar
+        # number of stacked rows.
         ribbon_page = qtw.QWidget()
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
@@ -476,8 +475,7 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
         layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
         layout_edgeDetection.addLayout(layout_edgeDetection_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection',
-                               stretch=False, separator=False)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', stretch=False)
         
         sep = qtw.QFrame()
         sep.setFrameShape(qtw.QFrame.HLine)
@@ -538,6 +536,7 @@ class Tab_ROI_on_4D(TabBase):
         sep.setFrameShadow(qtw.QFrame.Sunken)
         layout_edgeDetection.addWidget(sep)
 
+        layout_ribbon.addStretch(1)
         #%% canvas layout (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
         self.layout.addWidget(self._right_widget, 1)
