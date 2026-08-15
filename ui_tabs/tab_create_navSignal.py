@@ -28,7 +28,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from .logging_utils import LogConsole
-from .base_tab import TabBase, compute_left_panel_width, get_existing_directory, build_left_panel
+from .base_tab import TabBase, get_existing_directory
+from .clipping_thresholds import ClippingThresholdsWidget
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
 from .threshold_dialog import ThresholdDialog
@@ -49,111 +50,97 @@ class Tab_Create_NavSignal(TabBase):
 
     def init_widget(self):
         self.central_widget = qtw.QWidget(self)
-        self.layout = qtw.QHBoxLayout(self)
+        self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
-        self._splitter = qtw.QSplitter(Qt.Horizontal)
-        self.layout.addWidget(self._splitter)
-
-        width_userInput = compute_left_panel_width()
         button_w = 90
         button_h_lrg = 50
 
-        # layout top
-        layout_userInput = build_left_panel(self._splitter, width_userInput)
-        #%% directory
-        layout_dir_scanSize = qtw.QVBoxLayout()
-        layout_userInput.addLayout(layout_dir_scanSize)
+        #%% ribbon (top parameter ribbon, Word-style - see Tab_ROI_on_4D
+        # for the original design/rationale, and TabBase for the shared
+        # _ribbon_group_start/_ribbon_group_end/_ribbon_inline_separator
+        # helpers). Columns packed left at natural width, NOT stretched to
+        # fill - a trailing addStretch(1) absorbs leftover space.
+        ribbon_page = qtw.QWidget()
+        layout_ribbon = qtw.QHBoxLayout(ribbon_page)
+        layout_ribbon.setContentsMargins(4, 2, 4, 2)
+        layout_ribbon.setSpacing(2)
+        self.layout.addWidget(ribbon_page)
 
-        self.box_dir = qtw.QGroupBox('Directories', self)
-        layout_dir = qtw.QVBoxLayout()
-        layout_dir_scanSize.addWidget(self.box_dir)
-        self.box_dir.setLayout(layout_dir)
+        #%% Files (ribbon column) - Directories + Data Type merged: both
+        # about which file(s) to work with.
+        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_dir_4d = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_dir_4d)
-
-        label_dir_4d = qtw.QLabel('4D Signals')
-        label_dir_4d.setFixedWidth(55)
-        layout_dir_4d.addWidget(label_dir_4d)
-
+        layout_dir_4d.addWidget(qtw.QLabel('4D Signals'))
         self.lineEdit_dir_signal = qtw.QLineEdit()
         layout_dir_4d.addWidget(self.lineEdit_dir_signal)
-
         self.button_dir = qtw.QPushButton('...')
         layout_dir_4d.addWidget(self.button_dir)
         self.button_dir.clicked.connect(lambda: self.show_dialog('file'))
-
         self.lineEdit_dir_signal.textChanged.connect(self.populate_file_list)
+        layout_dir.addLayout(layout_dir_4d)
 
         layout_dir_save = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_dir_save)
-
-        label_dir_save = qtw.QLabel('Save Path')
-        label_dir_save.setFixedWidth(55)
-        layout_dir_save.addWidget(label_dir_save)
-
+        layout_dir_save.addWidget(qtw.QLabel('Save Path'))
         self.lineEdit_dir_save = qtw.QLineEdit()
         layout_dir_save.addWidget(self.lineEdit_dir_save)
-
         self.button_dir_save = qtw.QPushButton('...')
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
+        layout_dir.addLayout(layout_dir_save)
 
         layout_project_name = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_project_name)
-
-        label_project_name = qtw.QLabel('Project')
-        label_project_name.setFixedWidth(55)
-        layout_project_name.addWidget(label_project_name)
-
+        layout_project_name.addWidget(qtw.QLabel('Project'))
         self.lineEdit_projectName = qtw.QLineEdit()
         layout_project_name.addWidget(self.lineEdit_projectName)
         self.lineEdit_projectName.setToolTip(
             'Results are saved to "<Save Path>/<Project>_EDyssey Analysis/navigator signal/'
             '<timestamp>/" - defaults to the 4D signals folder name whenever that '
             'folder changes, but can be edited freely before saving.')
+        layout_dir.addLayout(layout_project_name)
 
         layout_save_name = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_save_name)
-
-        label_save_name = qtw.QLabel('Save Name')
-        label_save_name.setFixedWidth(55)
-        layout_save_name.addWidget(label_save_name)
-
+        layout_save_name.addWidget(qtw.QLabel('Save Name'))
         self.lineEdit_saveName = qtw.QLineEdit('navigation_signal')
         layout_save_name.addWidget(self.lineEdit_saveName)
         self.lineEdit_saveName.setToolTip(
             'Filename (without extension) for the saved navigation signal. Other tabs\' '
             '"Load Saved Analysis" looks for the default name "navigation_signal" '
             'specifically - rename only if you don\'t need that auto-discovery.')
+        layout_dir.addLayout(layout_save_name)
 
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
 
-        #%% input parameters
-        self.box_scanSize = qtw.QGroupBox('Input Parameters')
-        layout_dir_scanSize.addWidget(self.box_scanSize)
-        layout_scanSize = qtw.QVBoxLayout()
-        self.box_scanSize.setLayout(layout_scanSize)
+        layout_dtype = qtw.QHBoxLayout()
+        self.checkbox_selectAll = qtw.QCheckBox('All files')
+        layout_dtype.addWidget(self.checkbox_selectAll)
+        self.checkbox_selectAll.setChecked(True)
+        self.combo_dtype = qtw.QComboBox()
+        self.combo_dtype.setMaximumWidth(130)
+        layout_dtype.addWidget(self.combo_dtype)
+        self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib'])
+        self.combo_dtype.setDisabled(True)
+        self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
+        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
+        layout_dir.addLayout(layout_dtype)
+        self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
+
+        #%% Input Parameters (ribbon column) - Scan Size/Dwell Time/
+        # Detector Size/Metadata/Mode/Scale bars, mirroring the merge
+        # Tab_ROI_on_4D uses for its "Experiment Info" column.
+        self.box_scanSize, layout_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_scanSize.addLayout(layout_scanSize_row1)
-
-        label_scanSize = qtw.QLabel('Scan Size')
-        layout_scanSize_row1.addWidget(label_scanSize)
-
+        layout_scanSize_row1.addWidget(qtw.QLabel('Scan Size'))
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         layout_scanSize_row1.addWidget(self.checkbox_scanSize)
         self.checkbox_scanSize.setChecked(True)
-
         self.lineEdit_scanSize_x = qtw.QLineEdit()
         self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
         layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
         self.lineEdit_scanSize_x.setFixedWidth(40)
         self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
-
-        label_cross = qtw.QLabel('X')
-        layout_scanSize_row1.addWidget(label_cross)
-
+        layout_scanSize_row1.addWidget(qtw.QLabel('X'))
         self.lineEdit_scanSize_y = qtw.QLineEdit()
         layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
         self.lineEdit_scanSize_y.setFixedWidth(40)
@@ -161,6 +148,7 @@ class Tab_Create_NavSignal(TabBase):
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
 
+        self._ribbon_inline_separator(layout_scanSize_row1)
         label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
         label_dwellTime.setToolTip('Dwell time in microseconds')
         self.spinbox_dwellTime = qtw.QSpinBox()
@@ -168,11 +156,10 @@ class Tab_Create_NavSignal(TabBase):
         self.spinbox_dwellTime.setRange(1, 99999999)
         for wid in [label_dwellTime, self.spinbox_dwellTime]:
             layout_scanSize_row1.addWidget(wid)
-        layout_scanSize_row1.addStretch(1)
+        layout_scanSize.addLayout(layout_scanSize_row1)
 
         # detector size (per side, in pixels) - Auto assumes 512x512.
         layout_detSize = qtw.QHBoxLayout()
-        layout_scanSize.addLayout(layout_detSize)
         label_detSize = qtw.QLabel('Detector Size')
         label_detSize.setToolTip(
             'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.')
@@ -186,8 +173,7 @@ class Tab_Create_NavSignal(TabBase):
         self.spinbox_detectorSize_x.setRange(1, 8192)
         self.spinbox_detectorSize_x.setValue(512)
         layout_detSize.addWidget(self.spinbox_detectorSize_x)
-        label_detSize_cross = qtw.QLabel('X')
-        layout_detSize.addWidget(label_detSize_cross)
+        layout_detSize.addWidget(qtw.QLabel('X'))
         self.spinbox_detectorSize_y = qtw.QSpinBox()
         self.spinbox_detectorSize_y.setFixedWidth(55)
         self.spinbox_detectorSize_y.setRange(1, 8192)
@@ -195,13 +181,26 @@ class Tab_Create_NavSignal(TabBase):
         layout_detSize.addWidget(self.spinbox_detectorSize_y)
         self.activate_detectorSize_spinboxes()
         self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-        layout_detSize.addStretch(1)
+        layout_scanSize.addLayout(layout_detSize)
 
-        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
-        # size/dwell time there, alongside the .tpx3 file(s).
+        # metadata (comment.txt) auto-fill - Load/Browse (actions) | Block #
+        # (a value) - separated, matching Tab_ROI_on_4D.
         layout_scanSize_row2 = qtw.QHBoxLayout()
-        layout_scanSize.addLayout(layout_scanSize_row2)
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size / dwell time from comment.txt in the 4D signals '
+            'folder (tpx3 acquisitions only)')
+        layout_scanSize_row2.addWidget(self.button_loadMetadata)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip(
+            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
+        layout_scanSize_row2.addWidget(self.button_browseMetadata)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+
+        self._ribbon_inline_separator(layout_scanSize_row2)
         label_metadataCount = qtw.QLabel('Block #')
         label_metadataCount.setToolTip(
             'Which 0-indexed metadata block to read from comment.txt. Only '
@@ -217,33 +216,17 @@ class Tab_Create_NavSignal(TabBase):
         # changes, instead of requiring an extra "Load" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_loadMetadata = qtw.QPushButton('Load')
-        self.button_loadMetadata.setToolTip(
-            'Fill scan size / dwell time from comment.txt in the 4D signals '
-            'folder (tpx3 acquisitions only)')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
-        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
-
-        self.button_browseMetadata = qtw.QPushButton('...')
-        self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
-        layout_scanSize_row2.addWidget(self.button_browseMetadata)
-        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
-        layout_scanSize_row2.addStretch(1)
+        layout_scanSize.addLayout(layout_scanSize_row2)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
         # Sum/Variance mode - lives here (a general "how to compute the
-        # image" setting) rather than inside the Virtual Detector Mask box
-        # below, since it applies equally whether or not "Use Virtual Mask"
-        # is checked there (e.g. whole-detector Variance is a valid, common
-        # choice with no mask involved at all).
+        # image" setting) rather than inside the Virtual Detector Mask
+        # column, since it applies equally whether or not "Use Virtual
+        # Mask" is checked there (e.g. whole-detector Variance is a valid,
+        # common choice with no mask involved at all).
         layout_scanSize_mode = qtw.QHBoxLayout()
-        layout_scanSize.addLayout(layout_scanSize_mode)
-        label_virtualMode = qtw.QLabel('Mode')
-        layout_scanSize_mode.addWidget(label_virtualMode)
+        layout_scanSize_mode.addWidget(qtw.QLabel('Mode'))
         self.combo_virtualMode = qtw.QComboBox()
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
@@ -253,29 +236,19 @@ class Tab_Create_NavSignal(TabBase):
             'scan position instead - highlights local structural variation (e.g. '
             'amorphous vs. crystalline regions) rather than total dose.')
         layout_scanSize_mode.addWidget(self.combo_virtualMode)
-        layout_scanSize_mode.addStretch(1)
+        layout_scanSize.addLayout(layout_scanSize_mode)
 
-        # scale bars - moved out of Directories, real/reciprocal merged onto
-        # one row; kept at the bottom of Input Parameters (below scan size/
-        # detector size/metadata), since it's a display-only calibration
-        # rather than an acquisition parameter.
-        self.box_scale = qtw.QGroupBox('Scale bars')
-        layout_box_scale = qtw.QVBoxLayout()
-        self.box_scale.setLayout(layout_box_scale)
-        layout_scanSize.addWidget(self.box_scale)
-
+        # Scale bars - Real | Recip. share one row, below everything else
+        # in this column (display-only calibration, not an acquisition
+        # parameter) - matches Tab_ROI_on_4D's Scale row.
         layout_scale_row = qtw.QHBoxLayout()
-        layout_box_scale.addLayout(layout_scale_row)
-        label_scale_real = qtw.QLabel('Real (nm)')
-        label_scale_real.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_real)
+        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
         self.lineEdit_scale_real.textChanged.connect(lambda: self._update_nav_scalebar())
-        label_scale_recip = qtw.QLabel('Recip. (Å<sup>-1</sup>)')
-        label_scale_recip.setFixedWidth(55)
-        layout_scale_row.addWidget(label_scale_recip)
+        self._ribbon_inline_separator(layout_scale_row)
+        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
@@ -283,18 +256,16 @@ class Tab_Create_NavSignal(TabBase):
             'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
             'drawn as concentric dashed rings every 1 1/A, centered on the found center')
         self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
+        layout_scanSize.addLayout(layout_scale_row)
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Input Parameters')
 
-        #%% box smart scan (pattern-file) tomography support: each tilt angle
+        #%% Smart Scan (ribbon column) - tomography support: each tilt angle
         # may have a "detection" file (dense, no pattern needed) and/or an
         # "acquisition" file (sparse, needs its own pattern file) - see
         # EDyssey/io_utils/smart_scan.py.
-        self.box_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_box_smartScan = qtw.QVBoxLayout()
-        self.box_smartScan.setLayout(layout_box_smartScan)
-        layout_dir_scanSize.addWidget(self.box_smartScan)
+        self.box_smartScan, layout_box_smartScan = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_scanSize_row3 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row3)
 
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
@@ -312,7 +283,7 @@ class Tab_Create_NavSignal(TabBase):
             '"Detection" (a plain dense raster, no pattern needed)')
         self.combo_smartScanRole.setDisabled(True)
         layout_scanSize_row3.addWidget(self.combo_smartScanRole)
-        layout_scanSize_row3.addStretch(1)
+        layout_box_smartScan.addLayout(layout_scanSize_row3)
 
         layout_scanSize_row4 = qtw.QHBoxLayout()
         layout_box_smartScan.addLayout(layout_scanSize_row4)
@@ -398,36 +369,18 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize_row5.addStretch(1)
 
         self._smart_scan_rows = None  # set by open_smart_scan_check_dialog(); cleared on new 4D folder
-        #%% list of files
-        layout_fileList = qtw.QVBoxLayout()
-        layout_userInput.addLayout(layout_fileList)
+        self._ribbon_group_end(layout_ribbon, layout_box_smartScan, 'Smart Scan')
 
-        self.box_dtype = qtw.QGroupBox('Data Type')
-        layout_fileList.addWidget(self.box_dtype)
-        layout_dtype = qtw.QHBoxLayout()
-        self.box_dtype.setLayout(layout_dtype)
+        #%% Virtual Detector Mask (ribbon column)
+        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        self.checkbox_selectAll = qtw.QCheckBox('All files')
-        layout_dtype.addWidget(self.checkbox_selectAll)
-        self.checkbox_selectAll.setChecked(True)
+        #%% Run (combined ribbon column, stacked like Tab_ROI_on_4D's Edge
+        # Detection/SAM2 Segmentation/Summed DP Threshold column) - Batch
+        # Options (CPU Cores/Clip FPS/Autosave), then Run (Test File/
+        # Calculate All/Save Results/Cancel).
+        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        self.combo_dtype = qtw.QComboBox()
-        self.combo_dtype.setMaximumWidth(130)
-        layout_dtype.addWidget(self.combo_dtype)
-        self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib'])
-        self.combo_dtype.setDisabled(True)
-        self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
-        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
-
-        #%% calculate/save buttons + CPU cores/FPS/Autosave
-        # Built here (widgets created/configured now, next to the settings
-        # they act on) but not actually placed into layout_userInput until
-        # the very end of init_widget - action buttons (Test File,
-        # Calculate All, Save Results, Cancel) sit at the bottom of the
-        # panel, below every configuration box, rather than interleaved
-        # with them.
         layout_calculate_buttons = qtw.QHBoxLayout()
-        layout_calculate_buttons.addStretch(1)
 
         self.button_testFile = qtw.QPushButton('Test File')
         self.button_testFile.setFixedSize(button_w, button_h_lrg)
@@ -450,20 +403,23 @@ class Tab_Create_NavSignal(TabBase):
         self.button_save_results.setToolTip(
             'Save the navigation signal, frames, and clip to the Save Path above')
         self.button_save_results.setDisabled(True)
-        layout_calculate_buttons.addStretch(1)
+        layout_box_run.addLayout(layout_calculate_buttons)
+        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Run', stretch=False)
 
-        # Cancel itself is placed even later - the very last widget in the
-        # whole panel (right after layout_calculate_buttons/layout_save near
-        # the end of init_widget) - see the comment there.
+        sep_run = qtw.QFrame()
+        sep_run.setFrameShape(qtw.QFrame.HLine)
+        sep_run.setFrameShadow(qtw.QFrame.Sunken)
+        layout_box_run.addWidget(sep_run)
+
         self.button_cancel = qtw.QPushButton('Cancel')
         self.button_cancel.setFixedHeight(button_h_lrg)
-        
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.clicked.connect(self.cancel_running_work)
         self.button_cancel.setToolTip(
             'Stop the running navigation signal creation. Already-running '
             'background computations finish silently; their results are discarded.')
+        layout_box_run.addWidget(self.button_cancel)
 
         #%% CPU cores / Clip FPS / Autosave
         layout_save = qtw.QHBoxLayout()
@@ -493,27 +449,26 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_autosave.setToolTip(
             'Automatically save when "Calculate All" finishes, instead of needing '
             'to click "Save Results" manually')
-        layout_save.addStretch(1)
+        layout_box_run.addLayout(layout_save)
+        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Batch Options')
 
-        #%% list of files
+        #%% Files List (ribbon column, far right, last) - height-capped to
+        # fit the ribbon (a plain min-height=300 list, as this used to be
+        # in the old left panel, would otherwise dominate/inflate the
+        # ribbon's height well past parity with the other tabs).
+        self.box_fileList, layout_box_fileList = self._ribbon_group_start(layout_ribbon, stretch=1)
         self.file_list_widget = qtw.QListWidget()
-        layout_userInput.addWidget(self.file_list_widget)
         self.file_list_widget.setMinimumWidth(150)
-        # A generous baseline height (rather than the few rows its bare
-        # sizeHint would give) - the panel now lives in a QScrollArea, which
-        # sizes its content to this natural/minimum size regardless of the
-        # window's actual height, instead of stretching to fill whatever
-        # space happens to be available the way a plain splitter pane would.
-        self.file_list_widget.setMinimumHeight(300)
+        self.file_list_widget.setMaximumHeight(110)
         self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
         self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
         self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
-        #%% virtual detector mask
-        self.box_mask = qtw.QGroupBox('Virtual Detector Mask')
-        layout_userInput.addWidget(self.box_mask)
-        layout_mask = qtw.QVBoxLayout()
-        self.box_mask.setLayout(layout_mask)
+        layout_box_fileList.addWidget(self.file_list_widget)
+        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List', separator=False)
+        layout_ribbon.addStretch(1)
 
+        #%% Virtual Detector Mask column content (box_mask/layout_mask
+        # reserved earlier, right after Smart Scan - see there)
         layout_mask_mode = qtw.QHBoxLayout()
         layout_mask.addLayout(layout_mask_mode)
         self.checkbox_useMask = qtw.QCheckBox('Use Virtual Mask')
@@ -681,27 +636,19 @@ class Tab_Create_NavSignal(TabBase):
         self._navsig_press = None
         self._navsig_bg = None
 
-        # Action buttons (built earlier, alongside the settings they act
-        # on) go here, at the very bottom of the panel, below every
-        # configuration box, directly one after another with no gap.
-        layout_userInput.addLayout(layout_calculate_buttons)
-        layout_userInput.addLayout(layout_save)
-        layout_userInput.addWidget(self.button_cancel)
-        # No trailing addStretch here - file_list_widget (given a stretch
-        # factor above, and Expanding by default) already claims all
-        # leftover vertical space, so Cancel naturally lands at the panel's
-        # bottom edge instead of leaving a separate empty gap below it.
-        #%% canvas
+        #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
-        self._splitter.addWidget(self._right_widget)
-        self._splitter.setStretchFactor(0, 0)
-        self._splitter.setStretchFactor(1, 1)
-        self._splitter.setSizes([300, 900])
-        # Canvas (existing vertical stack) + the ribbon toolbar, side by
-        # side - see Tab_ROI_on_4D.init_widget for the identical pattern.
+        self.layout.addWidget(self._right_widget, 1)
         layout_right_outer = qtw.QHBoxLayout(self._right_widget)
         layout_right_outer.setContentsMargins(0, 0, 0, 0)
         layout_right_outer.setSpacing(0)
+
+        # Clipping Thresholds beside the two subplots (Nav./Test Image is
+        # leftmost, Summed DP rightmost) - see Tab_ROI_on_4D for the
+        # identical pattern.
+        self.clip_nav = ClippingThresholdsWidget()
+        layout_right_outer.addWidget(self.clip_nav)
+
         self._canvas_container = qtw.QWidget()
         layout_right_outer.addWidget(self._canvas_container, 1)
         layout_canvas = qtw.QVBoxLayout(self._canvas_container)
@@ -754,6 +701,9 @@ class Tab_Create_NavSignal(TabBase):
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
 
+        self.clip_dp = ClippingThresholdsWidget()
+        layout_right_outer.addWidget(self.clip_dp)
+
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
         # canvas interactions already available via Ctrl-click/drag (see
@@ -798,35 +748,14 @@ class Tab_Create_NavSignal(TabBase):
         layout_slider.addWidget(self.slider_imgNo)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
 
-        # Display-only contrast for the navigation image (left plot) - a
-        # set_clim() on the plotted image, purely cosmetic: never touches
+        # Display-only contrast for the navigation image - a set_clim() on
+        # the plotted image, purely cosmetic: never touches
         # self.nav_imgs/self._last_test_img or any downstream calculation
         # (center-finding, mask placement, batch results all still read the
-        # untouched raw arrays). Mirrors the vmin/vmax slider pattern
-        # already used for the DP axis in tab_roi_4d.py.
-        layout_contrast_nav = qtw.QHBoxLayout()
-        layout_canvas.addLayout(layout_contrast_nav)
-        self.label_navVmin = qtw.QLabel('vmin')
-        layout_contrast_nav.addWidget(self.label_navVmin)
-        self.slider_navVmin = qtw.QSlider(Qt.Horizontal)
-        self.slider_navVmin.setRange(0, 1)
-        layout_contrast_nav.addWidget(self.slider_navVmin)
-        self.label_navVmax = qtw.QLabel('vmax')
-        layout_contrast_nav.addWidget(self.label_navVmax)
-        self.slider_navVmax = qtw.QSlider(Qt.Horizontal)
-        self.slider_navVmax.setRange(0, 1)
-        self.slider_navVmax.setValue(1)
-        layout_contrast_nav.addWidget(self.slider_navVmax)
-        self.slider_navVmin.setToolTip(
-            'Display contrast only - adjusts how the navigation image is shown, '
-            'not the underlying data used for center-finding or calculations')
-        self.slider_navVmax.setToolTip(self.slider_navVmin.toolTip())
-        self.slider_navVmin.valueChanged.connect(self._update_nav_display_clim)
-        self.slider_navVmax.valueChanged.connect(self._update_nav_display_clim)
-        self.button_navContrastReset = qtw.QPushButton('Reset')
-        self.button_navContrastReset.setToolTip('Reset display contrast to the full data range')
-        self.button_navContrastReset.clicked.connect(self._reset_nav_contrast)
-        layout_contrast_nav.addWidget(self.button_navContrastReset)
+        # untouched raw arrays). clip_nav/clip_dp (beside the canvas, see
+        # above) replace what used to be a horizontal slider row here.
+        self.clip_nav.valueChanged.connect(lambda: self._update_nav_display_clim())
+        self.clip_dp.valueChanged.connect(self._update_dp_display_clim)
         self._nav_display_data_range = (0, 1)
 
         # keyboard shortcuts
@@ -1305,7 +1234,10 @@ class Tab_Create_NavSignal(TabBase):
                        (self.spinbox_rIn, max(det_x, det_y)), (self.spinbox_rOut, max(det_x, det_y))):
             sb.setMaximum(val)
         self.img_display_mask.set_data(self.sum_dp)
-        self.img_display_mask.set_clim(vmin=1, vmax=self.sum_dp.max())
+        self.clip_dp.set_range(self.sum_dp.min(), self.sum_dp.max())
+        self.clip_dp.slider_vmin.setValue(1)
+        vmin, vmax = self.clip_dp.values()
+        self.img_display_mask.set_clim(vmin=vmin, vmax=vmax)
         self.img_display_mask.set_extent([0, det_x, det_y, 0])
         self.ax_mask_preview.set_xlim(0, det_x)
         self.ax_mask_preview.set_ylim(det_y, 0)
@@ -2259,7 +2191,7 @@ class Tab_Create_NavSignal(TabBase):
             self.canvas.draw_idle()
 
     def _set_nav_contrast_range(self, data_min, data_max):
-        """(Re)anchor the nav-image contrast sliders to freshly-displayed
+        """(Re)anchor clip_nav's Clipping Thresholds to freshly-displayed
         data's raw range, resetting them to "full range" (no manual
         adjustment) - called once whenever the underlying data actually
         changes (a new Test File result, or a freshly-completed batch), not
@@ -2269,39 +2201,20 @@ class Tab_Create_NavSignal(TabBase):
         if data_max <= data_min:
             data_max = data_min + 1
         self._nav_display_data_range = (data_min, data_max)
-        for slider in (self.slider_navVmin, self.slider_navVmax):
-            slider.blockSignals(True)
-        self.slider_navVmin.setRange(data_min, data_max)
-        self.slider_navVmax.setRange(data_min, data_max)
-        self.slider_navVmin.setValue(data_min)
-        self.slider_navVmax.setValue(data_max)
-        for slider in (self.slider_navVmin, self.slider_navVmax):
-            slider.blockSignals(False)
-        self._update_nav_contrast_labels()
-
-    def _update_nav_contrast_labels(self):
-        self.label_navVmin.setText(f'vmin: {self.slider_navVmin.value():d}')
-        self.label_navVmax.setText(f'vmax: {self.slider_navVmax.value():d}')
+        self.clip_nav.set_range(data_min, data_max)
 
     def _update_nav_display_clim(self, redraw=True):
-        """Apply the contrast sliders' current vmin/vmax to the displayed nav
-        image, clamping vmax above vmin if the sliders were left equal."""
-        vmin = self.slider_navVmin.value()
-        vmax = self.slider_navVmax.value()
-        if vmin >= vmax:
-            vmax = vmin + 1
-            self.slider_navVmax.blockSignals(True)
-            self.slider_navVmax.setValue(vmax)
-            self.slider_navVmax.blockSignals(False)
-        self._update_nav_contrast_labels()
+        """Apply clip_nav's current vmin/vmax to the displayed nav image."""
+        vmin, vmax = self.clip_nav.values()
         self.img_display.set_clim(vmin, vmax)
         if redraw:
             self.canvas.draw_idle()
 
-    def _reset_nav_contrast(self):
-        data_min, data_max = self._nav_display_data_range
-        self._set_nav_contrast_range(data_min, data_max)
-        self._update_nav_display_clim()
+    def _update_dp_display_clim(self):
+        """Apply clip_dp's current vmin/vmax to the displayed Summed DP."""
+        vmin, vmax = self.clip_dp.values()
+        self.img_display_mask.set_clim(vmin, vmax)
+        self.canvas.draw_idle()
 
     def message_box_tpx3(self):
        msg = qtw.QMessageBox()
