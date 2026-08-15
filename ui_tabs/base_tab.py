@@ -129,3 +129,72 @@ class TabBase(qtw.QWidget):
         super().cleanup() (currently a no-op, kept for future shared
         cleanup and so every override reads the same way)."""
         pass
+
+    # -- Word-ribbon top parameter panel helpers --------------------------
+    # Shared by every tab's init_widget() (first built for Tab_ROI_on_4D,
+    # then rolled out to the other three) - a horizontal band across the
+    # top of the tab, made of compact captioned columns (each replacing
+    # what used to be one QGroupBox in the old left parameter panel)
+    # separated by vertical lines, instead of a tall left column. Columns
+    # are packed left at their natural content width (NOT stretched to
+    # fill the ribbon - see the trailing `layout_ribbon.addStretch(1)` each
+    # tab adds after its last column). A tab with more groups than
+    # comfortably fits as separate columns stacks the less complex/lower-
+    # priority ones vertically inside one column instead (see
+    # Tab_ROI_on_4D's combined Edge Detection/SAM2 Segmentation/Summed DP
+    # Threshold column for the pattern: call _ribbon_group_end() once per
+    # stacked sub-section, all against the same layout_group, with
+    # `stretch=False` only on the first sub-section and `separator=False`
+    # on every sub-section after the first).
+    def _ribbon_group_start(self, layout_ribbon, stretch=1, width=None):
+        """Start a new parameter-ribbon column (Word-ribbon style: a
+        compact, borderless vertical stack of rows, captioned at the
+        bottom) - replaces what used to be one QGroupBox in the old left
+        parameter panel. Returns (widget, layout): the widget so callers
+        can keep a self.box_X reference the way the old QGroupBox-based
+        code did (e.g. some tabs' tpx3-gating findChildren sweeps), the
+        layout to add the column's own rows into. Call _ribbon_group_end()
+        once those rows are added.
+
+        `width`, if given, fixes the column to that pixel width instead of
+        letting it size to its content (rarely needed - most columns
+        should just size naturally)."""
+        widget = qtw.QWidget()
+        if width:
+            widget.setFixedWidth(width)
+            widget.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+        else:
+            widget.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Preferred)
+        layout_group = qtw.QVBoxLayout(widget)
+        layout_group.setContentsMargins(6, 4, 6, 2)
+        layout_group.setSpacing(3)
+        layout_ribbon.addWidget(widget, stretch)
+        return widget, layout_group
+
+    def _ribbon_group_end(self, layout_ribbon, layout_group, caption, separator=True, stretch=True):
+        """Finish a ribbon column (or one stacked sub-section of a combined
+        column): pin its rows to the top, add its caption label at the
+        bottom (Word-ribbon style - small, muted, centered), then a
+        vertical separator before the next column (skip for the last
+        column in the ribbon, or for a sub-section that isn't the last one
+        stacked in its combined column - see `separator`)."""
+        if stretch:
+            layout_group.addStretch(1)
+        label = qtw.QLabel(caption)
+        label.setAlignment(Qt.AlignHCenter)
+        label.setStyleSheet('color: #999999; font-size: 8pt;')
+        layout_group.addWidget(label)
+        if separator:
+            sep = qtw.QFrame()
+            sep.setFrameShape(qtw.QFrame.VLine)
+            sep.setFrameShadow(qtw.QFrame.Sunken)
+            layout_ribbon.addWidget(sep)
+
+    def _ribbon_inline_separator(self, layout_row):
+        """A small vertical line between two distinct concepts sharing one
+        ribbon row (e.g. Scan Size | Dwell Time) - narrower-scope than
+        _ribbon_group_end's inter-column separator, but the same idea."""
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.VLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_row.addWidget(sep)

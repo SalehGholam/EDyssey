@@ -849,58 +849,8 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self._refresh_edge_mask()
 
-    def _ribbon_group_start(self, layout_ribbon, stretch=1, width=None):
-        """Start a new parameter-ribbon group (Word-ribbon style: a
-        compact, borderless vertical stack of rows, captioned at the
-        bottom) - replaces what used to be one QGroupBox in the old left
-        parameter panel. Returns (widget, layout): the widget so callers
-        can keep a self.box_X reference the way the old QGroupBox-based
-        code did (e.g. enable_dwellTime_spinbox's findChildren), the
-        layout to add the group's own rows into. Call _ribbon_group_end()
-        once those rows are added.
-
-        The group is horizontally Expanding and added with `stretch`
-        (roughly proportional to how much content the group holds), so the
-        whole ribbon's groups divide up its full width between them - no
-        leftover blank strip, no horizontal scrollbar, and busier groups
-        (e.g. Virtual Imaging) end up wider than sparse ones (e.g. Scale)."""
-        widget = qtw.QWidget()
-        if width:
-            widget.setFixedWidth(width)
-            widget.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
-        else:
-            widget.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Preferred)
-        layout_group = qtw.QVBoxLayout(widget)
-        layout_group.setContentsMargins(6, 4, 6, 2)
-        layout_group.setSpacing(3)
-        layout_ribbon.addWidget(widget, stretch)
-        return widget, layout_group
-
-    def _ribbon_group_end(self, layout_ribbon, layout_group, caption, separator=True, stretch=True):
-        """Finish a ribbon group: pin its rows to the top, add its caption
-        label at the bottom (Word-ribbon style - small, muted, centered),
-        then a vertical separator before the next group (skip for the
-        last group in the ribbon - see `separator`)."""
-        if stretch:
-            layout_group.addStretch(1)
-        label = qtw.QLabel(caption)
-        label.setAlignment(Qt.AlignHCenter)
-        label.setStyleSheet('color: #999999; font-size: 8pt;')
-        layout_group.addWidget(label)
-        if separator:
-            sep = qtw.QFrame()
-            sep.setFrameShape(qtw.QFrame.VLine)
-            sep.setFrameShadow(qtw.QFrame.Sunken)
-            layout_ribbon.addWidget(sep)
-
-    def _ribbon_inline_separator(self, layout_row):
-        """A small vertical line between two distinct concepts sharing one
-        ribbon row (e.g. Scan Size | Dwell Time) - narrower-scope than
-        _ribbon_group_end's inter-group separator, but the same idea."""
-        sep = qtw.QFrame()
-        sep.setFrameShape(qtw.QFrame.VLine)
-        sep.setFrameShadow(qtw.QFrame.Sunken)
-        layout_row.addWidget(sep)
+    # _ribbon_group_start/_ribbon_group_end/_ribbon_inline_separator now
+    # live on TabBase (base_tab.py) - shared by all 4 tabs' ribbons.
 
     def _on_ribbon_tool_changed(self, tool_id):
         self.logger.debug('Ribbon tool changed to %s', tool_id)
