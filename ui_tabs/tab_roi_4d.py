@@ -339,15 +339,23 @@ class Tab_ROI_on_4D(TabBase):
         for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
                    self.spinbox_vi_rIn, self.spinbox_vi_rOut):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
-            sb.valueChanged.connect(self.update_virtual_mask_overlay)
+            sb.valueChanged.connect(self._sync_active_detector_vi)
 
-        # Several virtual detectors can be added below and combined into a
+        # Every virtual detector - including the very first, spinbox-defined
+        # one - always has an entry in the list below (matches the Navigator
+        # tab's identical list_detectors behavior), combined together into a
         # single virtual image at calculation time (OR-combined mask for
         # every format except .tpx3, natively summed by eventem there) - see
-        # get_active_virtual_detectors/io.calculate_nav_img_masked. An empty
-        # list just keeps the spinbox-defined detector above as the only one
-        # used - matches the Navigator tab's identical convention.
-        self._extra_detectors_vi = []
+        # get_active_virtual_detectors/io.calculate_nav_img_masked.
+        # self._active_detector_row_vi tracks which entry the center/radii
+        # spinboxes currently drive live (see _sync_active_detector_vi/
+        # _load_selected_detector_vi) - "Add Detector" freezes the current
+        # one and starts a new active entry instead of editing in place.
+        self._extra_detectors_vi = [{'center': (self.spinbox_vi_centerX.value(),
+                                                 self.spinbox_vi_centerY.value()),
+                                     'r_in': self.spinbox_vi_rIn.value(),
+                                     'r_out': self.spinbox_vi_rOut.value()}]
+        self._active_detector_row_vi = 0
         widget_vi_detectors = qtw.QWidget()
         layout_vi_detectors = qtw.QVBoxLayout(widget_vi_detectors)
         layout_vi_detectors.setContentsMargins(0, 0, 0, 0)
@@ -356,22 +364,28 @@ class Tab_ROI_on_4D(TabBase):
         layout_vi_detectors.addLayout(layout_vi_list_buttons)
         self.button_vi_addDetector = qtw.QPushButton('Add Detector')
         self.button_vi_addDetector.setToolTip(
-            'Add the center/radii above as another virtual detector - once one or '
-            'more are added here, ALL of them (not the values above, until also '
-            'added) are combined into the virtual image')
+            'Snapshot the center/radii above as a new virtual detector, on top of '
+            'whichever one is already listed - ALL listed detectors are combined '
+            'into the virtual image. Further edits above target the new '
+            '(now-selected) entry.')
         layout_vi_list_buttons.addWidget(self.button_vi_addDetector)
         self.button_vi_addDetector.clicked.connect(self.add_extra_detector_vi)
         self.button_vi_removeDetector = qtw.QPushButton('Remove Selected')
+        self.button_vi_removeDetector.setToolTip(
+            'Remove the selected detector - at least one always remains listed')
         layout_vi_list_buttons.addWidget(self.button_vi_removeDetector)
         self.button_vi_removeDetector.clicked.connect(self.remove_extra_detector_vi)
         layout_vi_list_buttons.addStretch(1)
 
         self.list_detectors_vi = qtw.QListWidget()
         self.list_detectors_vi.setToolTip(
-            'Additional virtual detectors, combined with each other (but not with '
-            'the center/radii spinboxes above unless also added here)')
+            'Every virtual detector in play, combined together into the virtual '
+            'image - select one to edit it via the center/radii spinboxes above '
+            '(its values update live as you edit/drag them)')
         self.list_detectors_vi.setMaximumHeight(60)
         layout_vi_detectors.addWidget(self.list_detectors_vi)
+        self.list_detectors_vi.addItem(self._format_detector_vi(self._extra_detectors_vi[0]))
+        self.list_detectors_vi.setCurrentRow(0)
         self.list_detectors_vi.itemSelectionChanged.connect(self._load_selected_detector_vi)
 
         # Center/Radius grid and the Detectors list sit side by side (rather
@@ -1368,23 +1382,46 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_vi_centerX.setValue(int(round(cx)))
         self.spinbox_vi_centerY.setValue(int(round(cy)))
 
+    def _sync_active_detector_vi(self):
+        """Keep the active list entry (self._active_detector_row_vi) live-
+        synced with the center/radii spinboxes as the user edits or drags
+        them, so its displayed values are never stale - matches the
+        Navigator tab's identical _sync_active_detector."""
+        detector = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
+                    'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+        self._extra_detectors_vi[self._active_detector_row_vi] = detector
+        item = self.list_detectors_vi.item(self._active_detector_row_vi)
+        if item is not None:
+            item.setText(self._format_detector_vi(detector))
+        self.update_virtual_mask_overlay()
+
     def add_extra_detector_vi(self):
-        """Add the spinbox-defined virtual detector to the list, combined
-        with every other added detector at calculation time - see
-        get_active_virtual_detectors/io.calculate_nav_img_masked."""
+        """Snapshot the current center/radii spinbox values as a NEW
+        detector entry, on top of whichever one was already active - the
+        previous entry stays frozen, and further spinbox edits/drags target
+        the new (now-selected) one instead."""
         detector = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
                     'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
         self._extra_detectors_vi.append(detector)
         self.list_detectors_vi.addItem(self._format_detector_vi(detector))
+        self.list_detectors_vi.setCurrentRow(len(self._extra_detectors_vi) - 1)
         self.update_virtual_mask_overlay()
 
     def remove_extra_detector_vi(self):
-        """Remove the selected entry from the added-detectors list."""
+        """Remove the selected detector from the list - at least one always
+        remains, so removing the last one re-seeds a fresh default entry
+        instead of leaving the list empty."""
         row = self.list_detectors_vi.currentRow()
         if row < 0:
             return
         del self._extra_detectors_vi[row]
         self.list_detectors_vi.takeItem(row)
+        if not self._extra_detectors_vi:
+            default = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
+                      'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+            self._extra_detectors_vi.append(default)
+            self.list_detectors_vi.addItem(self._format_detector_vi(default))
+        self.list_detectors_vi.setCurrentRow(min(row, len(self._extra_detectors_vi) - 1))
         self.update_virtual_mask_overlay()
 
     def _format_detector_vi(self, detector):
@@ -1392,11 +1429,13 @@ class Tab_ROI_on_4D(TabBase):
         return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
 
     def _load_selected_detector_vi(self):
-        """Load the selected list entry's values back into the spinboxes -
-        re-adding creates a new list entry rather than editing in place."""
+        """Load the selected list entry's values into the spinboxes and
+        make it the active (live-synced/draggable) detector - see
+        _sync_active_detector_vi."""
         row = self.list_detectors_vi.currentRow()
         if row < 0 or row >= len(self._extra_detectors_vi):
             return
+        self._active_detector_row_vi = row
         detector = self._extra_detectors_vi[row]
         for sb, val in ((self.spinbox_vi_centerX, detector['center'][0]),
                         (self.spinbox_vi_centerY, detector['center'][1]),
@@ -1409,13 +1448,9 @@ class Tab_ROI_on_4D(TabBase):
 
     def get_active_virtual_detectors(self):
         """The full set of virtual detectors to use for the next Compute
-        Virtual Image - every entry in the added-detectors list, or just the
-        spinbox-defined one if none have been added (matches the Navigator
-        tab's get_active_detectors())."""
-        if self._extra_detectors_vi:
-            return list(self._extra_detectors_vi)
-        return [{'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
-                'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}]
+        Virtual Image - every entry in the (always non-empty) list (matches
+        the Navigator tab's identical get_active_detectors())."""
+        return list(self._extra_detectors_vi)
 
     def update_virtual_mask_overlay(self):
         """Redraw the virtual-detector circle(s) over the currently
@@ -1460,9 +1495,12 @@ class Tab_ROI_on_4D(TabBase):
             [cx], [cy], color='lime', marker='+', s=80, linewidth=2)
         self._vi_mask_artists.append(self._vi_center_marker)
 
-        # Already-Added detectors - dashed/magenta-cyan so they stay visually
-        # distinct from the live one being positioned above.
-        for detector in self._extra_detectors_vi:
+        # Every OTHER listed detector (not the active one, already drawn
+        # above from the spinboxes) - dashed so it stays visually distinct
+        # from the one currently being positioned.
+        for i, detector in enumerate(self._extra_detectors_vi):
+            if i == self._active_detector_row_vi:
+                continue
             dcx, dcy = detector['center']
             circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
                                     edgecolor='magenta', linewidth=1.2, linestyle='--')
@@ -1572,14 +1610,16 @@ class Tab_ROI_on_4D(TabBase):
         self.canvas.blit(self.ax_dp.bbox)
 
     def _on_release_vi_mask(self):
-        """End a virtual-mask drag (if one was active) and do one full,
-        correct redraw - update_virtual_mask_overlay() was skipped during
-        the drag itself (see _on_motion_vi_mask)."""
+        """End a virtual-mask drag (if one was active), sync the active list
+        entry to the just-finished drag's final values (see
+        _sync_active_detector_vi - also does one full, correct redraw:
+        update_virtual_mask_overlay() was skipped during the drag itself,
+        see _on_motion_vi_mask)."""
         was_dragging = self._vi_mask_drag_mode is not None
         self._vi_mask_drag_mode = None
         self._vi_mask_bg = None
         if was_dragging:
-            self.update_virtual_mask_overlay()
+            self._sync_active_detector_vi()
 
     def compute_virtual_image(self):
         """Load the 4D signal pointed at above and compute its navigation
