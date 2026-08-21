@@ -103,27 +103,40 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     # s = hs.signals.Signal2D(s)
     return roi_obj
 
-def load_hdf5(fn, roi=None, scanSize=None, lazy=False,
+def load_hdf5(fn, roi=None, scanSize=None, lazy=False, max_eager_frames=10000,
               logger=None, **kwargs): #TODO change to normal load
-    """Load a .hdf5 4D-STEM file using dask; supports lazy loading, ROI crop, and DP summation."""
+    """Load a .hdf5 4D-STEM file; supports lazy loading, ROI crop, and DP summation.
+
+    Either path (lazy=True or lazy=False) ends up returning a fully
+    materialized numpy array - the difference is HOW the read happens.
+    lazy=False (the default) reads the ROI directly off the h5py dataset in
+    one shot: fast, but its peak memory use scales with the whole requested
+    ROI at once (loads every diffraction pattern in it into RAM
+    simultaneously). lazy=True instead reads it through dask (chunked):
+    noticeably slower, but far more memory-considerate.
+
+    `max_eager_frames`: safety cap on the fast (lazy=False) path - above
+    this many diffraction patterns (the ROI's width*height, or scanSize's
+    if roi is None), loading automatically falls back to the dask path
+    regardless of `lazy`, so a large ROI can't silently blow up RAM just
+    because lazy=False (the default) was left unset. Only ever overrides an
+    *unset/default* lazy=False - an explicit lazy=True request is always
+    honored as-is.
+    """
     with h5py.File(fn, 'r') as f:
-        if lazy:
+        if roi is None:
+            roi = [0, 0, scanSize[1], scanSize[0]]
+        x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
+        if lazy or w * h > max_eager_frames:
             # Must be .compute()d before this `with` block exits, same as
             # get_dp()'s '.hdf5' branch (see its comment) - a dask array
             # built from a dataset inside a `with h5py.File(...)` block
             # stops being readable the moment that block exits, so it can
             # never actually be handed back to the caller still lazy.
             s = da.from_array(f['4D'])
-            if roi is None:
-                roi = [0, 0, scanSize[1], scanSize[0]]
-            x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
             s = s[y:y+h, x:x+w]
             s = s.compute()
-
         else:
-            if roi is None:
-                roi = [0, 0, scanSize[1], scanSize[0]]
-            x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
             s = f['4D'][y:y+h, x:x+w]  # numpy row-major: row (y) axis first
     return s
 
