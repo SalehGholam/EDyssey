@@ -14,7 +14,7 @@ from time import perf_counter
 from collections import deque
 from PyQt5.QtCore import Qt, QProcess, QThreadPool, QTimer
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QIntValidator, QDoubleValidator, QKeySequence
+from PyQt5.QtGui import QDoubleValidator, QKeySequence
 from PyQt5.QtWidgets import QShortcut
 import numpy as np
 import gc
@@ -66,8 +66,10 @@ class Tab_Create_NavSignal(TabBase):
         layout_ribbon.setSpacing(2)
         self.layout.addWidget(ribbon_page)
 
-        #%% Files (ribbon column) - Directories + Data Type merged: both
-        # about which file(s) to work with.
+        #%% Files (ribbon column) - Directories, Smart Scan, and Scale bars
+        # all merged into one column (per user request): everything about
+        # which file(s)/paths to use, including smart-scan tomography
+        # support and display calibration.
         self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_dir_4d = qtw.QHBoxLayout()
@@ -111,77 +113,176 @@ class Tab_Create_NavSignal(TabBase):
 
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
 
-        layout_dtype = qtw.QHBoxLayout()
-        self.checkbox_selectAll = qtw.QCheckBox('All files')
-        layout_dtype.addWidget(self.checkbox_selectAll)
-        self.checkbox_selectAll.setChecked(True)
-        self.combo_dtype = qtw.QComboBox()
-        self.combo_dtype.setMaximumWidth(130)
-        layout_dtype.addWidget(self.combo_dtype)
-        self.combo_dtype.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib'])
-        self.combo_dtype.setDisabled(True)
-        self.checkbox_selectAll.stateChanged.connect(self.activate_combo_dtype)
-        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
-        layout_dir.addLayout(layout_dtype)
+        # Smart-scan (tomography) support, merged in here rather than its
+        # own column - each tilt angle may have a "detection" file (dense,
+        # no pattern needed) and/or an "acquisition" file (sparse, needs its
+        # own pattern file). See EDyssey/io_utils/smart_scan.py.
+        layout_smartScan_row = qtw.QHBoxLayout()
+        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        self.checkbox_smartScan.setToolTip(
+            'This folder holds a smart-scanned tomography series (detection + '
+            'acquisition files per tilt angle, each acquisition needing its own '
+            'pattern file). See other_scripts/smart scanning guide/ for background.')
+        layout_smartScan_row.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
+
+        self.combo_smartScanRole = qtw.QComboBox()
+        self.combo_smartScanRole.addItems(['Acquisition', 'Detection'])
+        self.combo_smartScanRole.setToolTip(
+            'Which file role to build the batch navigation signal from for each tilt '
+            'angle - "Acquisition" (smart-scanned, uses the pattern file) or '
+            '"Detection" (a plain dense raster, no pattern needed)')
+        self.combo_smartScanRole.setDisabled(True)
+        layout_smartScan_row.addWidget(self.combo_smartScanRole)
+        layout_dir.addLayout(layout_smartScan_row)
+
+        layout_patternDir_row = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_patternDir_row)
+        label_patternDir = qtw.QLabel('Pattern Dir.')
+        label_patternDir.setFixedWidth(70)
+        layout_patternDir_row.addWidget(label_patternDir)
+        self.lineEdit_patternDir = qtw.QLineEdit()
+        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_patternDir.setDisabled(True)
+        layout_patternDir_row.addWidget(self.lineEdit_patternDir)
+        self.button_browsePatternDir = qtw.QPushButton('...')
+        self.button_browsePatternDir.setFixedWidth(30)
+        self.button_browsePatternDir.setDisabled(True)
+        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
+        layout_patternDir_row.addWidget(self.button_browsePatternDir)
+
+        layout_detectionDir_row = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_detectionDir_row)
+        label_detectionDir = qtw.QLabel('Detect. Dir.')
+        label_detectionDir.setFixedWidth(70)
+        layout_detectionDir_row.addWidget(label_detectionDir)
+        self.lineEdit_detectionDir = qtw.QLineEdit()
+        self.lineEdit_detectionDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_detectionDir.setDisabled(True)
+        self.lineEdit_detectionDir.setToolTip(
+            'Folder to look for detection files in, if they live somewhere other than the '
+            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
+            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
+            'each in their own folder)')
+        layout_detectionDir_row.addWidget(self.lineEdit_detectionDir)
+        self.button_browseDetectionDir = qtw.QPushButton('...')
+        self.button_browseDetectionDir.setFixedWidth(30)
+        self.button_browseDetectionDir.setDisabled(True)
+        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
+        layout_detectionDir_row.addWidget(self.button_browseDetectionDir)
+
+        layout_checkFiles_row = qtw.QHBoxLayout()
+        layout_dir.addLayout(layout_checkFiles_row)
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
+        self.button_checkSmartScanFiles.setToolTip(
+            'Review the automatic per-angle detection/acquisition/pattern-file match '
+            'before calculating - fix or exclude any mismatched tilt angle by hand')
+        self.button_checkSmartScanFiles.setDisabled(True)
+        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
+        layout_checkFiles_row.addWidget(self.button_checkSmartScanFiles)
+        self.label_smartScanSummary = qtw.QLabel('')
+        layout_checkFiles_row.addWidget(self.label_smartScanSummary)
+        layout_checkFiles_row.addStretch(1)
+
+        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog(); cleared on new 4D folder
+
+        # Scale bars - Real | Recip. share one row, moved here (per user
+        # request) rather than its own column - display-only calibration.
+        layout_scale_row = qtw.QHBoxLayout()
+        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
+        self.lineEdit_scale_real = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_real)
+        self.lineEdit_scale_real.setValidator(self.double_validator)
+        self.lineEdit_scale_real.textChanged.connect(lambda: self._update_nav_scalebar())
+        self._ribbon_inline_separator(layout_scale_row)
+        layout_scale_row.addWidget(qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)'))
+        self.lineEdit_scale_recip = qtw.QLineEdit(self)
+        layout_scale_row.addWidget(self.lineEdit_scale_recip)
+        self.lineEdit_scale_recip.setValidator(self.double_validator)
+        self.lineEdit_scale_recip.setToolTip(
+            'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
+            'drawn as concentric dashed rings every 1 1/A, centered on the found center')
+        self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
+        layout_dir.addLayout(layout_scale_row)
         self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
 
-        #%% Input Parameters (ribbon column) - Scan Size/Dwell Time/
-        # Detector Size/Metadata/Mode/Scale bars, mirroring the merge
-        # Tab_ROI_on_4D uses for its "Experiment Info" column.
+        #%% Input Parameters (ribbon column) - Scan Size/Detector Size share
+        # one QGridLayout (mirrors Tab_ROI_on_4D's Experiment Info column,
+        # including using QSpinBox for Scan Size too - was a QLineEdit) so
+        # their labels/X/Y cells line up row-to-row; Dwell Time/Metadata sit
+        # below the grid, matching Tab_ROI_on_4D's layout convention. Mode
+        # (Sum/Variance) and Scale have both moved out of this column (see
+        # the Run and Files columns).
         self.box_scanSize, layout_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_scanSize_row1.addWidget(qtw.QLabel('Scan Size'))
-        self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
-        self.checkbox_scanSize.setChecked(True)
-        self.lineEdit_scanSize_x = qtw.QLineEdit()
-        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
-        self.lineEdit_scanSize_x.setFixedWidth(40)
-        self.lineEdit_scanSize_x.setValidator(QIntValidator(0,99999))
-        layout_scanSize_row1.addWidget(qtw.QLabel('X'))
-        self.lineEdit_scanSize_y = qtw.QLineEdit()
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
-        self.lineEdit_scanSize_y.setFixedWidth(40)
-        self.lineEdit_scanSize_y.setValidator(QIntValidator(0,99999))
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-
-        self._ribbon_inline_separator(layout_scanSize_row1)
-        label_dwellTime = qtw.QLabel('Dwell T. (\u03BCs)')
-        label_dwellTime.setToolTip('Dwell time in microseconds')
-        self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(60)
-        self.spinbox_dwellTime.setRange(1, 99999999)
-        for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_scanSize_row1.addWidget(wid)
-        layout_scanSize.addLayout(layout_scanSize_row1)
-
-        # detector size (per side, in pixels) - Auto assumes 512x512.
-        layout_detSize = qtw.QHBoxLayout()
-        label_detSize = qtw.QLabel('Detector Size')
-        label_detSize.setToolTip(
-            'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.')
-        layout_detSize.addWidget(label_detSize)
+        layout_exp_items = qtw.QGridLayout()
+        layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
+        detSize_tooltip = 'Detector (diffraction pattern) size in pixels - Auto assumes 512x512.'
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
         self.checkbox_detectorSizeAuto.setChecked(True)
-        self.checkbox_detectorSizeAuto.setToolTip(label_detSize.toolTip())
-        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
+        layout_exp_items.addWidget(self.checkbox_detectorSizeAuto, 0, 2)
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 0, 3)
         self.spinbox_detectorSize_x = qtw.QSpinBox()
-        self.spinbox_detectorSize_x.setFixedWidth(55)
         self.spinbox_detectorSize_x.setRange(1, 8192)
         self.spinbox_detectorSize_x.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_x)
-        layout_detSize.addWidget(qtw.QLabel('X'))
+        layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
         self.spinbox_detectorSize_y = qtw.QSpinBox()
-        self.spinbox_detectorSize_y.setFixedWidth(55)
         self.spinbox_detectorSize_y.setRange(1, 8192)
         self.spinbox_detectorSize_y.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
         self.activate_detectorSize_spinboxes()
         self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-        layout_scanSize.addLayout(layout_detSize)
+
+        layout_exp_items.addWidget(qtw.QLabel('Scan Size'), 1, 0, 1, 2)
+        self.checkbox_scanSize = qtw.QCheckBox('Auto')
+        layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
+        self.checkbox_scanSize.setChecked(True)
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
+        self.spinbox_scanSize_x = qtw.QSpinBox()
+        self.spinbox_scanSize_x.setRange(1, 99999)
+        layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
+        self.spinbox_scanSize_y = qtw.QSpinBox()
+        self.spinbox_scanSize_y.setRange(1, 99999)
+        layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
+        layout_scanSize.addLayout(layout_exp_items)
+
+        # Detection/Acquisition dwell times - a smart-scanned tilt series
+        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
+        # for the dense detection pass, "Scan strategy: Custom" for the
+        # sparse acquisition), each with its own dwelltime. Detection Dwell
+        # T. is ALWAYS enabled and doubles as the general dwell time (used
+        # whether or not "Smart Scanned" is checked) - Acquisition Dwell T.
+        # only matters for smart-scanned acquisition files, so it alone
+        # stays gated behind "Smart Scanned" (see
+        # activate_smartScan_widgets/_get_dwell_time_for). A separate,
+        # always-redundant generic Dwell T. spinbox isn't needed once
+        # Detection Dwell T. covers that role too.
+        layout_dwell_row = qtw.QHBoxLayout()
+        label_dwellTime_detection = qtw.QLabel('Dwell T. (\u03BCs)')
+        label_dwellTime_detection.setToolTip(
+            'Dwell time in microseconds - also used as the "Detection"-role dwell '
+            'time when "Smart Scanned" is checked')
+        layout_dwell_row.addWidget(label_dwellTime_detection)
+        self.spinbox_dwellTime_detection = qtw.QSpinBox()
+        self.spinbox_dwellTime_detection.setFixedWidth(70)
+        self.spinbox_dwellTime_detection.setRange(1, 99999999)
+        layout_dwell_row.addWidget(self.spinbox_dwellTime_detection)
+        self._ribbon_inline_separator(layout_dwell_row)
+        label_dwellTime_acquisition = qtw.QLabel('Acq. (\u03BCs)')
+        label_dwellTime_acquisition.setToolTip(
+            '"Acquisition"-role dwell time - only used once "Smart Scanned" is checked')
+        layout_dwell_row.addWidget(label_dwellTime_acquisition)
+        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
+        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
+        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
+        self.spinbox_dwellTime_acquisition.setDisabled(True)
+        layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_scanSize.addLayout(layout_dwell_row)
 
         # metadata (comment.txt) auto-fill - Load/Browse (actions) | Block #
         # (a value) - separated, matching Tab_ROI_on_4D.
@@ -219,14 +320,22 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize.addLayout(layout_scanSize_row2)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Input Parameters')
 
-        # Sum/Variance mode - lives here (a general "how to compute the
-        # image" setting) rather than inside the Virtual Detector Mask
-        # column, since it applies equally whether or not "Use Virtual
-        # Mask" is checked there (e.g. whole-detector Variance is a valid,
-        # common choice with no mask involved at all).
-        layout_scanSize_mode = qtw.QHBoxLayout()
-        layout_scanSize_mode.addWidget(qtw.QLabel('Mode'))
+        #%% Virtual Detector Mask (ribbon column)
+        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        #%% Run (combined ribbon column, stacked like Tab_ROI_on_4D's Edge
+        # Detection/SAM2 Segmentation/Summed DP Threshold column) - Mode
+        # (Sum/Variance), paired with the actions that use it (mirrors
+        # Tab_ROI_on_4D's Virtual Imaging column, where Mode sits beside
+        # Compute Virtual Image rather than in Input Parameters), then Test
+        # File/Calculate All/Save Results/Cancel, then Batch Options (CPU
+        # Cores/Clip FPS/Autosave).
+        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        layout_mode_row = qtw.QHBoxLayout()
+        layout_mode_row.addWidget(qtw.QLabel('Mode'))
         self.combo_virtualMode = qtw.QComboBox()
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
@@ -235,150 +344,9 @@ class Tab_Create_NavSignal(TabBase):
             'the previous/default behavior). Variance: variance of intensities per '
             'scan position instead - highlights local structural variation (e.g. '
             'amorphous vs. crystalline regions) rather than total dose.')
-        layout_scanSize_mode.addWidget(self.combo_virtualMode)
-        layout_scanSize.addLayout(layout_scanSize_mode)
-
-        # Scale bars - Real | Recip. share one row, below everything else
-        # in this column (display-only calibration, not an acquisition
-        # parameter) - matches Tab_ROI_on_4D's Scale row.
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
-        self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
-        self.lineEdit_scale_real.setValidator(self.double_validator)
-        self.lineEdit_scale_real.textChanged.connect(lambda: self._update_nav_scalebar())
-        self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
-        self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
-        self.lineEdit_scale_recip.setValidator(self.double_validator)
-        self.lineEdit_scale_recip.setToolTip(
-            'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
-            'drawn as concentric dashed rings every 1 1/A, centered on the found center')
-        self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
-        layout_scanSize.addLayout(layout_scale_row)
-        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Input Parameters')
-
-        #%% Smart Scan (ribbon column) - tomography support: each tilt angle
-        # may have a "detection" file (dense, no pattern needed) and/or an
-        # "acquisition" file (sparse, needs its own pattern file) - see
-        # EDyssey/io_utils/smart_scan.py.
-        self.box_smartScan, layout_box_smartScan = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        layout_scanSize_row3 = qtw.QHBoxLayout()
-
-        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
-        self.checkbox_smartScan.setToolTip(
-            'This folder holds a smart-scanned tomography series (detection + '
-            'acquisition files per tilt angle, each acquisition needing its own '
-            'pattern file). See other_scripts/smart scanning guide/ for background.')
-        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
-        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
-
-        self.combo_smartScanRole = qtw.QComboBox()
-        self.combo_smartScanRole.addItems(['Acquisition', 'Detection'])
-        self.combo_smartScanRole.setToolTip(
-            'Which file role to build the batch navigation signal from for each tilt '
-            'angle - "Acquisition" (smart-scanned, uses the pattern file) or '
-            '"Detection" (a plain dense raster, no pattern needed)')
-        self.combo_smartScanRole.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.combo_smartScanRole)
-        layout_box_smartScan.addLayout(layout_scanSize_row3)
-
-        layout_scanSize_row4 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row4)
-
-        label_patternDir = qtw.QLabel('Pattern Dir.')
-        label_patternDir.setFixedWidth(70)
-        layout_scanSize_row4.addWidget(label_patternDir)
-        self.lineEdit_patternDir = qtw.QLineEdit()
-        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
-        self.lineEdit_patternDir.setDisabled(True)
-        layout_scanSize_row4.addWidget(self.lineEdit_patternDir)
-        self.button_browsePatternDir = qtw.QPushButton('...')
-        self.button_browsePatternDir.setFixedWidth(30)
-        self.button_browsePatternDir.setDisabled(True)
-        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
-        layout_scanSize_row4.addWidget(self.button_browsePatternDir)
-
-        layout_scanSize_row4b = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row4b)
-
-        label_detectionDir = qtw.QLabel('Detect. Dir.')
-        label_detectionDir.setFixedWidth(70)
-        layout_scanSize_row4b.addWidget(label_detectionDir)
-        self.lineEdit_detectionDir = qtw.QLineEdit()
-        self.lineEdit_detectionDir.setPlaceholderText('defaults to 4D Signals folder')
-        self.lineEdit_detectionDir.setDisabled(True)
-        self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if they live somewhere other than the '
-            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
-            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
-            'each in their own folder)')
-        layout_scanSize_row4b.addWidget(self.lineEdit_detectionDir)
-        self.button_browseDetectionDir = qtw.QPushButton('...')
-        self.button_browseDetectionDir.setFixedWidth(30)
-        self.button_browseDetectionDir.setDisabled(True)
-        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
-        layout_scanSize_row4b.addWidget(self.button_browseDetectionDir)
-
-        # Detection/acquisition dwell times - a smart-scanned tilt series
-        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
-        # for the dense detection pass, "Scan strategy: Custom" for the
-        # sparse acquisition), each with its own dwelltime - editable here
-        # in case they differ from (or aren't present in) comment.txt. Used
-        # (instead of the generic Dwell T. above) for any single-file action
-        # (Test File, Compute Summed DP, ...) once the file's role is known
-        # via a confirmed Check Files match - see _get_dwell_time_for.
-        # Own rows (rather than sharing one, too-wide-for-the-panel row) -
-        # "Detection Dwell T. (μs)"/"Acquisition Dwell T. (μs)" are
-        # both long labels.
-        layout_scanSize_dwell1 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell1)
-        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (μs)')
-        layout_scanSize_dwell1.addWidget(label_dwellTime_detection)
-        self.spinbox_dwellTime_detection = qtw.QSpinBox()
-        self.spinbox_dwellTime_detection.setFixedWidth(70)
-        self.spinbox_dwellTime_detection.setRange(1, 99999999)
-        self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_scanSize_dwell1.addWidget(self.spinbox_dwellTime_detection)
-        layout_scanSize_dwell1.addStretch(1)
-
-        layout_scanSize_dwell2 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell2)
-        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (μs)')
-        layout_scanSize_dwell2.addWidget(label_dwellTime_acquisition)
-        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
-        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
-        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
-        self.spinbox_dwellTime_acquisition.setDisabled(True)
-        layout_scanSize_dwell2.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize_dwell2.addStretch(1)
-
-        layout_scanSize_row5 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row5)
-        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
-        self.button_checkSmartScanFiles.setToolTip(
-            'Review the automatic per-angle detection/acquisition/pattern-file match '
-            'before calculating - fix or exclude any mismatched tilt angle by hand')
-        self.button_checkSmartScanFiles.setDisabled(True)
-        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
-        layout_scanSize_row5.addWidget(self.button_checkSmartScanFiles)
-        self.label_smartScanSummary = qtw.QLabel('')
-        layout_scanSize_row5.addWidget(self.label_smartScanSummary)
-        layout_scanSize_row5.addStretch(1)
-
-        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog(); cleared on new 4D folder
-        self._ribbon_group_end(layout_ribbon, layout_box_smartScan, 'Smart Scan')
-
-        #%% Virtual Detector Mask (ribbon column)
-        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        #%% Run (combined ribbon column, stacked like Tab_ROI_on_4D's Edge
-        # Detection/SAM2 Segmentation/Summed DP Threshold column) - Batch
-        # Options (CPU Cores/Clip FPS/Autosave), then Run (Test File/
-        # Calculate All/Save Results/Cancel).
-        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
+        layout_mode_row.addWidget(self.combo_virtualMode)
+        layout_mode_row.addStretch(1)
+        layout_box_run.addLayout(layout_mode_row)
 
         layout_calculate_buttons = qtw.QHBoxLayout()
 
@@ -452,19 +420,28 @@ class Tab_Create_NavSignal(TabBase):
         layout_box_run.addLayout(layout_save)
         self._ribbon_group_end(layout_ribbon, layout_box_run, 'Batch Options')
 
-        #%% Files List (ribbon column, far right, last) - height-capped to
-        # fit the ribbon (a plain min-height=300 list, as this used to be
-        # in the old left panel, would otherwise dominate/inflate the
-        # ribbon's height well past parity with the other tabs).
+        #%% Files List (ribbon column, far right, last) - the data-type
+        # combo (now also selecting "All files" itself, replacing the old
+        # separate checkbox) sits above the list; the list stretches to
+        # fill the ribbon's full height (stretch=False below, so
+        # _ribbon_group_end doesn't add its own competing trailing stretch)
+        # instead of being height-capped, per user request.
         self.box_fileList, layout_box_fileList = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.combo_dtype = qtw.QComboBox()
+        self.combo_dtype.addItems(['All files', '.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.tif'])
+        self.combo_dtype.setToolTip(
+            'Filter the file list below to one data type - ".tif" matches both '
+            '.tif and .tiff files')
+        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
+        layout_box_fileList.addWidget(self.combo_dtype)
         self.file_list_widget = qtw.QListWidget()
         self.file_list_widget.setMinimumWidth(150)
-        self.file_list_widget.setMaximumHeight(110)
         self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
         self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
         self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
-        layout_box_fileList.addWidget(self.file_list_widget)
-        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List', separator=False)
+        layout_box_fileList.addWidget(self.file_list_widget, 1)
+        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List',
+                               separator=False, stretch=False)
         layout_ribbon.addStretch(1)
 
         #%% Virtual Detector Mask column content (box_mask/layout_mask
@@ -476,6 +453,13 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_useMask.setToolTip(
             'When checked, the navigation image sums each diffraction pattern only '
             'within the annular region below, instead of the whole detector')
+        self._ribbon_inline_separator(layout_mask_mode)
+        self.checkbox_revertContrast = qtw.QCheckBox('Revert')
+        self.checkbox_revertContrast.setToolTip(
+            'Invert the Nav./Test Image display (dark <-> bright) - a display-only '
+            'toggle, never touches the underlying data or any calculation')
+        layout_mask_mode.addWidget(self.checkbox_revertContrast)
+        self.checkbox_revertContrast.stateChanged.connect(lambda: self._update_nav_display_clim())
         layout_mask_mode.addStretch(1)
 
         # Each row here holds at most one long-label button - a long label
@@ -540,39 +524,49 @@ class Tab_Create_NavSignal(TabBase):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
 
         for sb in (self.spinbox_centerX, self.spinbox_centerY, self.spinbox_rIn, self.spinbox_rOut):
-            sb.valueChanged.connect(self.update_mask_overlay)
+            sb.valueChanged.connect(self._sync_active_detector)
 
-        # Several virtual detectors can be added to the list below and are
-        # combined into a single navigation image at calculation time -
-        # natively summed by eventem for .tpx3, OR-combined into one mask
-        # for every other format (see create_virtual_detector_multi in
-        # EDyssey/io_utils/nav_image.py). An empty list just keeps the
-        # spinbox-defined detector above as the only one used, so nothing
-        # changes for anyone who never touches this.
-        self._extra_detectors = []
+        # Every virtual detector - including the very first, spinbox-defined
+        # one - always has an entry in the list below (per user request: "so
+        # the user knows he already have one"), combined together into a
+        # single navigation image at calculation time - natively summed by
+        # eventem for .tpx3, OR-combined into one mask for every other
+        # format (see create_virtual_detector_multi in
+        # EDyssey/io_utils/nav_image.py). self._active_detector_row tracks
+        # which entry the center/radii spinboxes currently drive live (see
+        # _sync_active_detector/_load_selected_detector) - "Add Detector"
+        # freezes the current one and starts a new active entry instead of
+        # editing in place.
+        self._extra_detectors = [{'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                                  'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}]
+        self._active_detector_row = 0
 
         layout_detector_list_buttons = qtw.QHBoxLayout()
         layout_mask.addLayout(layout_detector_list_buttons)
         self.button_addDetector = qtw.QPushButton('Add Detector')
         self.button_addDetector.setToolTip(
-            'Add the center/radii above as another virtual detector - once one or '
-            'more are added here, ALL of them (not the values above, until also '
-            'added) are combined into the single navigation image used for '
-            'calculations')
+            'Snapshot the center/radii above as a new virtual detector, on top of '
+            'whichever one is already listed - ALL listed detectors are combined '
+            'into the single navigation image used for calculations. Further '
+            'edits above target the new (now-selected) entry.')
         layout_detector_list_buttons.addWidget(self.button_addDetector)
         self.button_addDetector.clicked.connect(self.add_extra_detector)
         self.button_removeDetector = qtw.QPushButton('Remove Selected')
+        self.button_removeDetector.setToolTip(
+            'Remove the selected detector - at least one always remains listed')
         layout_detector_list_buttons.addWidget(self.button_removeDetector)
         self.button_removeDetector.clicked.connect(self.remove_extra_detector)
         layout_detector_list_buttons.addStretch(1)
 
         self.list_detectors = qtw.QListWidget()
         self.list_detectors.setToolTip(
-            'Additional virtual detectors, combined with each other (but not with '
-            'the center/radii spinboxes above unless also added here) into one '
-            'navigation image at calculation time')
+            'Every virtual detector in play, combined together into one navigation '
+            'image at calculation time - select one to edit it via the center/radii '
+            'spinboxes above (its values update live as you edit/drag them)')
         self.list_detectors.setMaximumHeight(70)
         layout_mask.addWidget(self.list_detectors)
+        self.list_detectors.addItem(self._format_detector(self._extra_detectors[0]))
+        self.list_detectors.setCurrentRow(0)
         self.list_detectors.itemSelectionChanged.connect(self._load_selected_detector)
 
         # Each row here holds at most one long-label button - a long label
@@ -862,11 +856,11 @@ class Tab_Create_NavSignal(TabBase):
             if not metadata:
                 raise ValueError('comment.txt contained no parsable metadata')
             if 'scan size x' in metadata and 'scan size y' in metadata:
-                self.lineEdit_scanSize_x.setText(str(int(metadata['scan size x'])))
-                self.lineEdit_scanSize_y.setText(str(int(metadata['scan size y'])))
+                self.spinbox_scanSize_x.setValue(int(metadata['scan size x']))
+                self.spinbox_scanSize_y.setValue(int(metadata['scan size y']))
                 self.checkbox_scanSize.setChecked(False)
             if 'dwelltime' in metadata:
-                self.spinbox_dwellTime.setValue(int(metadata['dwelltime']))
+                self.spinbox_dwellTime_detection.setValue(int(metadata['dwelltime']))
             self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
         except Exception as e:
             if silent:
@@ -879,12 +873,15 @@ class Tab_Create_NavSignal(TabBase):
 
     def activate_smartScan_widgets(self):
         """Enable/disable the Smart Scan widgets to match the checkbox, and
-        invalidate any previously-reviewed Check Files match table."""
+        invalidate any previously-reviewed Check Files match table.
+        spinbox_dwellTime_detection is NOT included here - it doubles as the
+        general dwell time and stays enabled regardless (see the Input
+        Parameters column / _get_dwell_time_for)."""
         enable = self.checkbox_smartScan.isChecked()
         for wid in (self.combo_smartScanRole, self.lineEdit_patternDir,
                     self.button_browsePatternDir, self.lineEdit_detectionDir,
                     self.button_browseDetectionDir, self.button_checkSmartScanFiles,
-                    self.spinbox_dwellTime_detection, self.spinbox_dwellTime_acquisition):
+                    self.spinbox_dwellTime_acquisition):
             wid.setEnabled(enable)
         self._smart_scan_rows = None
         self.label_smartScanSummary.setText('')
@@ -923,7 +920,7 @@ class Tab_Create_NavSignal(TabBase):
         if not os.path.isdir(directory):
             qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
             return
-        if self.checkbox_selectAll.isChecked():
+        if self.combo_dtype.currentText() == 'All files':
             dtype = None
             for ext in io.DATA_EXTENSIONS:
                 if any(f.endswith(ext) for f in os.listdir(directory)):
@@ -946,17 +943,24 @@ class Tab_Create_NavSignal(TabBase):
             self.logger.info('Smart-scan file check confirmed: %d / %d angle(s) included.',
                              n_ok, len(dlg.rows))
 
+    def _ext_filter_for_combo(self):
+        """Extensions matching the current combo_dtype selection - '.tif'
+        matches both '.tif' and '.tiff' (see combo_dtype's tooltip);
+        'All files' returns every supported extension."""
+        selected = self.combo_dtype.currentText()
+        if selected == 'All files':
+            return ['.tpx3', '.hdf5', '.zspy', '.hspy', '.mib', '.pmf', '.tif', '.tiff']
+        if selected == '.tif':
+            return ['.tif', '.tiff']
+        return [selected]
+
     def refresh_file_list(self):
         """(Re)populate the file list from the current directory, filtered
-        to the data type selected in combo_dtype whenever "All files" is
-        unchecked."""
+        to the data type selected in combo_dtype (see _ext_filter_for_combo)."""
         directory = self.lineEdit_dir_signal.text()
         if not os.path.isdir(directory):
             return
-        if self.checkbox_selectAll.isChecked():
-            ext_filter = ['.tpx3', '.hdf5', '.zspy', '.hspy', '.mib', '.pmf']
-        else:
-            ext_filter = [self.combo_dtype.currentText()]
+        ext_filter = self._ext_filter_for_combo()
         self.file_list_widget.clear()
         for f in sorted(os.listdir(directory)):
             if os.path.splitext(f)[1] in ext_filter:
@@ -971,12 +975,9 @@ class Tab_Create_NavSignal(TabBase):
         self.lineEdit_projectName.setText(os.path.basename(p.rstrip('/\\')))
 
     def activate_lineEdit_scanSize(self):
-        if self.checkbox_scanSize.isChecked():
-            self.lineEdit_scanSize_x.setDisabled(True)
-            self.lineEdit_scanSize_y.setDisabled(True)
-        else:
-            self.lineEdit_scanSize_x.setEnabled(True)
-            self.lineEdit_scanSize_y.setEnabled(True)
+        auto = self.checkbox_scanSize.isChecked()
+        self.spinbox_scanSize_x.setDisabled(auto)
+        self.spinbox_scanSize_y.setDisabled(auto)
 
     def activate_detectorSize_spinboxes(self):
         auto = self.checkbox_detectorSizeAuto.isChecked()
@@ -1006,21 +1007,12 @@ class Tab_Create_NavSignal(TabBase):
                 item_names.append(item.text())
         return item_names
 
-    def activate_combo_dtype(self, state):
-        """Enable combo_dtype when "All files" is unchecked (state == 0,
-        Qt.Unchecked) and refresh the file list either way."""
-        if state == 0:
-            self.combo_dtype.setEnabled(True)
-        else:
-            self.combo_dtype.setDisabled(True)
-        self.refresh_file_list()
-
 #%% single-file test / virtual mask
     def _get_current_scanSize(self):
         if self.checkbox_scanSize.isChecked():
             return None
         try:
-            return (int(self.lineEdit_scanSize_x.text()), int(self.lineEdit_scanSize_y.text()))
+            return (int(self.spinbox_scanSize_x.text()), int(self.spinbox_scanSize_y.text()))
         except Exception:
             return None
 
@@ -1081,7 +1073,7 @@ class Tab_Create_NavSignal(TabBase):
                     return self.spinbox_dwellTime_acquisition.value()
                 if row.get('detection_file') and os.path.basename(row['detection_file']) == name:
                     return self.spinbox_dwellTime_detection.value()
-        return self.spinbox_dwellTime.value()
+        return self.spinbox_dwellTime_detection.value()
 
     def test_selected_file(self, item):
         """Compute and preview the navigation image for a single file
@@ -1261,9 +1253,11 @@ class Tab_Create_NavSignal(TabBase):
             self.logger.info('Summed DP computed successfully (%d x %d px).', det_x, det_y)
 
     def update_mask_overlay(self):
-        """Redraw the inner/outer radius circles and center marker for the
-        current (spinbox-driven, drag-editable) detector, plus every
-        detector already added via "Add Detector", on the Summed DP preview."""
+        """Redraw every virtual detector in the (always non-empty) list on
+        the Summed DP preview - the active one (self._active_detector_row,
+        spinbox-driven and drag-editable) solid/lime-khaki, every other one
+        dashed/cyan-khaki and non-draggable (select it in the list to make
+        it active instead - see _load_selected_detector)."""
         for artist in self._mask_artists:
             try:
                 artist.remove()
@@ -1299,10 +1293,12 @@ class Tab_Create_NavSignal(TabBase):
             [cx], [cy], color='lime', marker='+', s=80, linewidth=2)
         self._mask_artists.append(self._current_center_marker)
 
-        # Already-added detectors (see add_extra_detector) - dashed and in a
-        # different color so they stay visually distinct from the one still
-        # being positioned (by drag or spinbox) above.
-        for detector in self._extra_detectors:
+        # Every OTHER listed detector (not the active one, already drawn
+        # above from the spinboxes) - dashed and in a different color so it
+        # stays visually distinct from the one currently being positioned.
+        for i, detector in enumerate(self._extra_detectors):
+            if i == self._active_detector_row:
+                continue
             dcx, dcy = detector['center']
             circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
                                     edgecolor='cyan', linewidth=1.2, linestyle='--')
@@ -1317,11 +1313,28 @@ class Tab_Create_NavSignal(TabBase):
         self.update_recip_scale_circles()
         self.canvas.draw_idle()
 
+    def _sync_active_detector(self):
+        """Keep the active list entry (self._active_detector_row) live-
+        synced with the center/radii spinboxes as the user edits or drags
+        them, so its displayed values are never stale - "the values should
+        be changed as the user is moving the detector or changing one of
+        its radii" (per user request), rather than only updating on an
+        explicit "Add Detector" click."""
+        detector = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                    'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}
+        self._extra_detectors[self._active_detector_row] = detector
+        item = self.list_detectors.item(self._active_detector_row)
+        if item is not None:
+            item.setText(self._format_detector(detector))
+        self.update_mask_overlay()
+
     def add_extra_detector(self):
-        """Append the current center/radii spinbox values as another virtual
-        detector, combined with every other added detector (and the spinbox
-        values themselves, once anything has been added) at calculation
-        time - see get_active_detectors/calculate_nav_img_masked."""
+        """Snapshot the current center/radii spinbox values as a NEW
+        detector entry, on top of whichever one was already active - the
+        previous entry stays frozen at its current values, and further
+        spinbox edits/drags target the new (now-selected) one instead - see
+        get_active_detectors/calculate_nav_img_masked for how the full list
+        is combined at calculation time."""
         r_in = self.spinbox_rIn.value()
         r_out = self.spinbox_rOut.value()
         if r_out <= r_in:
@@ -1332,15 +1345,24 @@ class Tab_Create_NavSignal(TabBase):
                     'r_in': r_in, 'r_out': r_out}
         self._extra_detectors.append(detector)
         self.list_detectors.addItem(self._format_detector(detector))
+        self.list_detectors.setCurrentRow(len(self._extra_detectors) - 1)
         self.update_mask_overlay()
 
     def remove_extra_detector(self):
-        """Remove the selected entry from the added-detectors list."""
+        """Remove the selected detector from the list - at least one always
+        remains (per user request), so removing the last one re-seeds a
+        fresh default entry instead of leaving the list empty."""
         row = self.list_detectors.currentRow()
         if row < 0:
             return
         del self._extra_detectors[row]
         self.list_detectors.takeItem(row)
+        if not self._extra_detectors:
+            default = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                       'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}
+            self._extra_detectors.append(default)
+            self.list_detectors.addItem(self._format_detector(default))
+        self.list_detectors.setCurrentRow(min(row, len(self._extra_detectors) - 1))
         self.update_mask_overlay()
 
     def _format_detector(self, detector):
@@ -1348,11 +1370,13 @@ class Tab_Create_NavSignal(TabBase):
         return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
 
     def _load_selected_detector(self):
-        """Load the selected list entry's values back into the center/radii
-        spinboxes - lets it be inspected, or removed and re-added with edits."""
+        """Load the selected list entry's values into the center/radii
+        spinboxes and make it the active (live-synced/draggable) detector -
+        see _sync_active_detector."""
         row = self.list_detectors.currentRow()
         if row < 0 or row >= len(self._extra_detectors):
             return
+        self._active_detector_row = row
         detector = self._extra_detectors[row]
         for sb, val in ((self.spinbox_centerX, detector['center'][0]),
                         (self.spinbox_centerY, detector['center'][1]),
@@ -1365,13 +1389,9 @@ class Tab_Create_NavSignal(TabBase):
 
     def get_active_detectors(self):
         """The full set of virtual detectors to use for calculations right
-        now: every entry added via "Add Detector", or - if none have been
-        added - just the center/radii spinbox values alone. Passed as
+        now - every entry in the (always non-empty) list. Passed as
         calculate_nav_img_masked's `detectors` argument."""
-        if self._extra_detectors:
-            return list(self._extra_detectors)
-        return [{'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                 'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}]
+        return list(self._extra_detectors)
 
     def update_recip_scale_circles(self):
         """Draw concentric dashed 1/A rings on the Summed DP preview, centered
@@ -1504,9 +1524,10 @@ class Tab_Create_NavSignal(TabBase):
             # immediately overwritten by the next auto-centered Summed DP
             # computation).
             if not self.checkbox_autoCenterDp.isChecked():
+                # setValue() below fires valueChanged -> _sync_active_detector,
+                # which already calls update_mask_overlay().
                 self.spinbox_centerX.setValue(int(round(event.xdata)))
                 self.spinbox_centerY.setValue(int(round(event.ydata)))
-                self.update_mask_overlay()
             return
 
         # Blit setup: snapshot everything in ax_mask_preview *except*
@@ -1573,15 +1594,17 @@ class Tab_Create_NavSignal(TabBase):
         self.canvas.blit(self.ax_mask_preview.bbox)
 
     def on_release_mask(self, event):
-        """End the drag (if one was active) and do one full, correct redraw
-        - update_mask_overlay()/update_recip_scale_circles() were skipped
-        during the drag itself (see on_motion_mask), so the reciprocal-space
-        rings in particular need this to catch up to the final center."""
+        """End the drag (if one was active), sync the active list entry to
+        the just-finished drag's final values (see _sync_active_detector -
+        also does one full, correct redraw: update_mask_overlay()/
+        update_recip_scale_circles() were skipped during the drag itself,
+        see on_motion_mask, so the reciprocal-space rings in particular need
+        this to catch up to the final center)."""
         was_dragging = self._mask_drag_mode is not None
         self._mask_drag_mode = None
         self._mask_bg = None
         if was_dragging:
-            self.update_mask_overlay()
+            self._sync_active_detector()
 
     def on_scroll_mask(self, event):
         """Zoom either plot in/out on Ctrl+scroll wheel, centered on the
@@ -1727,7 +1750,7 @@ class Tab_Create_NavSignal(TabBase):
             if fns is None:
                 return
         else:
-            if self.checkbox_selectAll.isChecked():
+            if self.combo_dtype.currentText() == 'All files':
                 fns = self.get_all_item_names()
             else:
                 fns = self.file_list_widget.selectedItems()
@@ -1735,9 +1758,9 @@ class Tab_Create_NavSignal(TabBase):
                 if len(fns) == 0:
                     # The list is already filtered to this dtype by
                     # refresh_file_list(); this is just a defensive fallback.
-                    dtype = self.combo_dtype.currentText()
+                    ext_filter = self._ext_filter_for_combo()
                     fns = self.get_all_item_names()
-                    fns = [fn for fn in fns if os.path.splitext(fn)[1] == dtype]
+                    fns = [fn for fn in fns if os.path.splitext(fn)[1] in ext_filter]
             fns = [os.path.join(self.path_main, fn) for fn in fns]
             fns.sort()
 
@@ -1752,12 +1775,12 @@ class Tab_Create_NavSignal(TabBase):
                 return
             dtype = dtype[0]
 
-        dwellTime = self.spinbox_dwellTime.value()
+        dwellTime = self.spinbox_dwellTime_detection.value()
         if self.checkbox_scanSize.isChecked():
             scanSize = None
         else:
             try:
-                scanSize = (int(self.lineEdit_scanSize_x.text()), int(self.lineEdit_scanSize_y.text()))
+                scanSize = (int(self.spinbox_scanSize_x.text()), int(self.spinbox_scanSize_y.text()))
             except ValueError:
                 scanSize = None
         if self._scan_size_required(dtype) and scanSize is None:
@@ -1848,7 +1871,7 @@ class Tab_Create_NavSignal(TabBase):
             qtw.QMessageBox.critical(self, 'No Folder', 'Select the 4D signals folder first.')
             return None, None, None, None
         dtype = None
-        if self.checkbox_selectAll.isChecked():
+        if self.combo_dtype.currentText() == 'All files':
             for ext in io.DATA_EXTENSIONS:
                 if any(f.endswith(ext) for f in os.listdir(directory)):
                     dtype = ext
@@ -2211,9 +2234,12 @@ class Tab_Create_NavSignal(TabBase):
         self.clip_nav.set_range(data_min, data_max)
 
     def _update_nav_display_clim(self, redraw=True):
-        """Apply clip_nav's current vmin/vmax to the displayed nav image."""
+        """Apply clip_nav's current vmin/vmax (and the Revert toggle's
+        colormap direction) to the displayed nav image - both purely
+        cosmetic, never touching the underlying data/calculations."""
         vmin, vmax = self.clip_nav.values()
         self.img_display.set_clim(vmin, vmax)
+        self.img_display.set_cmap('viridis_r' if self.checkbox_revertContrast.isChecked() else 'viridis')
         if redraw:
             self.canvas.draw_idle()
 
