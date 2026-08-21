@@ -28,7 +28,7 @@ from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
 from .base_tab import TabBase
 from .threshold_dialog import ThresholdDialog
-from .worker_thread import ProcessStderrBuffer
+from .worker_thread import ProcessStderrBuffer, WorkerThread_General
 from .worker_launch import worker_command
 from .ribbon import RibbonPanel, RibbonTool
 from .clipping_thresholds import ClippingThresholdsWidget
@@ -281,6 +281,18 @@ class Tab_ROI_on_4D(TabBase):
             'the whole detector')
         layout_virtualImaging.addWidget(self.checkbox_useVirtualMask)
 
+        self.checkbox_autoCenterMask = qtw.QCheckBox('Auto-center')
+        self.checkbox_autoCenterMask.setChecked(True)
+        self.checkbox_autoCenterMask.setToolTip(
+            'When checked, the virtual mask (below) is re-centered on the direct '
+            'beam automatically (large-sigma blur), independently of the '
+            'reciprocal-space "Auto-center" above - the two centers can differ. '
+            'When unchecked, hold Ctrl and drag the mask\'s center "+" or a '
+            'circle edge on the diffraction pattern to move/resize it manually, '
+            'or use the Center/Radius spinboxes below.')
+        layout_virtualImaging.addWidget(self.checkbox_autoCenterMask)
+        self.checkbox_autoCenterMask.stateChanged.connect(self._on_auto_center_mask_toggled)
+
         # Center and Radius share one QGridLayout (rather than two
         # independent QHBoxLayouts) so their cells land in exactly the same
         # columns - X directly above In, Y directly above Out - instead of
@@ -401,14 +413,30 @@ class Tab_ROI_on_4D(TabBase):
             'independent of any ROI/SAM2 mask drawn elsewhere on this tab')
         layout_vi_actions.addWidget(self.button_computeVirtualImage)
 
+        self.button_sumDpWhole = qtw.QPushButton('Sum DP\n(Whole Signal)')
+        self.button_sumDpWhole.setFixedHeight(50)
+        self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
+        self.button_sumDpWhole.setToolTip(
+            'Sum every diffraction pattern of the WHOLE scan into one reference '
+            'DP, without needing to first draw an ROI/segment/threshold - useful '
+            'to see the beam and place the virtual mask before running "Compute '
+            'Virtual Image"')
+        layout_vi_actions.addWidget(self.button_sumDpWhole)
+
         layout_vi_actions.addWidget(self.button_cancel)
         layout_virtualImaging.addLayout(layout_vi_actions)
 
         # Artists for the virtual-detector circle overlay drawn on the DP
-        # axis, redrawn by update_virtual_mask_overlay() - spinbox/list
-        # driven only (unlike the Navigator tab's draggable equivalent);
-        # edit the values directly instead.
+        # axis, redrawn by update_virtual_mask_overlay() - the live
+        # (spinbox-driven) detector's 3 artists are also tracked directly
+        # (_vi_circle_out/_vi_circle_in/_vi_center_marker) for Ctrl+drag
+        # (see _try_start_vi_mask_drag/_on_motion_vi_mask/_on_release_vi_mask).
         self._vi_mask_artists = []
+        self._vi_circle_out = None
+        self._vi_circle_in = None
+        self._vi_center_marker = None
+        self._vi_mask_drag_mode = None
+        self._vi_mask_bg = None
         self._ribbon_group_end(layout_ribbon, layout_virtualImaging, 'Virtual Imaging')
 
         #%% Edge Detection / SAM2 Segmentation / Summed DP Threshold
@@ -629,6 +657,13 @@ class Tab_ROI_on_4D(TabBase):
             RibbonTool('remove_point', 'remove_point', 'Remove last SAM2 point (same as middle-click)',
                       'action', self.delete_last_seg_point),
             RibbonTool('sep1', kind='separator'),
+            RibbonTool('center_recip', 'center_recip', 'Find the beam center now and re-center the '
+                      'reciprocal-space rings there (same as Ctrl+Click, when "Auto-center" above is off)',
+                      'action', self.find_and_center_recip),
+            RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
+                      'virtual detector mask there (same as vi_auto_center)',
+                      'action', self.vi_auto_center),
+            RibbonTool('sep2', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
             RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
@@ -880,13 +915,18 @@ class Tab_ROI_on_4D(TabBase):
         modifiers, and the ribbon's currently active tool."""
         ribbon_tool = self.ribbon.active_tool
         if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
-                and 'ctrl' in event.modifiers and not self.checkbox_autoCenterDp.isChecked()
-                and hasattr(self, 'dp')):
-            # Manual re-centering of the reciprocal-space rings (only takes
-            # effect when auto-centering is off, so it isn't immediately
-            # overwritten by the next auto-centered redraw).
-            self.dp_center = (event.xdata, event.ydata)
-            self.update_canvas(ax='dp')
+                and 'ctrl' in event.modifiers and hasattr(self, 'dp')):
+            # Grabbing the virtual mask's own center/edge handles always
+            # takes priority over the reciprocal-space center below - the
+            # two centers are independent (see checkbox_autoCenterMask).
+            if self._try_start_vi_mask_drag(event):
+                return
+            if not self.checkbox_autoCenterDp.isChecked():
+                # Manual re-centering of the reciprocal-space rings (only
+                # takes effect when auto-centering is off, so it isn't
+                # immediately overwritten by the next auto-centered redraw).
+                self.dp_center = (event.xdata, event.ydata)
+                self.update_canvas(ax='dp')
             return
         if event.inaxes != self.ax_nav:
             self.press = None
@@ -925,7 +965,12 @@ class Tab_ROI_on_4D(TabBase):
 
     def on_motion(self, event):
         """Resize the in-progress ROI rectangle as the mouse moves,
-        blitting just the rectangle onto the cached background for speed."""
+        blitting just the rectangle onto the cached background for speed.
+        Dispatches to the virtual-mask drag instead when one is active (see
+        _try_start_vi_mask_drag)."""
+        if self._vi_mask_drag_mode is not None:
+            self._on_motion_vi_mask(event)
+            return
         if self.press is None or event.inaxes is None:
             return
         x0, y0 = self.press
@@ -964,7 +1009,12 @@ class Tab_ROI_on_4D(TabBase):
     def on_release(self, event):
         """Finalize the ROI rectangle on mouse-up, normalize a reversed
         drag into (x, y, w, h), then kick off a background
-        diffraction-pattern computation for it."""
+        diffraction-pattern computation for it. Dispatches to the
+        virtual-mask drag instead when one is active (see
+        _try_start_vi_mask_drag)."""
+        if self._vi_mask_drag_mode is not None:
+            self._on_release_vi_mask()
+            return
         if self.press is None or event.inaxes is None:
             return
 
@@ -1086,9 +1136,10 @@ class Tab_ROI_on_4D(TabBase):
         # self.figure.tight_layout()
 
     def reset_canvas(self):
-        """Clear displayed data back to blank at the start of every "Load
-        Signal" - the image artists/colorbars themselves are created once
-        in _setup_canvas() and reused."""
+        """Clear displayed data back to blank - used when a brand new 4D
+        signal is about to be loaded (not on a same-signal recompute, see
+        _reset_nav_image_only). The image artists/colorbars themselves are
+        created once in _setup_canvas() and reused."""
         img_temp = np.zeros((512,512), dtype='uint16')
         self.img_display['nav'].set_data(img_temp)
         self.img_display['nav_roi'].set_data(img_temp)
@@ -1102,6 +1153,17 @@ class Tab_ROI_on_4D(TabBase):
             except Exception:
                 pass
         self._vi_mask_artists.clear()
+        self.canvas.draw_idle()
+
+    def _reset_nav_image_only(self):
+        """Clear just the Nav. Image display, ahead of a "Compute Virtual
+        Image" recompute - unlike reset_canvas(), leaves the already-plotted
+        diffraction pattern, its virtual-detector mask circles, the ROI
+        crop, and any SAM2 points untouched, since none of those are
+        invalidated by re-running the SAME signal through a different
+        mode/mask."""
+        img_temp = np.zeros((512, 512), dtype='uint16')
+        self.img_display['nav'].set_data(img_temp)
         self.canvas.draw_idle()
 
     def update_canvas(self, ax='dp', roiUpdate=False):
@@ -1159,7 +1221,14 @@ class Tab_ROI_on_4D(TabBase):
         # mutated in place), not on every redraw - update_canvas() is wired
         # directly to the (continuously-firing) DP contrast sliders.
         dp_key = id(self.dp) if hasattr(self, 'dp') else None
-        if self.checkbox_autoCenterDp.isChecked() and self._dp_center_cache_key != dp_key:
+        # Recip.-space and virtual-mask centering are independent (see
+        # checkbox_autoCenterMask) but both auto-find via the same
+        # find_dp_center_blurred call when either wants it - only the
+        # underlying computation/cache is shared, not the behavior.
+        want_mask_auto_center = (self.checkbox_useVirtualMask.isChecked()
+                                 and self.checkbox_autoCenterMask.isChecked())
+        if ((self.checkbox_autoCenterDp.isChecked() or want_mask_auto_center)
+                and self._dp_center_cache_key != dp_key):
             try:
                 self.dp_center = io.find_dp_center_blurred(self.dp)
                 self._dp_center_cache_key = dp_key
@@ -1176,6 +1245,9 @@ class Tab_ROI_on_4D(TabBase):
         else:
             self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=9)
 
+        if want_mask_auto_center and center is not None:
+            self._apply_mask_center(center)
+
         self.canvas.draw()
 
     def _on_auto_center_toggled(self):
@@ -1185,6 +1257,32 @@ class Tab_ROI_on_4D(TabBase):
         after a manual Ctrl+Click override would silently keep showing that
         stale manual center, since update_canvas()'s cache only re-runs it
         when self.dp's identity has changed."""
+        self._dp_center_cache_key = None
+        if hasattr(self, 'dp'):
+            self.update_canvas(ax='dp')
+
+    def _apply_mask_center(self, center, refresh=True):
+        """Push `center` (x, y) into the virtual-mask Center X/Y spinboxes
+        without re-triggering their own valueChanged->update_virtual_mask_overlay
+        (the caller does its own refresh once, via `refresh=True`, instead)."""
+        cx, cy = int(round(center[0])), int(round(center[1]))
+        if self.spinbox_vi_centerX.value() == cx and self.spinbox_vi_centerY.value() == cy:
+            return
+        self.spinbox_vi_centerX.blockSignals(True)
+        self.spinbox_vi_centerY.blockSignals(True)
+        self.spinbox_vi_centerX.setValue(cx)
+        self.spinbox_vi_centerY.setValue(cy)
+        self.spinbox_vi_centerX.blockSignals(False)
+        self.spinbox_vi_centerY.blockSignals(False)
+        if refresh:
+            self.update_virtual_mask_overlay()
+
+    def _on_auto_center_mask_toggled(self):
+        """checkbox_autoCenterMask.stateChanged handler: force one fresh
+        find_dp_center_blurred re-run on the next redraw (mirrors
+        _on_auto_center_toggled) - re-enabling it after a manual drag/Ctrl+Click
+        override should immediately snap back to the found center instead of
+        waiting for self.dp to change again."""
         self._dp_center_cache_key = None
         if hasattr(self, 'dp'):
             self.update_canvas(ax='dp')
@@ -1225,6 +1323,25 @@ class Tab_ROI_on_4D(TabBase):
         msg.exec_()
 
 #%% Virtual Imaging
+    def find_and_center_recip(self):
+        """Right-hand ribbon quick-access action: find the beam center now
+        and jump the reciprocal-space rings there - the one-shot equivalent
+        of Ctrl+Click on the diffraction pattern (only takes visible effect
+        while "Auto-center" above is off; otherwise the next redraw
+        re-finds it anyway)."""
+        if not hasattr(self, 'dp'):
+            qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
+                'Draw an ROI, segment an image, use "Summed DP from Threshold", '
+                'or "Sum DP (Whole Signal)" first, so a beam center can be found.')
+            return
+        try:
+            self.dp_center = io.find_dp_center_blurred(self.dp)
+            self._dp_center_cache_key = id(self.dp)
+        except Exception:
+            self.logger.exception('Auto-centering failed.')
+            return
+        self.update_canvas(ax='dp')
+
     def vi_auto_center(self):
         """Copy the diffraction pattern's beam center (self.dp_center -
         found automatically via the large-sigma blur, or set manually via
@@ -1297,38 +1414,166 @@ class Tab_ROI_on_4D(TabBase):
     def update_virtual_mask_overlay(self):
         """Redraw the virtual-detector circle(s) over the currently
         displayed diffraction pattern (ax_dp) - a preview of what "Compute
-        Virtual Image" will use. Spinbox/list driven only (unlike the
-        Navigator tab's draggable equivalent) - edit the values directly."""
+        Virtual Image" will use. The live (spinbox-driven) detector is
+        always shown - solid lime outer / khaki inner - with its 3 artists
+        tracked directly (_vi_circle_out/_vi_circle_in/_vi_center_marker) so
+        on_press/on_motion/on_release can Ctrl+drag it (see
+        _try_start_vi_mask_drag); every already-Added detector is drawn on
+        top, dashed and non-draggable (select it from the list - via
+        _load_selected_detector_vi - to edit it instead), matching the
+        Navigator tab's identical two-tier overlay."""
         for artist in self._vi_mask_artists:
             try:
                 artist.remove()
             except Exception:
                 pass
         self._vi_mask_artists.clear()
+        self._vi_circle_out = None
+        self._vi_circle_in = None
+        self._vi_center_marker = None
         if not hasattr(self, 'dp'):
             self.canvas.draw_idle()
             return
-        detectors = self.get_active_virtual_detectors()
-        # Dashed/magenta once detectors have actually been added to the list
-        # (all of them are then in play together); solid/lime while still
-        # just previewing the live spinbox values - matching the Navigator
-        # tab's color choice for its own detector overlay (see
-        # Tab_Create_NavSignal.update_mask_overlay): red reads poorly
-        # against the DP axis's inferno colormap, whose brightest values are
-        # themselves yellow/orange/red near the direct beam, exactly where
-        # a virtual detector ring usually sits.
-        style = (dict(fill=False, edgecolor='magenta', linestyle='--') if self._extra_detectors_vi
-                else dict(fill=False, edgecolor='lime', linestyle='-'))
-        for detector in detectors:
-            cx, cy = detector['center']
-            circle_out = patches.Circle((cx, cy), detector['r_out'], **style)
-            self.ax_dp.add_patch(circle_out)
-            self._vi_mask_artists.append(circle_out)
+
+        cx = self.spinbox_vi_centerX.value()
+        cy = self.spinbox_vi_centerY.value()
+        r_in = self.spinbox_vi_rIn.value()
+        r_out = self.spinbox_vi_rOut.value()
+        # khaki inner circle (item 3) reads clearly against both lime/cyan
+        # outer rings and the DP axis's inferno colormap.
+        self._vi_circle_out = patches.Circle((cx, cy), r_out, fill=False,
+                                             edgecolor='lime', linewidth=1.5)
+        self.ax_dp.add_patch(self._vi_circle_out)
+        self._vi_mask_artists.append(self._vi_circle_out)
+        if r_in > 0:
+            self._vi_circle_in = patches.Circle((cx, cy), r_in, fill=False,
+                                                edgecolor='khaki', linewidth=1.5)
+            self.ax_dp.add_patch(self._vi_circle_in)
+            self._vi_mask_artists.append(self._vi_circle_in)
+        self._vi_center_marker = self.ax_dp.scatter(
+            [cx], [cy], color='lime', marker='+', s=80, linewidth=2)
+        self._vi_mask_artists.append(self._vi_center_marker)
+
+        # Already-Added detectors - dashed/magenta-cyan so they stay visually
+        # distinct from the live one being positioned above.
+        for detector in self._extra_detectors_vi:
+            dcx, dcy = detector['center']
+            circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
+                                    edgecolor='magenta', linewidth=1.2, linestyle='--')
+            self.ax_dp.add_patch(circle)
+            self._vi_mask_artists.append(circle)
             if detector['r_in'] > 0:
-                circle_in = patches.Circle((cx, cy), detector['r_in'], **style)
-                self.ax_dp.add_patch(circle_in)
-                self._vi_mask_artists.append(circle_in)
+                circle_in2 = patches.Circle((dcx, dcy), detector['r_in'], fill=False,
+                                            edgecolor='khaki', linewidth=1.2, linestyle='--')
+                self.ax_dp.add_patch(circle_in2)
+                self._vi_mask_artists.append(circle_in2)
         self.canvas.draw_idle()
+
+    def _try_start_vi_mask_drag(self, event):
+        """Hit-test the live virtual-detector mask's center "+" / radius
+        edges on ax_dp for a Ctrl+drag start - called from on_press before
+        the reciprocal-space center's own Ctrl+Click (see on_press), so
+        grabbing the mask's own handles always takes priority over setting
+        the (independent) beam center. Returns True if a drag was started
+        (the click should not fall through to recip-center logic), False
+        otherwise (click missed every handle, or there's no mask to drag)."""
+        self._vi_mask_drag_mode = None
+        if not self.checkbox_useVirtualMask.isChecked() or self._vi_circle_out is None:
+            return False
+        cx = self.spinbox_vi_centerX.value()
+        cy = self.spinbox_vi_centerY.value()
+        r_in = self.spinbox_vi_rIn.value()
+        r_out = self.spinbox_vi_rOut.value()
+
+        # Hit-test in pixel space so the threshold doesn't depend on zoom.
+        p0 = self.ax_dp.transData.transform((0, 0))
+        p1 = self.ax_dp.transData.transform((1, 0))
+        px_per_data = np.hypot(p1[0] - p0[0], p1[1] - p0[1]) or 1
+        threshold_data = 8 / px_per_data
+
+        dist = np.hypot(event.xdata - cx, event.ydata - cy)
+        if dist < threshold_data:
+            self._vi_mask_drag_mode = 'center'
+        elif abs(dist - r_out) < threshold_data:
+            self._vi_mask_drag_mode = 'r_out'
+        elif r_in > 0 and abs(dist - r_in) < threshold_data:
+            self._vi_mask_drag_mode = 'r_in'
+        if self._vi_mask_drag_mode is None:
+            return False
+
+        # Manually dragging the mask is a deliberate override - stop
+        # auto-center from immediately snapping it back on the next redraw.
+        if self.checkbox_autoCenterMask.isChecked():
+            self.checkbox_autoCenterMask.setChecked(False)
+
+        # Blit setup - snapshot everything on ax_dp except the 3 dragged
+        # artists, so on_motion can move just those on every mouse-move tick.
+        for artist in (self._vi_circle_out, self._vi_circle_in, self._vi_center_marker):
+            if artist is not None:
+                artist.set_visible(False)
+        self.canvas.draw()
+        self._vi_mask_bg = self.canvas.copy_from_bbox(self.ax_dp.bbox)
+        for artist in (self._vi_circle_out, self._vi_circle_in, self._vi_center_marker):
+            if artist is not None:
+                artist.set_visible(True)
+        return True
+
+    def _on_motion_vi_mask(self, event):
+        """Apply the drag started by _try_start_vi_mask_drag - repositions
+        the dragged artists directly and blits (mirrors the Navigator tab's
+        on_motion_mask), rather than going through the spinboxes'
+        valueChanged -> update_virtual_mask_overlay -> full redraw path on
+        every tick (still updates the spinboxes' displayed values, with
+        their change signals blocked, so that path isn't retriggered)."""
+        if (self._vi_mask_drag_mode is None or event.inaxes != self.ax_dp
+                or event.xdata is None or event.ydata is None):
+            return
+        if self._vi_mask_drag_mode == 'center':
+            for sb, val in ((self.spinbox_vi_centerX, event.xdata),
+                            (self.spinbox_vi_centerY, event.ydata)):
+                sb.blockSignals(True)
+                sb.setValue(int(round(val)))
+                sb.blockSignals(False)
+        else:
+            cx = self.spinbox_vi_centerX.value()
+            cy = self.spinbox_vi_centerY.value()
+            r = int(round(np.hypot(event.xdata - cx, event.ydata - cy)))
+            if self._vi_mask_drag_mode == 'r_out':
+                r = max(r, self.spinbox_vi_rIn.value() + 1)
+                self.spinbox_vi_rOut.blockSignals(True)
+                self.spinbox_vi_rOut.setValue(r)
+                self.spinbox_vi_rOut.blockSignals(False)
+            elif self._vi_mask_drag_mode == 'r_in':
+                r = min(r, self.spinbox_vi_rOut.value() - 1)
+                self.spinbox_vi_rIn.blockSignals(True)
+                self.spinbox_vi_rIn.setValue(r)
+                self.spinbox_vi_rIn.blockSignals(False)
+
+        cx = self.spinbox_vi_centerX.value()
+        cy = self.spinbox_vi_centerY.value()
+        self._vi_circle_out.set_center((cx, cy))
+        self._vi_circle_out.set_radius(self.spinbox_vi_rOut.value())
+        if self._vi_circle_in is not None:
+            self._vi_circle_in.set_center((cx, cy))
+            self._vi_circle_in.set_radius(self.spinbox_vi_rIn.value())
+        self._vi_center_marker.set_offsets([[cx, cy]])
+
+        self.canvas.restore_region(self._vi_mask_bg)
+        self.ax_dp.draw_artist(self._vi_circle_out)
+        if self._vi_circle_in is not None:
+            self.ax_dp.draw_artist(self._vi_circle_in)
+        self.ax_dp.draw_artist(self._vi_center_marker)
+        self.canvas.blit(self.ax_dp.bbox)
+
+    def _on_release_vi_mask(self):
+        """End a virtual-mask drag (if one was active) and do one full,
+        correct redraw - update_virtual_mask_overlay() was skipped during
+        the drag itself (see _on_motion_vi_mask)."""
+        was_dragging = self._vi_mask_drag_mode is not None
+        self._vi_mask_drag_mode = None
+        self._vi_mask_bg = None
+        if was_dragging:
+            self.update_virtual_mask_overlay()
 
     def compute_virtual_image(self):
         """Load the 4D signal pointed at above and compute its navigation
@@ -1337,8 +1582,11 @@ class Tab_ROI_on_4D(TabBase):
         of whatever ROI/SAM2 mask is currently drawn elsewhere on this tab.
         This is the tab's only entry point for loading a signal (there is
         no separate "Load Signal" button) - the default Sum mode with no
-        virtual mask reproduces what that used to do."""
-        self.reset_canvas()
+        virtual mask reproduces what that used to do. Only the stale Nav.
+        Image itself is cleared before recomputing (see
+        _reset_nav_image_only) - an already-plotted diffraction pattern and
+        its virtual-detector mask circles are left showing throughout."""
+        self._reset_nav_image_only()
         self.fn = self.lineEdit_dir_signal.text()
         if not self.fn or not os.path.exists(self.fn):
             qtw.QMessageBox.critical(self, 'No Signal Selected',
@@ -1374,6 +1622,53 @@ class Tab_ROI_on_4D(TabBase):
         self.button_computeVirtualImage.setEnabled(True)
         self.image_handler(img)
         self.logger.info('Virtual image computed successfully.')
+
+    def compute_sum_dp_whole(self):
+        """Sum every diffraction pattern of the WHOLE scan into one
+        reference DP (see button_sumDpWhole) - independent of any ROI/SAM2
+        mask, and without needing to draw/segment/threshold anything first."""
+        self.fn = self.lineEdit_dir_signal.text()
+        if not self.fn or not os.path.exists(self.fn):
+            qtw.QMessageBox.critical(self, 'No Signal Selected',
+                'Select a 4D signal file first (see "4D Signal" above).')
+            return
+        self.scanSize = self.get_scan_size()
+        self.dwellTime = self.spinbox_dwellTime.value()
+        dtype = os.path.splitext(self.fn)[-1]
+        if self._scan_size_required(dtype) and self.scanSize is None:
+            self.logger.warning('Cannot compute Sum DP for %s: scan size is required.', self.fn)
+            self.message_box_scan_size_required(dtype)
+            return
+        self.logger.info('Computing Sum DP (whole signal) for %s...', self.fn)
+        self.button_sumDpWhole.setDisabled(True)
+        worker = WorkerThread_General(
+            io.get_dp, 0, self.fn, dtype=dtype, scanSize=self.scanSize,
+            dwellTime=self.dwellTime, roi=None, logger=self.logger,
+            fn_pattern=self.get_fn_pattern(), det_shape=self.get_detector_shape(self.fn))
+        worker.signals.results.connect(self._on_sum_dp_whole_computed)
+        worker.signals.error.connect(self._on_sum_dp_whole_failed)
+        self.threadpool.start(worker)
+
+    def _on_sum_dp_whole_computed(self, result, index):
+        """Display the whole-signal Sum DP (see compute_sum_dp_whole) the
+        same way an ROI-drawn DP is displayed (get_dp) - also clears any
+        stale ROI-crop-specific overlay (the SAM2 mask preview) so it
+        doesn't linger over a DP that no longer corresponds to any
+        particular crop."""
+        self.button_sumDpWhole.setEnabled(True)
+        self.dp = np.asarray(result)
+        self.ax_nav_roi.set_title('ROI Image')
+        self.img_display['seg_mask'].set_data(np.zeros((512, 512, 4)))
+        self._reset_dp_clip_range()
+        self.update_canvas(ax='dp')
+        self.update_virtual_mask_overlay()
+        self.logger.info('Sum DP (whole signal) computed successfully.')
+
+    def _on_sum_dp_whole_failed(self, traceback_text, index):
+        self.button_sumDpWhole.setEnabled(True)
+        self.logger.error('Failed to compute Sum DP (whole signal):\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Sum DP Failed',
+            f'Computing the whole-signal Sum DP failed:\n\n{traceback_text.strip().splitlines()[-1]}')
 
     def _on_virtual_image_failed(self, traceback_text):
         self.button_computeVirtualImage.setEnabled(True)

@@ -75,6 +75,24 @@ def _drawn_icon(kind, size=_ICON_SIZE):
         painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
         painter.drawLine(QPointF(margin, margin), QPointF(size - margin, size - margin))
         painter.drawLine(QPointF(size - margin, margin), QPointF(margin, size - margin))
+    elif kind == 'center_recip':
+        # Bullseye (ring + filled center dot) - the diffraction pattern's own
+        # beam center, used for the reciprocal-space scale rings.
+        r = size / 2 - margin
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        painter.setBrush(_ICON_COLOR)
+        painter.drawEllipse(QPointF(cx, cy), r * 0.22, r * 0.22)
+    elif kind == 'center_mask':
+        # Concentric double ring + center "+" - the virtual detector's own
+        # inner/outer annulus shape, visually distinct from center_recip's
+        # plain beam-center bullseye since the two centers can differ.
+        r_out = size / 2 - margin
+        r_in = r_out * 0.5
+        painter.drawEllipse(QPointF(cx, cy), r_out, r_out)
+        painter.drawEllipse(QPointF(cx, cy), r_in, r_in)
+        d = r_in * 0.6
+        painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
+        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
     else:
         raise ValueError(f'Unknown drawn-icon kind {kind!r}')
 
@@ -82,7 +100,8 @@ def _drawn_icon(kind, size=_ICON_SIZE):
     return QIcon(pixmap)
 
 
-_DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi'}
+_DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
+                      'center_recip', 'center_mask'}
 
 
 def build_icon(key):

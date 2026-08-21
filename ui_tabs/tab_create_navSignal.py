@@ -723,6 +723,10 @@ class Tab_Create_NavSignal(TabBase):
             RibbonTool('clear_roi', 'clear_roi', 'Clear the drawn scan-space ROI (same as right-click)',
                       'action', self.clear_navsig_roi),
             RibbonTool('sep1', kind='separator'),
+            RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
+                      'virtual detector mask there (same as "Auto-Find Center")',
+                      'action', lambda: self.auto_find_center(silent=False)),
+            RibbonTool('sep2', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
             RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
@@ -1280,8 +1284,11 @@ class Tab_Create_NavSignal(TabBase):
         self.ax_mask_preview.add_patch(self._current_circle_out)
         self._mask_artists.append(self._current_circle_out)
         if r_in > 0:
+            # khaki (not red) - matches Tab_ROI_on_4D's identical virtual-
+            # detector overlay; reads clearly against both the lime outer
+            # ring and the inferno colormap's own bright (yellow/red) core.
             self._current_circle_in = patches.Circle(
-                (cx, cy), r_in, fill=False, edgecolor='red', linewidth=1.5)
+                (cx, cy), r_in, fill=False, edgecolor='khaki', linewidth=1.5)
             self.ax_mask_preview.add_patch(self._current_circle_in)
             self._mask_artists.append(self._current_circle_in)
         else:
@@ -1303,7 +1310,7 @@ class Tab_Create_NavSignal(TabBase):
             self._mask_artists.append(circle)
             if detector['r_in'] > 0:
                 circle_in2 = patches.Circle((dcx, dcy), detector['r_in'], fill=False,
-                                            edgecolor='magenta', linewidth=1.2, linestyle='--')
+                                            edgecolor='khaki', linewidth=1.2, linestyle='--')
                 self.ax_mask_preview.add_patch(circle_in2)
                 self._mask_artists.append(circle_in2)
 
