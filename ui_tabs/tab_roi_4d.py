@@ -1075,7 +1075,7 @@ class Tab_ROI_on_4D(TabBase):
         minimum, usually 0) - matches this tab's long-standing convention
         for the DP display specifically."""
         self.clip_dp.set_range(self.dp.min(), self.dp.max())
-        self.clip_dp.slider_vmin.setValue(1)
+        self.clip_dp.set_low(1)
 
     def _setup_canvas(self):
         """One-time creation of the image artists and their colorbars.

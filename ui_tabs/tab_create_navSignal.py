@@ -1231,7 +1231,7 @@ class Tab_Create_NavSignal(TabBase):
             sb.setMaximum(val)
         self.img_display_mask.set_data(self.sum_dp)
         self.clip_dp.set_range(self.sum_dp.min(), self.sum_dp.max())
-        self.clip_dp.slider_vmin.setValue(1)
+        self.clip_dp.set_low(1)
         vmin, vmax = self.clip_dp.values()
         self.img_display_mask.set_clim(vmin=vmin, vmax=vmax)
         self.img_display_mask.set_extent([0, det_x, det_y, 0])
