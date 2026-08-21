@@ -225,13 +225,24 @@ def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=No
         nav_img = (s.sum(axis=(-1,-2)) if mode == 'sum' else s.var(axis=(-1,-2))).data
     else:
         det_mask = det_mask.ravel().astype(bool)
-        arr = s.data.reshape(*scanSize,-1)
+        # Merge every leading (navigation) axis into one before masking,
+        # rather than reshaping straight to (*scanSize, -1) - that requires
+        # *splitting* the raw array's leading axis into two (nx, ny), which
+        # dask can only do with known-in-advance chunk sizes and raises for
+        # a lazily-loaded .mib (loaded as a flat (n_frames, det_y, det_x)
+        # stack - see the "mib files might be loaded as 1D" comment below -
+        # whose leading axis isn't pre-chunked to split cleanly). Merging
+        # the trailing (det_y, det_x) axes into one instead only requires
+        # *collapsing* axes, which dask always supports regardless of
+        # chunking, and produces the same per-position ordering the "maybe
+        # 1D" reshape below already relies on for the no-mask path above.
+        arr = s.data.reshape(-1, det_mask.size)
         if mode == 'sum':
             nav_img = (arr*det_mask).sum(axis=-1)
         else:
             # See calculate_nav_img_hdf5's masked variance branch - only the
             # masked pixels themselves should enter the variance.
-            nav_img = arr[..., det_mask].var(axis=-1)
+            nav_img = arr[:, det_mask].var(axis=-1)
 
     if fn_pattern is not None:
         pattern = np.loadtxt(fn_pattern).astype('int')
