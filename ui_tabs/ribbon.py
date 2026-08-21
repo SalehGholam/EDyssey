@@ -37,7 +37,7 @@ def _mpl_icon(key):
     return QIcon(path) if os.path.isfile(path) else QIcon()
 
 
-def _drawn_icon(kind, size=_ICON_SIZE):
+def _drawn_icon(kind, size):
     """Render a small QPainter-drawn icon for a tool with no matplotlib
     equivalent - a light-colored glyph on a transparent background, so it
     sits directly on the (dark) QToolButton surface like a normal icon."""
@@ -104,14 +104,17 @@ _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
                       'center_recip', 'center_mask'}
 
 
-def build_icon(key):
+def build_icon(key, size=_ICON_SIZE):
     """QIcon for ribbon icon key `key` - one of _MPL_ICON_FILES' keys
-    (reuses matplotlib's bundled toolbar images) or _DRAWN_ICON_KINDS (hand
-    -drawn via QPainter, see _drawn_icon)."""
+    (reuses matplotlib's bundled toolbar images, always their own native
+    resolution - QToolButton.setIconSize scales them regardless) or
+    _DRAWN_ICON_KINDS (hand-drawn via QPainter at `size`, see _drawn_icon -
+    RibbonPanel.set_icon_size() re-renders these at a new size on demand,
+    see the Edit tab's "Ribbon Icon Size" control)."""
     if key in _MPL_ICON_FILES:
         return _mpl_icon(key)
     if key in _DRAWN_ICON_KINDS:
-        return _drawn_icon(key)
+        return _drawn_icon(key, size)
     raise ValueError(f'Unknown ribbon icon key {key!r}')
 
 
@@ -154,7 +157,11 @@ class RibbonPanel(qtw.QWidget):
         super().__init__(parent)
         self._active_tool = None
         self._tool_buttons = {}
-        self.setFixedWidth(48)
+        self._icon_size = _ICON_SIZE
+        # Every non-separator button, with the icon key used to build it -
+        # set_icon_size() (see the Edit tab's "Ribbon Icon Size" control)
+        # re-renders each one's icon at a new size from this list.
+        self._icon_buttons = []
         layout = qtw.QVBoxLayout(self)
         layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(3)
@@ -169,12 +176,11 @@ class RibbonPanel(qtw.QWidget):
                 continue
 
             btn = qtw.QToolButton()
-            btn.setIcon(build_icon(tool.icon))
-            btn.setIconSize(QSize(_ICON_SIZE, _ICON_SIZE))
+            btn.setIcon(build_icon(tool.icon, self._icon_size))
             btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
             btn.setToolTip(tool.tooltip)
-            btn.setFixedSize(40, 36)
             layout.addWidget(btn)
+            self._icon_buttons.append((btn, tool.icon))
 
             if tool.kind == 'tool':
                 btn.setCheckable(True)
@@ -187,6 +193,25 @@ class RibbonPanel(qtw.QWidget):
                 raise ValueError(f"Unknown RibbonTool.kind {tool.kind!r} for tool {tool.id!r}")
 
         layout.addStretch(1)
+        self._apply_icon_size()
+
+    def set_icon_size(self, size):
+        """Re-render every button's icon at `size` px and resize the panel/
+        buttons to match - the Edit tab's "Ribbon Icon Size" control calls
+        this on every RibbonPanel instance whenever it changes."""
+        if size == self._icon_size:
+            return
+        self._icon_size = size
+        for btn, icon_key in self._icon_buttons:
+            btn.setIcon(build_icon(icon_key, size))
+        self._apply_icon_size()
+
+    def _apply_icon_size(self):
+        size = self._icon_size
+        for btn, _icon_key in self._icon_buttons:
+            btn.setIconSize(QSize(size, size))
+            btn.setFixedSize(size + 14, size + 10)
+        self.setFixedWidth(size + 22)
 
     def _on_tool_clicked(self, tool_id, checked):
         # QToolButton has already toggled itself by the time this slot runs

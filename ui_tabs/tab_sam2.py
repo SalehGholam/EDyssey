@@ -90,6 +90,7 @@ class Tab_SAM2(TabBase):
         # column shape as Tab_Tracking_CV2 (this tab's structure is nearly
         # identical), minus the Threshold/Deviation rows SAM2 doesn't need.
         ribbon_page = qtw.QWidget()
+        self.ribbon_page = ribbon_page  # exposed for the Edit tab's ribbon-text-scale control
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
@@ -909,6 +910,11 @@ class Tab_SAM2(TabBase):
                   lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() + 1))
         QShortcut(QKeySequence('Ctrl+Left'), self,
                   lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() - 1))
+
+        # Picks up any non-default DisplaySettings already set by the Edit
+        # tab (e.g. this instance is a duplicate opened after adjusting
+        # sizes) - see TabBase.apply_display_settings.
+        self.apply_display_settings()
 #%% load data
     def show_dialog(self, f):
         """Open the file/folder dialog matching whichever of the three

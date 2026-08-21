@@ -91,6 +91,7 @@ class Tab_Tracking_CV2(TabBase):
         # columns instead of stacking everything into fewer of them - see
         # each column's own comment below for the reasoning.
         ribbon_page = qtw.QWidget()
+        self.ribbon_page = ribbon_page  # exposed for the Edit tab's ribbon-text-scale control
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
@@ -967,6 +968,11 @@ class Tab_Tracking_CV2(TabBase):
                   lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() + 1))
         QShortcut(QKeySequence('Ctrl+Left'), self,
                   lambda: self.slider_imgNo.setValue(self.slider_imgNo.value() - 1))
+
+        # Picks up any non-default DisplaySettings already set by the Edit
+        # tab (e.g. this instance is a duplicate opened after adjusting
+        # sizes) - see TabBase.apply_display_settings.
+        self.apply_display_settings()
     #%% load data
     def show_dialog(self, f):
         """Open a file/folder browser for whichever button triggered this

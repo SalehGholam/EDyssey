@@ -15,7 +15,9 @@ below (build_left_panel()), this module owns none of that.
 """
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool
+import matplotlib.pyplot as plt
 from .logging_utils import get_tab_logger
+from .display_settings import DisplaySettings
 
 
 def compute_left_panel_width(base=440, min_width=420, max_width=480, fraction=0.22):
@@ -112,6 +114,14 @@ class TabBase(qtw.QWidget):
         if own_threadpool:
             self.threadpool = QThreadPool()
         self._cancelling = False  # set by cancel_running_work(); suppresses error popups it causes
+        # Ribbon text/icon size and plot font scale, shared with every other
+        # tab and the Edit tab (see display_settings.py) - applied once here
+        # (subclasses build self.ribbon_page/self.ribbon/self.figure etc.
+        # *after* this __init__ call returns, so the first real application
+        # happens lazily, the next time DisplaySettings changes; each tab's
+        # own init_widget() calls self.apply_display_settings() once at the
+        # end of its own construction to pick up the current values too).
+        DisplaySettings.instance().changed.connect(self.apply_display_settings)
 
     def cancel_running_work(self):
         """Stop this tab's running background work. The base implementation
@@ -129,6 +139,77 @@ class TabBase(qtw.QWidget):
         super().cleanup() (currently a no-op, kept for future shared
         cleanup and so every override reads the same way)."""
         pass
+
+    # -- Display settings (Edit tab) ---------------------------------------
+    def apply_display_settings(self):
+        """Re-apply the shared DisplaySettings (ribbon text scale, ribbon
+        icon size, plot font scale - see display_settings.py) to this tab -
+        connected to DisplaySettings.changed in __init__ above, and also
+        called once by each tab's own init_widget() after building its
+        ribbon/figure, to pick up whatever the Edit tab's current values
+        already are (e.g. if the Edit tab changed something, then a
+        duplicate tab is opened afterward).
+
+        Generic/shared for every tab: scales self.ribbon_page's font (the
+        top parameter ribbon), self.ribbon's icon size (the vertical
+        RibbonPanel beside the canvas, if present), and every Figure this
+        tab owns (self.figure, or self.figure_nav/self.figure_extract for
+        Tab_Tracking_CV2's two-canvas layout) - covers all 4 tabs without
+        needing a per-tab override, since they all use one of these
+        attribute names."""
+        settings = DisplaySettings.instance()
+
+        ribbon_page = getattr(self, 'ribbon_page', None)
+        if ribbon_page is not None:
+            base_pt = getattr(self, '_ribbon_base_pt', 9)
+            ribbon_page.setStyleSheet(f'font-size: {round(base_pt * settings.ribbon_text_scale)}pt;')
+
+        ribbon_panel = getattr(self, 'ribbon', None)
+        if ribbon_panel is not None and hasattr(ribbon_panel, 'set_icon_size'):
+            ribbon_panel.set_icon_size(settings.ribbon_icon_size)
+
+        for figure in self._display_settings_figures():
+            self._rescale_figure_fonts(figure, settings.plot_font_scale)
+
+    def _display_settings_figures(self):
+        """Every matplotlib Figure this tab owns, by whichever of the
+        common attribute names it uses."""
+        figures = []
+        for attr in ('figure', 'figure_nav', 'figure_extract'):
+            fig = getattr(self, attr, None)
+            if fig is not None:
+                figures.append(fig)
+        return figures
+
+    def _rescale_figure_fonts(self, figure, scale):
+        """Scale every text artist (titles, axis labels, tick labels,
+        figure-level sup-title/sup-xlabel) in `figure` by `scale`, relative
+        to the size each one had the FIRST time this ran (cached on the
+        figure itself as _edyssey_base_fontsizes) - so repeated scale
+        changes are always relative to the tab's original design size, not
+        the previous scale (avoids compounding drift)."""
+        base_sizes = getattr(figure, '_edyssey_base_fontsizes', None)
+        if base_sizes is None:
+            base_sizes = {}
+            figure._edyssey_base_fontsizes = base_sizes
+        for ax in figure.axes:
+            for text_artist in [ax.title, ax.xaxis.label, ax.yaxis.label] + list(ax.texts):
+                key = id(text_artist)
+                if key not in base_sizes:
+                    base_sizes[key] = text_artist.get_fontsize()
+                text_artist.set_fontsize(base_sizes[key] * scale)
+            tick_key = ('ticks', id(ax))
+            if tick_key not in base_sizes:
+                base_sizes[tick_key] = plt.rcParams['font.size']
+            ax.tick_params(axis='both', labelsize=base_sizes[tick_key] * scale)
+        for text_artist in figure.texts:  # figure-level suptitle/supxlabel
+            key = id(text_artist)
+            if key not in base_sizes:
+                base_sizes[key] = text_artist.get_fontsize()
+            text_artist.set_fontsize(base_sizes[key] * scale)
+        canvas = getattr(figure, 'canvas', None)
+        if canvas is not None:
+            canvas.draw_idle()
 
     # -- Word-ribbon top parameter panel helpers --------------------------
     # Shared by every tab's init_widget() (first built for Tab_ROI_on_4D,

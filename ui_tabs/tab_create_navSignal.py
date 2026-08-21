@@ -61,6 +61,7 @@ class Tab_Create_NavSignal(TabBase):
         # helpers). Columns packed left at natural width, NOT stretched to
         # fill - a trailing addStretch(1) absorbs leftover space.
         ribbon_page = qtw.QWidget()
+        self.ribbon_page = ribbon_page  # exposed for the Edit tab's ribbon-text-scale control
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
@@ -788,6 +789,11 @@ class Tab_Create_NavSignal(TabBase):
         # window height.
         self.log_console = LogConsole(self)
         layout_canvas.addWidget(self.log_console)
+
+        # Picks up any non-default DisplaySettings already set by the Edit
+        # tab (e.g. this instance is a duplicate opened after adjusting
+        # sizes) - see TabBase.apply_display_settings.
+        self.apply_display_settings()
 
     #%% functions
     def show_dialog(self, f):

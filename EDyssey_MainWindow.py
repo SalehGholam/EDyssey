@@ -39,7 +39,7 @@ import re
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
-                     Tab_ROI_on_4D, Tab_SAM2)
+                     Tab_ROI_on_4D, Tab_SAM2, Tab_Edit)
 from ui_tabs.logging_utils import install_excepthook
 from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
@@ -50,7 +50,7 @@ plt.style.use('dark_background')
 # change is made anywhere in the app, so Help > About always reflects how
 # current the running build actually is. Shown directly in the Help menu
 # and repeated in the About dialog.
-APP_VERSION = '2026-08-21 12:00'
+APP_VERSION = '2026-08-21 14:30'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -81,17 +81,21 @@ class MainWindow(qtw.QMainWindow):
         self.tabs.addTab(self.tab_tracking_cv2, 'ROI Tracker')
         self.tab_sam2 = Tab_SAM2()
         self.tabs.addTab(self.tab_sam2, 'SAM2 Tracker')
+        self.tab_edit = Tab_Edit()
+        self.tabs.addTab(self.tab_edit, 'Edit')
 
-        # Every tab instance that currently exists: the 4 fixed ones above,
-        # plus any duplicates opened via the File menu - closeEvent below
-        # cleans up all of them, not just the original 4, so a duplicate
-        # left open at exit doesn't leak its threadpool/subprocesses/
-        # matplotlib figure. self._primary_tabs (a fixed snapshot of just
-        # the original 4) is what _on_tab_close_requested refuses to close -
-        # closing e.g. self.tab_roi_on_4D itself would leave that attribute
-        # pointing at a destroyed widget.
+        # Every tab instance that currently exists: the 5 fixed ones above,
+        # plus any duplicates opened via the File menu (Edit itself isn't
+        # duplicable - see _duplicate_tab - but still belongs in this list
+        # for closeEvent's cleanup pass below) - closeEvent cleans up all of
+        # them, not just the original 5, so a duplicate left open at exit
+        # doesn't leak its threadpool/subprocesses/matplotlib figure.
+        # self._primary_tabs (a fixed snapshot of just the original 5) is
+        # what _on_tab_close_requested refuses to close - closing e.g.
+        # self.tab_roi_on_4D itself would leave that attribute pointing at
+        # a destroyed widget.
         self._all_tabs = [self.tab_roi_on_4D, self.tab_create_navSignal,
-                          self.tab_tracking_cv2, self.tab_sam2]
+                          self.tab_tracking_cv2, self.tab_sam2, self.tab_edit]
         self._primary_tabs = set(self._all_tabs)
 
         self.tabs.setTabsClosable(True)

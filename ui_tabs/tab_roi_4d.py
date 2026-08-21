@@ -67,6 +67,7 @@ class Tab_ROI_on_4D(TabBase):
         # across tabs as long as each one's busiest column has a similar
         # number of stacked rows.
         ribbon_page = qtw.QWidget()
+        self.ribbon_page = ribbon_page  # exposed for the Edit tab's ribbon-text-scale control
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
@@ -693,6 +694,11 @@ class Tab_ROI_on_4D(TabBase):
         # keyboard shortcuts (matching the equivalent actions on the other tabs)
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_computeVirtualImage.click)
         QShortcut(QKeySequence('Ctrl+T'), self, self.button_segment_image.click)
+
+        # Picks up any non-default DisplaySettings already set by the Edit
+        # tab (e.g. this instance is a duplicate opened after adjusting
+        # sizes) - see TabBase.apply_display_settings.
+        self.apply_display_settings()
 #%% functions
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
