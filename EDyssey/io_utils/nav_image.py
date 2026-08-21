@@ -96,7 +96,13 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
         vstem.set_pattern_file(fn_pattern)
     if offset:
         offsets = offset if isinstance(offset[0], (list, tuple)) else [offset]
-        vstem.set_offsets([[o[1], o[0]] for o in offsets])
+        # eventem's set_offsets takes (x, y) pairs directly, same order as
+        # this function's own `offset` docstring - no axis flip. Confirmed
+        # wrong against real hardware (the virtual detector's actual center
+        # was swapped relative to the requested Center X/Y) - previously
+        # flipped to [y, x] here, inherited unverified from an earlier
+        # rewrite (see git history), never actually confirmed correct.
+        vstem.set_offsets([[o[0], o[1]] for o in offsets])
     with redirect_console_to_logger(logger, 'Loading tpx3'):
         vstem.run()
     nav_image = vstem.get_image()
@@ -144,10 +150,10 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
     if fn_pattern:
         var.set_pattern_file(fn_pattern)
     if offset:
-        # (x, y) -> [y, x]: matches the flip calculate_nav_img_tpx3 applies
-        # for vSTEM's set_offsets, which this single-detector set_offset is
-        # the Var-processor equivalent of.
-        var.set_offset([offset[1], offset[0]])
+        # (x, y) passed through as-is - see calculate_nav_img_tpx3's
+        # identical fix; confirmed against real hardware that eventem wants
+        # (x, y) directly here too, not a [y, x] flip.
+        var.set_offset([offset[0], offset[1]])
     with redirect_console_to_logger(logger, 'Loading tpx3'):
         var.run()
     # Unlike vSTEM.get_image() (a wrapper method - already returns a
