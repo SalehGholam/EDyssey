@@ -169,20 +169,99 @@ class Tab_SAM2(TabBase):
         self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg)
         layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
+
+        # Smart-scan support - a titled box (matches the Navigator tab's
+        # identical "Smart Scan" groupbox convention), merged into Files
+        # rather than its own column. 3DED extraction always reads the
+        # acquisition (smart-scanned) file - see EDyssey/io_utils/smart_scan.py -
+        # so there's no role combo here (unlike Navigator, which can batch
+        # over either role). 2x2: left column = activation controls
+        # (checkbox, then Check Files button), right column = directory
+        # pickers (pattern dir, then detection dir).
+        groupbox_smartScan = qtw.QGroupBox('Smart Scan')
+        layout_smartScan = qtw.QGridLayout(groupbox_smartScan)
+
+        self.checkbox_smartScan = qtw.QCheckBox('Activate')
+        self.checkbox_smartScan.setToolTip(
+            'The 4D signals folder holds a smart-scanned tomography series - 3DED '
+            'extraction will read each frame\'s acquisition file with its matching '
+            'pattern file, instead of every raw file in the folder.')
+        layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
+
+        self.lineEdit_patternDir = qtw.QLineEdit()
+        self.lineEdit_patternDir.setPlaceholderText('Pattern Dir. (defaults to 4D Signals folder)')
+        self.lineEdit_patternDir.setDisabled(True)
+        layout_smartScan.addWidget(self.lineEdit_patternDir, 0, 1)
+        self.button_browsePatternDir = qtw.QPushButton('...')
+        self.button_browsePatternDir.setFixedWidth(30)
+        self.button_browsePatternDir.setDisabled(True)
+        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
+        layout_smartScan.addWidget(self.button_browsePatternDir, 0, 2)
+
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
+        self.button_checkSmartScanFiles.setToolTip(
+            'Review the automatic per-frame detection/acquisition/pattern-file match '
+            'before extracting - fix or exclude any mismatched frame by hand')
+        self.button_checkSmartScanFiles.setDisabled(True)
+        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
+        layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
+
+        self.lineEdit_detectionDir = qtw.QLineEdit()
+        self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
+        self.lineEdit_detectionDir.setDisabled(True)
+        self.lineEdit_detectionDir.setToolTip(
+            'Folder to look for detection files in, if they live somewhere other than the '
+            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
+            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
+            'each in their own folder)')
+        layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
+        self.button_browseDetectionDir = qtw.QPushButton('...')
+        self.button_browseDetectionDir.setFixedWidth(30)
+        self.button_browseDetectionDir.setDisabled(True)
+        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
+        layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
+
+        self.label_smartScanSummary = qtw.QLabel('')
+        layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
+
+        layout_dir.addWidget(groupbox_smartScan)
+        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
         self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
 
         #%% Input Parameters (ribbon column) - scan dims, scale bars,
         # detector size, dwell time, metadata block - everything needed to
-        # extract DPs for 3DED, except smart-scan-specific inputs, which
-        # get their own column next.
+        # extract DPs for 3DED. Detector Size/Scan Size share one
+        # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
+        # column, including QSpinBox for Scan Size too - was a QLineEdit)
+        # so their labels/X/Y cells line up row-to-row.
         self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        layout_scanSize_row1 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row1)
+        layout_exp_items = qtw.QGridLayout()
+        layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
+        detSize_tooltip = (
+            'Detector (diffraction pattern) size in pixels - used to size the extracted '
+            'DP array. Auto-detected from the 4D signal files for most formats; .tpx3 '
+            'needs this set explicitly (auto-detecting it would mean fully parsing a '
+            'file just to learn its shape) - Auto assumes 512x512.')
+        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
+        self.checkbox_detectorSizeAuto.setChecked(True)
+        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
+        layout_exp_items.addWidget(self.checkbox_detectorSizeAuto, 0, 2)
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 0, 3)
+        self.spinbox_detectorSize_x = qtw.QSpinBox()
+        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setValue(512)
+        layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
+        self.spinbox_detectorSize_y = qtw.QSpinBox()
+        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setValue(512)
+        layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
+        self.activate_detectorSize_spinboxes()
+        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
 
-        label_scanSize = qtw.QLabel('Scan Size')
-        layout_scanSize_row1.addWidget(label_scanSize)
-
+        layout_exp_items.addWidget(qtw.QLabel('Scan Size'), 1, 0, 1, 2)
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         self.checkbox_scanSize.setChecked(True)
         self.checkbox_scanSize.setToolTip(
@@ -190,33 +269,18 @@ class Tab_SAM2(TabBase):
             "signal's shape. Uncheck (or Load Metadata below) to override "
             'manually - needed when that shape does not match the raw 4D '
             'signal files being extracted from.')
-        layout_scanSize_row1.addWidget(self.checkbox_scanSize)
-
-        self.lineEdit_scanSize_x = qtw.QLineEdit()
-        self.lineEdit_scanSize_x.setAlignment(Qt.AlignLeft)
-        self.lineEdit_scanSize_x.setFixedWidth(40)
-        self.lineEdit_scanSize_x.setValidator(QIntValidator(0, 99999))
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_x)
-
-        label_cross = qtw.QLabel('X')
-        layout_scanSize_row1.addWidget(label_cross)
-
-        self.lineEdit_scanSize_y = qtw.QLineEdit()
-        self.lineEdit_scanSize_y.setFixedWidth(40)
-        self.lineEdit_scanSize_y.setValidator(QIntValidator(0, 99999))
-        layout_scanSize_row1.addWidget(self.lineEdit_scanSize_y)
-
+        layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
+        self.spinbox_scanSize_x = qtw.QSpinBox()
+        self.spinbox_scanSize_x.setRange(1, 99999)
+        layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
+        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
+        self.spinbox_scanSize_y = qtw.QSpinBox()
+        self.spinbox_scanSize_y.setRange(1, 99999)
+        layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
         self.activate_lineEdit_scanSize()
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-
-        label_dwellTime = qtw.QLabel('Dwell T. (μs)')
-        label_dwellTime.setToolTip('Dwell time in microseconds')
-        self.spinbox_dwellTime = qtw.QSpinBox()
-        self.spinbox_dwellTime.setFixedWidth(60)
-        self.spinbox_dwellTime.setRange(1, 99999999)
-        for wid in [label_dwellTime, self.spinbox_dwellTime]:
-            layout_scanSize_row1.addWidget(wid)
-        layout_scanSize_row1.addStretch(1)
+        layout_box_scanSize.addLayout(layout_exp_items)
 
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
         # id(dp_array) at the time dp_center was last auto-found - lets
@@ -226,37 +290,21 @@ class Tab_SAM2(TabBase):
         # _on_auto_center_toggled.
         self._dp_center_cache_key = None
 
-        # detector size (per side, in pixels) - only truly needed for .tpx3
-        # (see get_detector_shape); Auto keeps the 512x512 default other
-        # formats auto-detect for free anyway.
-        layout_detSize = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_detSize)
-        label_detSize = qtw.QLabel('Detector Size')
-        label_detSize.setToolTip(
-            'Detector (diffraction pattern) size in pixels - used to size the extracted '
-            'DP array. Auto-detected from the 4D signal files for most formats; .tpx3 '
-            'needs this set explicitly (auto-detecting it would mean fully parsing a '
-            'file just to learn its shape) - Auto assumes 512x512.')
-        layout_detSize.addWidget(label_detSize)
-        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
-        self.checkbox_detectorSizeAuto.setChecked(True)
-        self.checkbox_detectorSizeAuto.setToolTip(label_detSize.toolTip())
-        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
-        self.spinbox_detectorSize_x = qtw.QSpinBox()
-        self.spinbox_detectorSize_x.setFixedWidth(55)
-        self.spinbox_detectorSize_x.setRange(1, 8192)
-        self.spinbox_detectorSize_x.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_x)
-        label_detSize_cross = qtw.QLabel('X')
-        layout_detSize.addWidget(label_detSize_cross)
-        self.spinbox_detectorSize_y = qtw.QSpinBox()
-        self.spinbox_detectorSize_y.setFixedWidth(55)
-        self.spinbox_detectorSize_y.setRange(1, 8192)
-        self.spinbox_detectorSize_y.setValue(512)
-        layout_detSize.addWidget(self.spinbox_detectorSize_y)
-        self.activate_detectorSize_spinboxes()
-        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-        layout_detSize.addStretch(1)
+        # Acquisition Dwell T. - 3DED extraction always reads the
+        # acquisition (smart-scanned) file when Smart Scanned is checked
+        # (see the Smart Scan groupbox in Files), so a single dwell time
+        # covers both the smart-scan and plain cases - unlike Navigator,
+        # there's no separate "Detection"-role extraction path here that
+        # would need its own dwell spinbox.
+        layout_dwell_row = qtw.QHBoxLayout()
+        label_dwellTime = qtw.QLabel('Acquisition Dwell T. (μs)')
+        label_dwellTime.setToolTip('Dwell time in microseconds')
+        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
+        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
+        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
+        layout_dwell_row.addWidget(label_dwellTime)
+        layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_box_scanSize.addLayout(layout_dwell_row)
 
         # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file(s).
@@ -327,98 +375,6 @@ class Tab_SAM2(TabBase):
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
         self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters')
-
-        #%% Smart Scan (ribbon column) - the 4D signals folder holds a
-        # detection + acquisition tpx3/mib file pair per tracked frame -
-        # extraction always reads the acquisition (smart-scanned) file, with
-        # its matching pattern file - see EDyssey/io_utils/smart_scan.py.
-        self.box_smartScan, layout_box_smartScan = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        layout_scanSize_row3 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row3)
-        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
-        self.checkbox_smartScan.setToolTip(
-            'The 4D signals folder holds a smart-scanned tomography series - 3DED '
-            'extraction will read each frame\'s acquisition file with its matching '
-            'pattern file, instead of every raw file in the folder.')
-        layout_scanSize_row3.addWidget(self.checkbox_smartScan)
-        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
-        label_patternDir = qtw.QLabel('Pattern Dir.')
-        layout_scanSize_row3.addWidget(label_patternDir)
-        self.lineEdit_patternDir = qtw.QLineEdit()
-        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
-        self.lineEdit_patternDir.setDisabled(True)
-        layout_scanSize_row3.addWidget(self.lineEdit_patternDir)
-        self.button_browsePatternDir = qtw.QPushButton('...')
-        self.button_browsePatternDir.setFixedWidth(30)
-        self.button_browsePatternDir.setDisabled(True)
-        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
-        layout_scanSize_row3.addWidget(self.button_browsePatternDir)
-
-        layout_scanSize_row3b = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row3b)
-        label_detectionDir = qtw.QLabel('Detect. Dir.')
-        layout_scanSize_row3b.addWidget(label_detectionDir)
-        self.lineEdit_detectionDir = qtw.QLineEdit()
-        self.lineEdit_detectionDir.setPlaceholderText('defaults to 4D Signals folder')
-        self.lineEdit_detectionDir.setDisabled(True)
-        self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if they live somewhere other than the '
-            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
-            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
-            'each in their own folder)')
-        layout_scanSize_row3b.addWidget(self.lineEdit_detectionDir)
-        self.button_browseDetectionDir = qtw.QPushButton('...')
-        self.button_browseDetectionDir.setFixedWidth(30)
-        self.button_browseDetectionDir.setDisabled(True)
-        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
-        layout_scanSize_row3b.addWidget(self.button_browseDetectionDir)
-
-        # Detection/acquisition dwell times - a smart-scanned tilt series
-        # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
-        # for the dense detection pass, "Scan strategy: Custom" for the
-        # sparse acquisition), each with its own dwelltime - editable here
-        # in case they differ from (or aren't present in) comment.txt.
-        # Own rows (rather than sharing one, too-wide-for-the-panel row) -
-        # "Detection Dwell T. (μs)"/"Acquisition Dwell T. (μs)" are
-        # both long labels.
-        layout_scanSize_dwell1 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell1)
-        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (μs)')
-        layout_scanSize_dwell1.addWidget(label_dwellTime_detection)
-        self.spinbox_dwellTime_detection = qtw.QSpinBox()
-        self.spinbox_dwellTime_detection.setFixedWidth(70)
-        self.spinbox_dwellTime_detection.setRange(1, 99999999)
-        self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_scanSize_dwell1.addWidget(self.spinbox_dwellTime_detection)
-        layout_scanSize_dwell1.addStretch(1)
-
-        layout_scanSize_dwell2 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_dwell2)
-        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (μs)')
-        layout_scanSize_dwell2.addWidget(label_dwellTime_acquisition)
-        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
-        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
-        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
-        self.spinbox_dwellTime_acquisition.setDisabled(True)
-        layout_scanSize_dwell2.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize_dwell2.addStretch(1)
-
-        layout_scanSize_row4 = qtw.QHBoxLayout()
-        layout_box_smartScan.addLayout(layout_scanSize_row4)
-        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
-        self.button_checkSmartScanFiles.setToolTip(
-            'Review the automatic per-frame detection/acquisition/pattern-file match '
-            'before extracting - fix or exclude any mismatched frame by hand')
-        self.button_checkSmartScanFiles.setDisabled(True)
-        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
-        layout_scanSize_row4.addWidget(self.button_checkSmartScanFiles)
-        self.label_smartScanSummary = qtw.QLabel('')
-        layout_scanSize_row4.addWidget(self.label_smartScanSummary)
-        layout_scanSize_row4.addStretch(1)
-
-        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
-        self._ribbon_group_end(layout_ribbon, layout_box_smartScan, 'Smart Scan')
 
         #%% Display Contrast (ribbon column) - see the identical treatment
         # in Tab_Tracking_CV2 for why this is added directly rather than
@@ -949,12 +905,9 @@ class Tab_SAM2(TabBase):
                 self.lineEdit_dir_save.setText(path)
 
     def activate_lineEdit_scanSize(self):
-        if self.checkbox_scanSize.isChecked():
-            self.lineEdit_scanSize_x.setDisabled(True)
-            self.lineEdit_scanSize_y.setDisabled(True)
-        else:
-            self.lineEdit_scanSize_x.setEnabled(True)
-            self.lineEdit_scanSize_y.setEnabled(True)
+        auto = self.checkbox_scanSize.isChecked()
+        self.spinbox_scanSize_x.setDisabled(auto)
+        self.spinbox_scanSize_y.setDisabled(auto)
 
     def activate_detectorSize_spinboxes(self):
         auto = self.checkbox_detectorSizeAuto.isChecked()
@@ -967,8 +920,8 @@ class Tab_SAM2(TabBase):
         if self.checkbox_scanSize.isChecked():
             return None
         try:
-            x = int(self.lineEdit_scanSize_x.text())
-            y = int(self.lineEdit_scanSize_y.text())
+            x = int(self.spinbox_scanSize_x.text())
+            y = int(self.spinbox_scanSize_y.text())
             return (x, y)
         except Exception:
             return None
@@ -1050,11 +1003,11 @@ class Tab_SAM2(TabBase):
             if not metadata:
                 raise ValueError('comment.txt contained no parsable metadata')
             if 'scan size x' in metadata and 'scan size y' in metadata:
-                self.lineEdit_scanSize_x.setText(str(int(metadata['scan size x'])))
-                self.lineEdit_scanSize_y.setText(str(int(metadata['scan size y'])))
+                self.spinbox_scanSize_x.setValue(int(metadata['scan size x']))
+                self.spinbox_scanSize_y.setValue(int(metadata['scan size y']))
                 self.checkbox_scanSize.setChecked(False)
             if 'dwelltime' in metadata:
-                self.spinbox_dwellTime.setValue(int(metadata['dwelltime']))
+                self.spinbox_dwellTime_acquisition.setValue(int(metadata['dwelltime']))
             self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
         except Exception as e:
             if silent:
@@ -1085,12 +1038,12 @@ class Tab_SAM2(TabBase):
         scan_size = metadata.get('scan_size')
         if scan_size:
             self.checkbox_scanSize.setChecked(False)
-            self.lineEdit_scanSize_x.setText(str(int(scan_size[0])))
-            self.lineEdit_scanSize_y.setText(str(int(scan_size[1])))
+            self.spinbox_scanSize_x.setValue(int(scan_size[0]))
+            self.spinbox_scanSize_y.setValue(int(scan_size[1]))
             applied.append('scan size')
         dwell = metadata.get('dwell_time_us')
         if dwell:
-            self.spinbox_dwellTime.setValue(int(dwell))
+            self.spinbox_dwellTime_acquisition.setValue(int(dwell))
             applied.append('dwell time')
         scale_real = metadata.get('scale_real_nm_per_px')
         if scale_real:
@@ -1138,8 +1091,7 @@ class Tab_SAM2(TabBase):
         enable = self.checkbox_smartScan.isChecked()
         for wid in (self.lineEdit_patternDir, self.button_browsePatternDir,
                     self.lineEdit_detectionDir, self.button_browseDetectionDir,
-                    self.button_checkSmartScanFiles, self.spinbox_dwellTime_detection,
-                    self.spinbox_dwellTime_acquisition):
+                    self.button_checkSmartScanFiles):
             wid.setEnabled(enable)
 
     def browse_pattern_dir(self):
@@ -2919,7 +2871,7 @@ class Tab_SAM2(TabBase):
         except Exception:
             self.logger.debug('Could not auto-fill voltage from metadata; leaving it blank.',
                                exc_info=True)
-        exposure_s = self.spinbox_dwellTime.value() / 1e6
+        exposure_s = self.spinbox_dwellTime_acquisition.value() / 1e6
         try:
             aperpixel = float(self.lineEdit_scale_recip.text())
         except ValueError:
