@@ -74,6 +74,42 @@ def get_qt_log_handler():
     return _qt_log_handler
 
 
+def shutdown_qt_log_handler():
+    """Detach the QtLogHandler from every logger, and from logging's own
+    internal atexit shutdown registry, while its underlying Qt/C++ object
+    is still alive - call this once, from MainWindow.closeEvent, before the
+    QApplication itself starts tearing down.
+
+    Without this: `logging` registers its own `logging.shutdown()` via
+    atexit at *import* time (very early in the process). atexit callbacks
+    run in reverse (LIFO) order, so anything Qt/sip registers for its own
+    C++ object teardown - which happens later, once the app is actually
+    closing - runs *before* `logging.shutdown()` does. By the time
+    `logging.shutdown()` finally runs, this handler's underlying C++
+    QObject has often already been deleted (even though the Python object
+    itself is still alive) - any attribute access on it then raises
+    "RuntimeError: wrapped C/C++ object of type QtLogHandler has been
+    deleted" from inside `logging.shutdown()` itself, printed as an ugly
+    (harmless, but alarming) "Exception ignored in atexit callback" message
+    right as the app closes.
+
+    `logger.removeHandler()`/`handler.close()` alone don't prevent this -
+    `logging.shutdown()` walks its own separate registry
+    (`logging._handlerList`, a weakref list every Handler subclass instance
+    is added to on construction) independently of which loggers reference
+    it, so that registry needs to be pruned directly too.
+    """
+    global _qt_log_handler
+    if _qt_log_handler is None:
+        return
+    handler = _qt_log_handler
+    for name in list(logging.Logger.manager.loggerDict):
+        logging.getLogger(name).removeHandler(handler)
+    handler.close()
+    logging._handlerList[:] = [wr for wr in logging._handlerList if wr() is not handler]
+    _qt_log_handler = None
+
+
 def get_tab_logger(tab_name):
     """Return the logger for `tab_name`, creating it (rotating file
     handler + shared GUI handler) on first call. Safe to call repeatedly

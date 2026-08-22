@@ -40,8 +40,17 @@ def _mpl_icon(key):
 def _drawn_icon(kind, size):
     """Render a small QPainter-drawn icon for a tool with no matplotlib
     equivalent - a light-colored glyph on a transparent background, so it
-    sits directly on the (dark) QToolButton surface like a normal icon."""
-    pixmap = QPixmap(size, size)
+    sits directly on the (dark) QToolButton surface like a normal icon.
+
+    Rendered at the app's current device pixel ratio (>1 on a HiDPI/scaled
+    monitor - e.g. 2.0 at 200% Windows scaling) so it stays crisp instead
+    of being upscaled/blurry there - setting the QPixmap's own device pixel
+    ratio *before* painting on it makes QPainter operate in logical (size x
+    size) coordinates regardless, so nothing below needs to know about it."""
+    app = qtw.QApplication.instance()
+    dpr = app.devicePixelRatio() if app is not None else 1.0
+    pixmap = QPixmap(round(size * dpr), round(size * dpr))
+    pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)

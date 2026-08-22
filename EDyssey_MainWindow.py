@@ -40,7 +40,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2, Tab_Edit)
-from ui_tabs.logging_utils import install_excepthook
+from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler
 from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
@@ -286,6 +286,12 @@ class MainWindow(qtw.QMainWindow):
             except Exception:
                 logging.getLogger('EDyssey.app').exception(
                     'Error cleaning up %s on close', type(tab).__name__)
+
+        # Must happen here, while the QApplication/Qt objects are still
+        # fully alive - see shutdown_qt_log_handler's docstring for why
+        # leaving this to logging's own atexit-registered shutdown() prints
+        # an "Exception ignored in atexit callback" RuntimeError on every exit.
+        shutdown_qt_log_handler()
 
         gc.collect()
         event.accept()
