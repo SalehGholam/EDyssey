@@ -110,6 +110,7 @@ class TabBase(qtw.QWidget):
                 is expected to call QThreadPool.globalInstance() itself.
         """
         super().__init__(parent)
+        self._tab_name = tab_name
         self.logger = get_tab_logger(tab_name)
         if own_threadpool:
             self.threadpool = QThreadPool()
@@ -140,6 +141,16 @@ class TabBase(qtw.QWidget):
         cleanup and so every override reads the same way)."""
         pass
 
+    # Tab_ROI_on_4D's own natural ribbon height (px) - the shared reference
+    # every tab's ribbon is fixed to (see apply_display_settings), so all 4
+    # tabs get the SAME absolute ribbon height, not just the same relative
+    # scale off 4 different natural heights. Set once, the first time
+    # Tab_ROI_on_4D itself applies display settings; every other tab falls
+    # back to its own natural height only in the (normally unreachable)
+    # case where it's asked to apply settings before Tab_ROI_on_4D exists
+    # yet - EDyssey_MainWindow always constructs it first.
+    _reference_ribbon_height = None
+
     # -- Display settings (Edit menu's Display Size dialog) ----------------
     def apply_display_settings(self):
         """Re-apply the shared DisplaySettings (ribbon text scale, ribbon
@@ -169,13 +180,12 @@ class TabBase(qtw.QWidget):
             if base_height is None:
                 base_height = ribbon_page.sizeHint().height()
                 ribbon_page._edyssey_base_height = base_height
+                if self._tab_name == 'Tab_ROI_on_4D':
+                    TabBase._reference_ribbon_height = base_height
             base_pt = getattr(self, '_ribbon_base_pt', 9)
             ribbon_page.setStyleSheet(f'font-size: {round(base_pt * settings.ribbon_text_scale)}pt;')
-            if abs(settings.ribbon_height_scale - 1.0) < 1e-6:
-                ribbon_page.setMinimumHeight(0)
-                ribbon_page.setMaximumHeight(16777215)  # Qt's QWIDGETSIZE_MAX - "no constraint"
-            else:
-                ribbon_page.setFixedHeight(round(base_height * settings.ribbon_height_scale))
+            reference_height = TabBase._reference_ribbon_height or base_height
+            ribbon_page.setFixedHeight(round(reference_height * settings.ribbon_height_scale))
 
         ribbon_panel = getattr(self, 'ribbon', None)
         if ribbon_panel is not None and hasattr(ribbon_panel, 'set_icon_size'):
@@ -183,28 +193,31 @@ class TabBase(qtw.QWidget):
 
         for figure in self._display_settings_figures():
             self._rescale_figure_fonts(figure, settings.plot_font_scale)
-            self._apply_figure_size_scale(figure, settings.figure_size_scale)
+        self._apply_figure_size_scale(settings.figure_size_scale)
 
-    def _apply_figure_size_scale(self, figure, scale):
-        """Scale `figure`'s canvas widget's minimum size by `scale`,
-        relative to its own natural size the FIRST time this ran (cached on
-        the canvas as _edyssey_base_size, same reasoning as
-        _rescale_figure_fonts's base-size cache) - lets the user request a
-        bigger plot area than the tab's layout would otherwise give it (the
-        canvas already has stretch=1 in its container, so this is the only
-        way to make it request more room than "whatever's left")."""
-        canvas = getattr(figure, 'canvas', None)
-        if canvas is None:
+    def _apply_figure_size_scale(self, scale):
+        """Resize the whole top-level window by `scale`, relative to its
+        own size the FIRST time this ran (cached on the window itself as
+        _edyssey_base_window_size) - every tab's canvas already fills 100%
+        of its container via a stretch=1 layout factor, so a plain
+        setMinimumSize() on the canvas alone often has NO visible effect
+        (the canvas is frequently already bigger than a modest scale-up of
+        its own small default sizeHint, e.g. matplotlib's 640x480 default
+        figure size, well under what a normal window already allocates it)
+        - actually growing/shrinking the *window* is the only way this
+        control reliably does something visible regardless of the current
+        window size. One global scale (like every other Display Size
+        control), so calling this once per tab (it's invoked once, not per
+        figure) is enough - resizing again with the same target from
+        another tab's apply_display_settings() call is a harmless no-op."""
+        top = self.window()
+        if top is None:
             return
-        base_size = getattr(canvas, '_edyssey_base_size', None)
+        base_size = getattr(top, '_edyssey_base_window_size', None)
         if base_size is None:
-            hint = canvas.sizeHint()
-            base_size = (max(hint.width(), 200), max(hint.height(), 200))
-            canvas._edyssey_base_size = base_size
-        if abs(scale - 1.0) < 1e-6:
-            canvas.setMinimumSize(0, 0)
-        else:
-            canvas.setMinimumSize(round(base_size[0] * scale), round(base_size[1] * scale))
+            base_size = (top.width(), top.height())
+            top._edyssey_base_window_size = base_size
+        top.resize(round(base_size[0] * scale), round(base_size[1] * scale))
 
     def _display_settings_figures(self):
         """Every matplotlib Figure this tab owns, by whichever of the

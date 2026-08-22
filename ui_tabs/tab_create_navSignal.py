@@ -190,8 +190,23 @@ class Tab_Create_NavSignal(TabBase):
             'Reciprocal-space calibration (1/A per pixel) for the Summed DP preview - '
             'drawn as concentric dashed rings every 1 1/A, centered on the found center')
         self.lineEdit_scale_recip.textChanged.connect(self.update_recip_scale_circles)
+        self.button_centerRecip = qtw.QPushButton('Center')
+        self.button_centerRecip.setToolTip(
+            'Find the beam center now (large-sigma blur) and re-center the '
+            'reciprocal-space rings there - independent of the virtual mask\'s own '
+            'center (see "Auto Center" in Virtual Detector Mask). Hold Ctrl and '
+            'click the Summed DP preview (away from the mask\'s own handles) to '
+            'set this center manually instead.')
+        self.button_centerRecip.clicked.connect(self.find_and_center_recip)
+        layout_scale_row.addWidget(self.button_centerRecip)
         layout_dir.addLayout(layout_scale_row)
         self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
+
+        # dp_center: the reciprocal-space rings' own center (found via
+        # find_and_center_recip, or Ctrl+Click on the Summed DP preview
+        # away from the mask's handles) - INDEPENDENT of the virtual mask's
+        # center (spinbox_centerX/Y below), matching Tab_ROI_on_4D exactly.
+        self.dp_center = None
 
         #%% Input Parameters (ribbon column) - Scan Size/Detector Size share
         # one QGridLayout (mirrors Tab_ROI_on_4D's Experiment Info column,
@@ -257,19 +272,17 @@ class Tab_Create_NavSignal(TabBase):
         self.spinbox_dwellTime_acquisition.setFixedWidth(70)
         self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
         layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_scanSize.addLayout(layout_dwell_row)
-
-        layout_dwell_row2 = qtw.QHBoxLayout()
+        self._ribbon_inline_separator(layout_dwell_row)
         label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (\u03BCs)')
         label_dwellTime_detection.setToolTip(
             '"Detection"-role dwell time - only used once "Smart Scanned" is checked')
-        layout_dwell_row2.addWidget(label_dwellTime_detection)
+        layout_dwell_row.addWidget(label_dwellTime_detection)
         self.spinbox_dwellTime_detection = qtw.QSpinBox()
         self.spinbox_dwellTime_detection.setFixedWidth(70)
         self.spinbox_dwellTime_detection.setRange(1, 99999999)
         self.spinbox_dwellTime_detection.setDisabled(True)
-        layout_dwell_row2.addWidget(self.spinbox_dwellTime_detection)
-        layout_scanSize.addLayout(layout_dwell_row2)
+        layout_dwell_row.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize.addLayout(layout_dwell_row)
 
         # metadata (comment.txt) auto-fill - Load/Browse (actions) | Block #
         # (a value) - separated, matching Tab_ROI_on_4D.
@@ -367,38 +380,9 @@ class Tab_Create_NavSignal(TabBase):
             'Automatically save when "Calculate All" finishes, instead of needing '
             'to click "Save Results" manually')
         layout_scanSize.addLayout(layout_save)
-        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Batch Options')
 
-        #%% Files List (ribbon column, third - before Virtual Detector Mask)
-        # - the data-type combo (selects "All files" itself, replacing the
-        # old separate checkbox) sits above the list; the list stretches to
-        # fill the ribbon's full height (stretch=False below, so
-        # _ribbon_group_end doesn't add its own competing trailing stretch)
-        # instead of being height-capped.
-        self.box_fileList, layout_box_fileList = self._ribbon_group_start(layout_ribbon, stretch=1)
-        self.combo_dtype = qtw.QComboBox()
-        self.combo_dtype.addItems(['All files', '.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.tif'])
-        self.combo_dtype.setToolTip(
-            'Filter the file list below to one data type - ".tif" matches both '
-            '.tif and .tiff files')
-        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
-        layout_box_fileList.addWidget(self.combo_dtype)
-        self.file_list_widget = qtw.QListWidget()
-        self.file_list_widget.setMinimumWidth(150)
-        self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
-        self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
-        self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
-        layout_box_fileList.addWidget(self.file_list_widget, 1)
-        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List', stretch=False)
-
-        #%% Virtual Detector Mask (ribbon column, fourth)
-        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        #%% Run (ribbon column, fifth/last) - Test File/Calculate All/Save
-        # Results/Cancel. Mode/Batch Options have moved into the Input
-        # Parameters column above.
-        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
-
+        # Test File/Calculate All/Save Results/Cancel sit at the bottom of
+        # Batch Options - there's no separate "Run" column anymore.
         layout_calculate_buttons = qtw.QHBoxLayout()
 
         self.button_testFile = qtw.QPushButton('Test File')
@@ -431,9 +415,35 @@ class Tab_Create_NavSignal(TabBase):
             'Stop the running navigation signal creation. Already-running '
             'background computations finish silently; their results are discarded.')
         layout_calculate_buttons.addWidget(self.button_cancel)
-        layout_box_run.addLayout(layout_calculate_buttons)
-        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Run', separator=False)
-        layout_ribbon.addStretch(1)
+        layout_scanSize.addLayout(layout_calculate_buttons)
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Batch Options')
+
+        #%% Files List (ribbon column, third - before Virtual Detector Mask)
+        # - the data-type combo (selects "All files" itself, replacing the
+        # old separate checkbox) sits above the list; the list stretches to
+        # fill the ribbon's full height (stretch=False below, so
+        # _ribbon_group_end doesn't add its own competing trailing stretch)
+        # instead of being height-capped.
+        self.box_fileList, layout_box_fileList = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.combo_dtype = qtw.QComboBox()
+        self.combo_dtype.addItems(['All files', '.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.tif'])
+        self.combo_dtype.setToolTip(
+            'Filter the file list below to one data type - ".tif" matches both '
+            '.tif and .tiff files')
+        self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
+        layout_box_fileList.addWidget(self.combo_dtype)
+        self.file_list_widget = qtw.QListWidget()
+        self.file_list_widget.setMinimumWidth(150)
+        self.file_list_widget.setSelectionMode(qtw.QAbstractItemView.ExtendedSelection)
+        self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
+        self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
+        layout_box_fileList.addWidget(self.file_list_widget, 1)
+        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List', stretch=False)
+
+        #%% Virtual Detector Mask (ribbon column, fourth/last) - Test
+        # File/Calculate All/Save Results/Cancel have moved into Batch
+        # Options above; there's no separate "Run" column anymore.
+        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         #%% Virtual Detector Mask column content (box_mask/layout_mask
         # reserved earlier, right after Batch Options - see there)
@@ -595,6 +605,8 @@ class Tab_Create_NavSignal(TabBase):
             'on the navigation/test image (hold Ctrl and drag there), instead '
             'of the whole scan')
         layout_sum_dp.addStretch(1)
+        self._ribbon_group_end(layout_ribbon, layout_mask, 'Virtual Detector Mask', separator=False)
+        layout_ribbon.addStretch(1)
 
         # The Summed DP preview canvas itself lives in the main window, beside
         # the navigation image (see #%% canvas below), so it has more room
@@ -1215,10 +1227,14 @@ class Tab_Create_NavSignal(TabBase):
 
     def _on_sum_dp_computed(self, result, index):
         """Display a completed Summed DP on the mask-preview canvas, rescale
-        the center/radius spinboxes to its size, auto-find the center if
-        enabled, and redraw the mask overlay."""
+        the center/radius spinboxes to its size, and redraw the mask
+        overlay. self.dp_center (the recip. rings' own center) is reset -
+        a new Summed DP may have a different shape/beam position, so the
+        previous one may no longer apply; click "Center" (Files) or
+        Ctrl+Click to find/set it again."""
         self.button_computeSumDp.setEnabled(True)
         self.sum_dp = result
+        self.dp_center = None
         det_y, det_x = self.sum_dp.shape
         for sb, val in ((self.spinbox_centerX, det_x), (self.spinbox_centerY, det_y),
                        (self.spinbox_rIn, max(det_x, det_y)), (self.spinbox_rOut, max(det_x, det_y))):
@@ -1386,25 +1402,46 @@ class Tab_Create_NavSignal(TabBase):
         return list(self._extra_detectors)
 
     def update_recip_scale_circles(self):
-        """Draw concentric dashed 1/A rings on the Summed DP preview, centered
-        on the found center (spinbox_centerX/Y) - in place of a conventional
-        scale bar, which doesn't read naturally on a radially-symmetric
-        diffraction pattern."""
+        """Draw concentric dashed 1/A rings on the Summed DP preview,
+        centered on self.dp_center - the reciprocal-space rings' own
+        center, independent of the virtual mask's center (spinbox_centerX/
+        Y) - in place of a conventional scale bar, which doesn't read
+        naturally on a radially-symmetric diffraction pattern."""
         if not hasattr(self, 'sum_dp'):
             return
-        center = (self.spinbox_centerX.value(), self.spinbox_centerY.value())
+        center = self.dp_center if self.dp_center is not None else None
         self._sum_dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_mask_preview, self.lineEdit_scale_recip.text(), self.sum_dp.shape,
             center=center, old_artists=getattr(self, '_sum_dp_recip_circles', None))
         self.ax_mask_preview.set_xlabel(
-            'Click "Auto Center" to find the beam center, or hold Ctrl and drag the '
-            'center (+) or a circle edge to move/resize the virtual mask manually.',
-            fontsize=10)
+            'Recip. rings: click "Center" (Files) to find their center, or hold Ctrl '
+            'and click away from the mask to set it manually.\n'
+            'Mask: click "Auto Center" (below), or hold Ctrl and drag the center (+) '
+            'or a circle edge to move/resize it.',
+            fontsize=9)
         self.canvas.draw_idle()
+
+    def find_and_center_recip(self):
+        """Find the beam center now and jump the reciprocal-space rings
+        there - the "Center" button's slot (Files column, Scale bars).
+        Independent of the virtual mask's own center - see auto_find_center."""
+        if not hasattr(self, 'sum_dp'):
+            qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
+                'Click "Compute Summed DP" first, so there is a summed diffraction '
+                'pattern to search for the center in.')
+            return
+        try:
+            self.dp_center = io.find_dp_center_blurred(self.sum_dp)
+        except Exception:
+            self.logger.exception('Auto-centering failed.')
+            return
+        self.update_recip_scale_circles()
 
     def auto_find_center(self):
         """Auto-detect the direct-beam center in self.sum_dp and update the
-        center spinboxes - the "Auto Center" button's slot."""
+        virtual mask's center spinboxes - the "Auto Center" button's slot.
+        Independent of the reciprocal-space rings' own center - see
+        find_and_center_recip."""
         if not hasattr(self, 'sum_dp'):
             qtw.QMessageBox.critical(self, 'No Summed DP',
                 'Click "Compute Summed DP" first so there is a summed diffraction '
@@ -1474,11 +1511,12 @@ class Tab_Create_NavSignal(TabBase):
     def on_press_mask(self, event):
         """Grab the center marker or a circle edge for dragging - gated
         behind Ctrl so plain click/drag stays available for the toolbar's
-        Pan/Zoom tool, matching the rest of the app's convention. A
-        Ctrl+Click that doesn't land on the marker/an edge instead
-        re-centers directly to the click point (only while Auto-center is
-        off), mirroring the click-anywhere DP recentering already present
-        on the other three tabs."""
+        Pan/Zoom tool, matching the rest of the app's convention. Grabbing
+        the mask's own handles always takes priority; a Ctrl+Click that
+        misses them instead sets the reciprocal-space rings' own center
+        (self.dp_center) - the two centers are independent, matching
+        Tab_ROI_on_4D exactly (see find_and_center_recip vs.
+        auto_find_center)."""
         self._mask_drag_mode = None
         if (event.inaxes != self.ax_mask_preview or event.xdata is None
                 or 'ctrl' not in event.modifiers):
@@ -1504,11 +1542,11 @@ class Tab_Create_NavSignal(TabBase):
             self._mask_drag_mode = 'r_in'
 
         if self._mask_drag_mode is None:
-            # Not a drag start - re-center directly to the click point.
-            # setValue() below fires valueChanged -> _sync_active_detector,
-            # which already calls update_mask_overlay().
-            self.spinbox_centerX.setValue(int(round(event.xdata)))
-            self.spinbox_centerY.setValue(int(round(event.ydata)))
+            # Missed every mask handle - manually re-center the
+            # reciprocal-space rings instead (their own, independent center).
+            self.dp_center = (event.xdata, event.ydata)
+            self.update_recip_scale_circles()
+            self.canvas.draw_idle()
             return
 
         # Blit setup: snapshot everything in ax_mask_preview *except*
