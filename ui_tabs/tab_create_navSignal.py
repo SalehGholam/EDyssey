@@ -92,99 +92,85 @@ class Tab_Create_NavSignal(TabBase):
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
         layout_dir.addLayout(layout_dir_save)
 
-        layout_project_name = qtw.QHBoxLayout()
-        layout_project_name.addWidget(qtw.QLabel('Project'))
+        layout_project_save = qtw.QHBoxLayout()
+        layout_project_save.addWidget(qtw.QLabel('Project'))
         self.lineEdit_projectName = qtw.QLineEdit()
-        layout_project_name.addWidget(self.lineEdit_projectName)
+        layout_project_save.addWidget(self.lineEdit_projectName)
         self.lineEdit_projectName.setToolTip(
             'Results are saved to "<Save Path>/<Project>_EDyssey Analysis/navigator signal/'
             '<timestamp>/" - defaults to the 4D signals folder name whenever that '
             'folder changes, but can be edited freely before saving.')
-        layout_dir.addLayout(layout_project_name)
-
-        layout_save_name = qtw.QHBoxLayout()
-        layout_save_name.addWidget(qtw.QLabel('Save Name'))
+        self._ribbon_inline_separator(layout_project_save)
+        layout_project_save.addWidget(qtw.QLabel('Save Name'))
         self.lineEdit_saveName = qtw.QLineEdit('navigation_signal')
-        layout_save_name.addWidget(self.lineEdit_saveName)
+        layout_project_save.addWidget(self.lineEdit_saveName)
         self.lineEdit_saveName.setToolTip(
             'Filename (without extension) for the saved navigation signal. Other tabs\' '
             '"Load Saved Analysis" looks for the default name "navigation_signal" '
             'specifically - rename only if you don\'t need that auto-discovery.')
-        layout_dir.addLayout(layout_save_name)
+        layout_dir.addLayout(layout_project_save)
 
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
 
-        # Smart-scan (tomography) support, merged in here rather than its
-        # own column - each tilt angle may have a "detection" file (dense,
-        # no pattern needed) and/or an "acquisition" file (sparse, needs its
-        # own pattern file). See EDyssey/io_utils/smart_scan.py.
-        layout_smartScan_row = qtw.QHBoxLayout()
-        self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
+        # Smart-scan (tomography) support - a titled box (not just plain
+        # rows) since Navigator has more smart-scan-specific content than
+        # Tab_ROI_on_4D does (detection dir, check button, role combo -
+        # the role combo itself now lives in Input Parameters' Batch
+        # Options section instead, beside Mode). Each tilt angle may have a
+        # "detection" file (dense, no pattern needed) and/or an
+        # "acquisition" file (sparse, needs its own pattern file) - see
+        # EDyssey/io_utils/smart_scan.py. 2x2 layout, matching
+        # Tab_ROI_on_4D's "checkbox + path on one row" convention: left
+        # column = activation controls (checkbox, then Check Files button),
+        # right column = directory pickers (pattern dir, then detection dir).
+        groupbox_smartScan = qtw.QGroupBox('Smart Scan')
+        layout_smartScan = qtw.QGridLayout(groupbox_smartScan)
+
+        self.checkbox_smartScan = qtw.QCheckBox('Activate')
         self.checkbox_smartScan.setToolTip(
             'This folder holds a smart-scanned tomography series (detection + '
             'acquisition files per tilt angle, each acquisition needing its own '
             'pattern file). See other_scripts/smart scanning guide/ for background.')
-        layout_smartScan_row.addWidget(self.checkbox_smartScan)
+        layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
         self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
 
-        self.combo_smartScanRole = qtw.QComboBox()
-        self.combo_smartScanRole.addItems(['Acquisition', 'Detection'])
-        self.combo_smartScanRole.setToolTip(
-            'Which file role to build the batch navigation signal from for each tilt '
-            'angle - "Acquisition" (smart-scanned, uses the pattern file) or '
-            '"Detection" (a plain dense raster, no pattern needed)')
-        self.combo_smartScanRole.setDisabled(True)
-        layout_smartScan_row.addWidget(self.combo_smartScanRole)
-        layout_dir.addLayout(layout_smartScan_row)
-
-        layout_patternDir_row = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_patternDir_row)
-        label_patternDir = qtw.QLabel('Pattern Dir.')
-        label_patternDir.setFixedWidth(70)
-        layout_patternDir_row.addWidget(label_patternDir)
         self.lineEdit_patternDir = qtw.QLineEdit()
-        self.lineEdit_patternDir.setPlaceholderText('defaults to 4D Signals folder')
+        self.lineEdit_patternDir.setPlaceholderText('Pattern Dir. (defaults to 4D Signals folder)')
         self.lineEdit_patternDir.setDisabled(True)
-        layout_patternDir_row.addWidget(self.lineEdit_patternDir)
+        layout_smartScan.addWidget(self.lineEdit_patternDir, 0, 1)
         self.button_browsePatternDir = qtw.QPushButton('...')
         self.button_browsePatternDir.setFixedWidth(30)
         self.button_browsePatternDir.setDisabled(True)
         self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
-        layout_patternDir_row.addWidget(self.button_browsePatternDir)
+        layout_smartScan.addWidget(self.button_browsePatternDir, 0, 2)
 
-        layout_detectionDir_row = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_detectionDir_row)
-        label_detectionDir = qtw.QLabel('Detect. Dir.')
-        label_detectionDir.setFixedWidth(70)
-        layout_detectionDir_row.addWidget(label_detectionDir)
-        self.lineEdit_detectionDir = qtw.QLineEdit()
-        self.lineEdit_detectionDir.setPlaceholderText('defaults to 4D Signals folder')
-        self.lineEdit_detectionDir.setDisabled(True)
-        self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if they live somewhere other than the '
-            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
-            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
-            'each in their own folder)')
-        layout_detectionDir_row.addWidget(self.lineEdit_detectionDir)
-        self.button_browseDetectionDir = qtw.QPushButton('...')
-        self.button_browseDetectionDir.setFixedWidth(30)
-        self.button_browseDetectionDir.setDisabled(True)
-        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
-        layout_detectionDir_row.addWidget(self.button_browseDetectionDir)
-
-        layout_checkFiles_row = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_checkFiles_row)
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
         self.button_checkSmartScanFiles.setToolTip(
             'Review the automatic per-angle detection/acquisition/pattern-file match '
             'before calculating - fix or exclude any mismatched tilt angle by hand')
         self.button_checkSmartScanFiles.setDisabled(True)
         self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
-        layout_checkFiles_row.addWidget(self.button_checkSmartScanFiles)
-        self.label_smartScanSummary = qtw.QLabel('')
-        layout_checkFiles_row.addWidget(self.label_smartScanSummary)
-        layout_checkFiles_row.addStretch(1)
+        layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
 
+        self.lineEdit_detectionDir = qtw.QLineEdit()
+        self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
+        self.lineEdit_detectionDir.setDisabled(True)
+        self.lineEdit_detectionDir.setToolTip(
+            'Folder to look for detection files in, if they live somewhere other than the '
+            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
+            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
+            'each in their own folder)')
+        layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
+        self.button_browseDetectionDir = qtw.QPushButton('...')
+        self.button_browseDetectionDir.setFixedWidth(30)
+        self.button_browseDetectionDir.setDisabled(True)
+        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
+        layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
+
+        self.label_smartScanSummary = qtw.QLabel('')
+        layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
+
+        layout_dir.addWidget(groupbox_smartScan)
         self._smart_scan_rows = None  # set by open_smart_scan_check_dialog(); cleared on new 4D folder
 
         # Scale bars - Real | Recip. share one row, moved here (per user
@@ -252,38 +238,38 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
         layout_scanSize.addLayout(layout_exp_items)
 
-        # Detection/Acquisition dwell times - a smart-scanned tilt series
+        # Acquisition/Detection dwell times - a smart-scanned tilt series
         # logs two metadata blocks per angle (e.g. "Scan strategy: Raster"
         # for the dense detection pass, "Scan strategy: Custom" for the
-        # sparse acquisition), each with its own dwelltime. Detection Dwell
-        # T. is ALWAYS enabled and doubles as the general dwell time (used
-        # whether or not "Smart Scanned" is checked) - Acquisition Dwell T.
-        # only matters for smart-scanned acquisition files, so it alone
-        # stays gated behind "Smart Scanned" (see
-        # activate_smartScan_widgets/_get_dwell_time_for). A separate,
-        # always-redundant generic Dwell T. spinbox isn't needed once
-        # Detection Dwell T. covers that role too.
+        # sparse acquisition), each with its own dwelltime. Acquisition
+        # Dwell T. is ALWAYS enabled and doubles as the general dwell time
+        # (used whether or not "Smart Scanned" is checked) - Detection
+        # Dwell T. only matters for smart-scanned detection-role files, so
+        # it alone stays gated behind "Smart Scanned" (see
+        # activate_smartScan_widgets/_get_dwell_time_for).
         layout_dwell_row = qtw.QHBoxLayout()
-        label_dwellTime_detection = qtw.QLabel('Dwell T. (\u03BCs)')
-        label_dwellTime_detection.setToolTip(
-            'Dwell time in microseconds - also used as the "Detection"-role dwell '
-            'time when "Smart Scanned" is checked')
-        layout_dwell_row.addWidget(label_dwellTime_detection)
-        self.spinbox_dwellTime_detection = qtw.QSpinBox()
-        self.spinbox_dwellTime_detection.setFixedWidth(70)
-        self.spinbox_dwellTime_detection.setRange(1, 99999999)
-        layout_dwell_row.addWidget(self.spinbox_dwellTime_detection)
-        self._ribbon_inline_separator(layout_dwell_row)
-        label_dwellTime_acquisition = qtw.QLabel('Acq. (\u03BCs)')
+        label_dwellTime_acquisition = qtw.QLabel('Acquisition Dwell T. (\u03BCs)')
         label_dwellTime_acquisition.setToolTip(
-            '"Acquisition"-role dwell time - only used once "Smart Scanned" is checked')
+            'Dwell time in microseconds - also used as the general dwell time when '
+            '"Smart Scanned" is unchecked')
         layout_dwell_row.addWidget(label_dwellTime_acquisition)
         self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
         self.spinbox_dwellTime_acquisition.setFixedWidth(70)
         self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
-        self.spinbox_dwellTime_acquisition.setDisabled(True)
         layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
         layout_scanSize.addLayout(layout_dwell_row)
+
+        layout_dwell_row2 = qtw.QHBoxLayout()
+        label_dwellTime_detection = qtw.QLabel('Detection Dwell T. (\u03BCs)')
+        label_dwellTime_detection.setToolTip(
+            '"Detection"-role dwell time - only used once "Smart Scanned" is checked')
+        layout_dwell_row2.addWidget(label_dwellTime_detection)
+        self.spinbox_dwellTime_detection = qtw.QSpinBox()
+        self.spinbox_dwellTime_detection.setFixedWidth(70)
+        self.spinbox_dwellTime_detection.setRange(1, 99999999)
+        self.spinbox_dwellTime_detection.setDisabled(True)
+        layout_dwell_row2.addWidget(self.spinbox_dwellTime_detection)
+        layout_scanSize.addLayout(layout_dwell_row2)
 
         # metadata (comment.txt) auto-fill - Load/Browse (actions) | Block #
         # (a value) - separated, matching Tab_ROI_on_4D.
@@ -321,22 +307,18 @@ class Tab_Create_NavSignal(TabBase):
         layout_scanSize.addLayout(layout_scanSize_row2)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
-        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Input Parameters')
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Input Parameters', stretch=False)
 
-        #%% Virtual Detector Mask (ribbon column)
-        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
+        sep_inputParams = qtw.QFrame()
+        sep_inputParams.setFrameShape(qtw.QFrame.HLine)
+        sep_inputParams.setFrameShadow(qtw.QFrame.Sunken)
+        layout_scanSize.addWidget(sep_inputParams)
 
-        #%% Run (combined ribbon column, stacked like Tab_ROI_on_4D's Edge
-        # Detection/SAM2 Segmentation/Summed DP Threshold column) - Mode
-        # (Sum/Variance), paired with the actions that use it (mirrors
-        # Tab_ROI_on_4D's Virtual Imaging column, where Mode sits beside
-        # Compute Virtual Image rather than in Input Parameters), then Test
-        # File/Calculate All/Save Results/Cancel, then Batch Options (CPU
-        # Cores/Clip FPS/Autosave).
-        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        layout_mode_row = qtw.QHBoxLayout()
-        layout_mode_row.addWidget(qtw.QLabel('Mode'))
+        #%% Batch Options (stacked below Input Parameters, same column) -
+        # Mode (Sum/Variance) and the smart-scan role combo share one row,
+        # then CPU Cores/Clip FPS/Autosave below.
+        layout_batch_mode_row = qtw.QHBoxLayout()
+        layout_batch_mode_row.addWidget(qtw.QLabel('Mode'))
         self.combo_virtualMode = qtw.QComboBox()
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
@@ -345,52 +327,18 @@ class Tab_Create_NavSignal(TabBase):
             'the previous/default behavior). Variance: variance of intensities per '
             'scan position instead - highlights local structural variation (e.g. '
             'amorphous vs. crystalline regions) rather than total dose.')
-        layout_mode_row.addWidget(self.combo_virtualMode)
-        layout_mode_row.addStretch(1)
-        layout_box_run.addLayout(layout_mode_row)
+        layout_batch_mode_row.addWidget(self.combo_virtualMode)
+        self._ribbon_inline_separator(layout_batch_mode_row)
+        self.combo_smartScanRole = qtw.QComboBox()
+        self.combo_smartScanRole.addItems(['Acquisition', 'Detection'])
+        self.combo_smartScanRole.setToolTip(
+            'Which file role to build the batch navigation signal from for each tilt '
+            'angle - "Acquisition" (smart-scanned, uses the pattern file) or '
+            '"Detection" (a plain dense raster, no pattern needed)')
+        self.combo_smartScanRole.setDisabled(True)
+        layout_batch_mode_row.addWidget(self.combo_smartScanRole)
+        layout_scanSize.addLayout(layout_batch_mode_row)
 
-        layout_calculate_buttons = qtw.QHBoxLayout()
-
-        self.button_testFile = qtw.QPushButton('Test File')
-        self.button_testFile.setFixedSize(button_w, button_h_lrg)
-        layout_calculate_buttons.addWidget(self.button_testFile)
-        self.button_testFile.clicked.connect(lambda: self.test_selected_file(None))
-        self.button_testFile.setToolTip(
-            'Compute/preview the navigation image for the selected (or first) '
-            'file only, without running the full batch - same as double-clicking it')
-
-        self.button_calculate = qtw.QPushButton('Calculate All')
-        self.button_calculate.setFixedSize(button_w, button_h_lrg)
-        layout_calculate_buttons.addWidget(self.button_calculate)
-        self.button_calculate.clicked.connect(self.calculate_button)
-        self.button_calculate.setToolTip('Run the full batch over every listed (or selected) file')
-
-        self.button_save_results = qtw.QPushButton('Save Results')
-        self.button_save_results.setFixedSize(button_w, button_h_lrg)
-        layout_calculate_buttons.addWidget(self.button_save_results)
-        self.button_save_results.clicked.connect(self.save_results)
-        self.button_save_results.setToolTip(
-            'Save the navigation signal, frames, and clip to the Save Path above')
-        self.button_save_results.setDisabled(True)
-        layout_box_run.addLayout(layout_calculate_buttons)
-        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Run', stretch=False)
-
-        sep_run = qtw.QFrame()
-        sep_run.setFrameShape(qtw.QFrame.HLine)
-        sep_run.setFrameShadow(qtw.QFrame.Sunken)
-        layout_box_run.addWidget(sep_run)
-
-        self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedHeight(button_h_lrg)
-        self.button_cancel.setStyleSheet("background-color: red; color: white;")
-        self.button_cancel.setDisabled(True)
-        self.button_cancel.clicked.connect(self.cancel_running_work)
-        self.button_cancel.setToolTip(
-            'Stop the running navigation signal creation. Already-running '
-            'background computations finish silently; their results are discarded.')
-        layout_box_run.addWidget(self.button_cancel)
-
-        #%% CPU cores / Clip FPS / Autosave
         layout_save = qtw.QHBoxLayout()
 
         label_cores = qtw.QLabel('CPU Cores')
@@ -418,15 +366,15 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_autosave.setToolTip(
             'Automatically save when "Calculate All" finishes, instead of needing '
             'to click "Save Results" manually')
-        layout_box_run.addLayout(layout_save)
-        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Batch Options')
+        layout_scanSize.addLayout(layout_save)
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Batch Options')
 
-        #%% Files List (ribbon column, far right, last) - the data-type
-        # combo (now also selecting "All files" itself, replacing the old
-        # separate checkbox) sits above the list; the list stretches to
+        #%% Files List (ribbon column, third - before Virtual Detector Mask)
+        # - the data-type combo (selects "All files" itself, replacing the
+        # old separate checkbox) sits above the list; the list stretches to
         # fill the ribbon's full height (stretch=False below, so
         # _ribbon_group_end doesn't add its own competing trailing stretch)
-        # instead of being height-capped, per user request.
+        # instead of being height-capped.
         self.box_fileList, layout_box_fileList = self._ribbon_group_start(layout_ribbon, stretch=1)
         self.combo_dtype = qtw.QComboBox()
         self.combo_dtype.addItems(['All files', '.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.tif'])
@@ -441,12 +389,54 @@ class Tab_Create_NavSignal(TabBase):
         self.file_list_widget.setToolTip('Double-click a file to test/preview its navigation image')
         self.file_list_widget.itemDoubleClicked.connect(self.test_selected_file)
         layout_box_fileList.addWidget(self.file_list_widget, 1)
-        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List',
-                               separator=False, stretch=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_fileList, 'Files List', stretch=False)
+
+        #%% Virtual Detector Mask (ribbon column, fourth)
+        self.box_mask, layout_mask = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        #%% Run (ribbon column, fifth/last) - Test File/Calculate All/Save
+        # Results/Cancel. Mode/Batch Options have moved into the Input
+        # Parameters column above.
+        self.box_run, layout_box_run = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        layout_calculate_buttons = qtw.QHBoxLayout()
+
+        self.button_testFile = qtw.QPushButton('Test File')
+        self.button_testFile.setFixedSize(button_w, button_h_lrg)
+        layout_calculate_buttons.addWidget(self.button_testFile)
+        self.button_testFile.clicked.connect(lambda: self.test_selected_file(None))
+        self.button_testFile.setToolTip(
+            'Compute/preview the navigation image for the selected (or first) '
+            'file only, without running the full batch - same as double-clicking it')
+
+        self.button_calculate = qtw.QPushButton('Calculate All')
+        self.button_calculate.setFixedSize(button_w, button_h_lrg)
+        layout_calculate_buttons.addWidget(self.button_calculate)
+        self.button_calculate.clicked.connect(self.calculate_button)
+        self.button_calculate.setToolTip('Run the full batch over every listed (or selected) file')
+
+        self.button_save_results = qtw.QPushButton('Save Results')
+        self.button_save_results.setFixedSize(button_w, button_h_lrg)
+        layout_calculate_buttons.addWidget(self.button_save_results)
+        self.button_save_results.clicked.connect(self.save_results)
+        self.button_save_results.setToolTip(
+            'Save the navigation signal, frames, and clip to the Save Path above')
+        self.button_save_results.setDisabled(True)
+        self.button_cancel = qtw.QPushButton('Cancel')
+        self.button_cancel.setFixedHeight(button_h_lrg)
+        self.button_cancel.setStyleSheet("background-color: red; color: white;")
+        self.button_cancel.setDisabled(True)
+        self.button_cancel.clicked.connect(self.cancel_running_work)
+        self.button_cancel.setToolTip(
+            'Stop the running navigation signal creation. Already-running '
+            'background computations finish silently; their results are discarded.')
+        layout_calculate_buttons.addWidget(self.button_cancel)
+        layout_box_run.addLayout(layout_calculate_buttons)
+        self._ribbon_group_end(layout_ribbon, layout_box_run, 'Run', separator=False)
         layout_ribbon.addStretch(1)
 
         #%% Virtual Detector Mask column content (box_mask/layout_mask
-        # reserved earlier, right after Smart Scan - see there)
+        # reserved earlier, right after Batch Options - see there)
         layout_mask_mode = qtw.QHBoxLayout()
         layout_mask.addLayout(layout_mask_mode)
         self.checkbox_useMask = qtw.QCheckBox('Use Virtual Mask')
@@ -463,68 +453,56 @@ class Tab_Create_NavSignal(TabBase):
         self.checkbox_revertContrast.stateChanged.connect(lambda: self._update_nav_display_clim())
         layout_mask_mode.addStretch(1)
 
-        # Each row here holds at most one long-label button - a long label
-        # can't shrink below its text's natural width (no eliding on
-        # QPushButton), so packing several per row is what forced the whole
-        # panel wider than intended; \n-wrapping the longer labels keeps
-        # each button itself narrower too.
-        layout_mask_buttons = qtw.QHBoxLayout()
-        layout_mask.addLayout(layout_mask_buttons)
+        # Center/Radius grid + Detectors list, replicating Tab_ROI_on_4D's
+        # Virtual Imaging column layout exactly (per user request) - a
+        # single QGridLayout (rather than separate row layouts) so Center
+        # X/Y and Radius In/Out cells line up column-to-column, an
+        # "Auto-Find Center" button at the grid's far right (row 0), and
+        # the Detectors list sitting beside the grid (not below it),
+        # separated by an inline vertical line.
+        grid_mask_geometry = qtw.QGridLayout()
+        grid_mask_geometry.setContentsMargins(0, 0, 0, 0)
 
-        self.button_autoCenter = qtw.QPushButton('Auto-Find\nCenter')
-        self.button_autoCenter.setFixedSize(button_w-10, button_h_lrg)
-        layout_mask_buttons.addWidget(self.button_autoCenter)
-        self.button_autoCenter.clicked.connect(self.auto_find_center)
-        self.button_autoCenter.setToolTip('Auto-detect the direct-beam center from the Summed DP preview')
-
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the center is re-found automatically (large-sigma blur) '
-            'every time a new Summed DP is computed. When unchecked, set the center '
-            'manually via the spinboxes above or by Ctrl+dragging the "+" marker.')
-        layout_mask_buttons.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(self.update_recip_scale_circles)
-
-        layout_mask_center = qtw.QHBoxLayout()
-        layout_mask.addLayout(layout_mask_center)
-        label_centerX = qtw.QLabel('Center X')
-        layout_mask_center.addWidget(label_centerX)
+        grid_mask_geometry.addWidget(qtw.QLabel('Center'), 0, 0)
+        grid_mask_geometry.addWidget(qtw.QLabel('X'), 0, 1)
         self.spinbox_centerX = qtw.QSpinBox()
         self.spinbox_centerX.setMaximumWidth(70)
         self.spinbox_centerX.setRange(0, 8192)
         self.spinbox_centerX.setValue(256)
-        layout_mask_center.addWidget(self.spinbox_centerX)
-        label_centerY = qtw.QLabel('Center Y')
-        layout_mask_center.addWidget(label_centerY)
+        grid_mask_geometry.addWidget(self.spinbox_centerX, 0, 2)
+        grid_mask_geometry.addWidget(qtw.QLabel('Y'), 0, 3)
         self.spinbox_centerY = qtw.QSpinBox()
         self.spinbox_centerY.setMaximumWidth(70)
         self.spinbox_centerY.setRange(0, 8192)
         self.spinbox_centerY.setValue(256)
-        layout_mask_center.addWidget(self.spinbox_centerY)
+        grid_mask_geometry.addWidget(self.spinbox_centerY, 0, 4)
+        self.button_autoCenter = qtw.QPushButton('Auto Center')
+        self.button_autoCenter.setToolTip(
+            'Find the beam center now (large-sigma blur, from the Summed DP preview) '
+            'and copy it into Center X/Y. Hold Ctrl and drag the mask\'s center "+" '
+            'or a circle edge on the Summed DP preview to move/resize it manually '
+            'instead.')
+        self.button_autoCenter.clicked.connect(self.auto_find_center)
+        grid_mask_geometry.addWidget(self.button_autoCenter, 0, 5)
 
-        layout_mask_radii = qtw.QHBoxLayout()
-        layout_mask.addLayout(layout_mask_radii)
-        label_rIn = qtw.QLabel('Inner R')
-        layout_mask_radii.addWidget(label_rIn)
+        grid_mask_geometry.addWidget(qtw.QLabel('Radius'), 1, 0)
+        grid_mask_geometry.addWidget(qtw.QLabel('In'), 1, 1)
         self.spinbox_rIn = qtw.QSpinBox()
         self.spinbox_rIn.setMaximumWidth(70)
         self.spinbox_rIn.setRange(0, 4096)
         self.spinbox_rIn.setValue(0)
         self.spinbox_rIn.setSingleStep(10)
-        layout_mask_radii.addWidget(self.spinbox_rIn)
-        label_rOut = qtw.QLabel('Outer R')
-        layout_mask_radii.addWidget(label_rOut)
+        grid_mask_geometry.addWidget(self.spinbox_rIn, 1, 2)
+        grid_mask_geometry.addWidget(qtw.QLabel('Out'), 1, 3)
         self.spinbox_rOut = qtw.QSpinBox()
         self.spinbox_rOut.setMaximumWidth(70)
         self.spinbox_rOut.setRange(1, 4096)
         self.spinbox_rOut.setValue(256)
         self.spinbox_rOut.setSingleStep(10)
-        layout_mask_radii.addWidget(self.spinbox_rOut)
-        for sb in (self.spinbox_rIn, self.spinbox_rOut):
-            sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
+        grid_mask_geometry.addWidget(self.spinbox_rOut, 1, 4)
 
         for sb in (self.spinbox_centerX, self.spinbox_centerY, self.spinbox_rIn, self.spinbox_rOut):
+            sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
             sb.valueChanged.connect(self._sync_active_detector)
 
         # Every virtual detector - including the very first, spinbox-defined
@@ -542,8 +520,12 @@ class Tab_Create_NavSignal(TabBase):
                                   'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}]
         self._active_detector_row = 0
 
+        widget_detectors = qtw.QWidget()
+        layout_detectors = qtw.QVBoxLayout(widget_detectors)
+        layout_detectors.setContentsMargins(0, 0, 0, 0)
+        layout_detectors.addWidget(qtw.QLabel('Detectors'))
         layout_detector_list_buttons = qtw.QHBoxLayout()
-        layout_mask.addLayout(layout_detector_list_buttons)
+        layout_detectors.addLayout(layout_detector_list_buttons)
         self.button_addDetector = qtw.QPushButton('Add Detector')
         self.button_addDetector.setToolTip(
             'Snapshot the center/radii above as a new virtual detector, on top of '
@@ -564,11 +546,17 @@ class Tab_Create_NavSignal(TabBase):
             'Every virtual detector in play, combined together into one navigation '
             'image at calculation time - select one to edit it via the center/radii '
             'spinboxes above (its values update live as you edit/drag them)')
-        self.list_detectors.setMaximumHeight(70)
-        layout_mask.addWidget(self.list_detectors)
+        self.list_detectors.setMaximumHeight(60)
+        layout_detectors.addWidget(self.list_detectors)
         self.list_detectors.addItem(self._format_detector(self._extra_detectors[0]))
         self.list_detectors.setCurrentRow(0)
         self.list_detectors.itemSelectionChanged.connect(self._load_selected_detector)
+
+        layout_mask_middle = qtw.QHBoxLayout()
+        layout_mask_middle.addLayout(grid_mask_geometry)
+        self._ribbon_inline_separator(layout_mask_middle)
+        layout_mask_middle.addWidget(widget_detectors, 1)
+        layout_mask.addLayout(layout_mask_middle)
 
         # Each row here holds at most one long-label button - a long label
         # can't shrink below its text's natural width (no eliding on
@@ -720,7 +708,7 @@ class Tab_Create_NavSignal(TabBase):
             RibbonTool('sep1', kind='separator'),
             RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
                       'virtual detector mask there (same as "Auto-Find Center")',
-                      'action', lambda: self.auto_find_center(silent=False)),
+                      'action', self.auto_find_center),
             RibbonTool('sep2', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
                       'action', self.toolbar.pan),
@@ -866,7 +854,7 @@ class Tab_Create_NavSignal(TabBase):
                 self.spinbox_scanSize_y.setValue(int(metadata['scan size y']))
                 self.checkbox_scanSize.setChecked(False)
             if 'dwelltime' in metadata:
-                self.spinbox_dwellTime_detection.setValue(int(metadata['dwelltime']))
+                self.spinbox_dwellTime_acquisition.setValue(int(metadata['dwelltime']))
             self.logger.info('Loaded scan metadata (block %d) from %s.', count, fn_used)
         except Exception as e:
             if silent:
@@ -880,14 +868,14 @@ class Tab_Create_NavSignal(TabBase):
     def activate_smartScan_widgets(self):
         """Enable/disable the Smart Scan widgets to match the checkbox, and
         invalidate any previously-reviewed Check Files match table.
-        spinbox_dwellTime_detection is NOT included here - it doubles as the
-        general dwell time and stays enabled regardless (see the Input
+        spinbox_dwellTime_acquisition is NOT included here - it doubles as
+        the general dwell time and stays enabled regardless (see the Input
         Parameters column / _get_dwell_time_for)."""
         enable = self.checkbox_smartScan.isChecked()
         for wid in (self.combo_smartScanRole, self.lineEdit_patternDir,
                     self.button_browsePatternDir, self.lineEdit_detectionDir,
                     self.button_browseDetectionDir, self.button_checkSmartScanFiles,
-                    self.spinbox_dwellTime_acquisition):
+                    self.spinbox_dwellTime_detection):
             wid.setEnabled(enable)
         self._smart_scan_rows = None
         self.label_smartScanSummary.setText('')
@@ -1068,10 +1056,10 @@ class Tab_Create_NavSignal(TabBase):
         return None
 
     def _get_dwell_time_for(self, fn):
-        """Dwell time (μs) to use for `fn`: the role-specific Detection/
-        Acquisition Dwell T. spinbox when "Smart Scanned" is checked and
+        """Dwell time (μs) to use for `fn`: the role-specific Acquisition/
+        Detection Dwell T. spinbox when "Smart Scanned" is checked and
         `fn` matches a confirmed Check Files row (see _get_fn_pattern_for),
-        else the generic Dwell T. spinbox."""
+        else the general Acquisition Dwell T. spinbox."""
         if self.checkbox_smartScan.isChecked() and self._smart_scan_rows:
             name = os.path.basename(fn)
             for row in self._smart_scan_rows:
@@ -1079,7 +1067,7 @@ class Tab_Create_NavSignal(TabBase):
                     return self.spinbox_dwellTime_acquisition.value()
                 if row.get('detection_file') and os.path.basename(row['detection_file']) == name:
                     return self.spinbox_dwellTime_detection.value()
-        return self.spinbox_dwellTime_detection.value()
+        return self.spinbox_dwellTime_acquisition.value()
 
     def test_selected_file(self, item):
         """Compute and preview the navigation image for a single file
@@ -1248,8 +1236,6 @@ class Tab_Create_NavSignal(TabBase):
         # one - see the identical comment in _on_test_result.
         self.toolbar.update()
         self.toolbar.push_current()
-        if self.checkbox_autoCenterDp.isChecked():
-            self.auto_find_center(silent=True)
         self.update_mask_overlay()
         duration = perf_counter() - self._sum_dp_tic if hasattr(self, '_sum_dp_tic') else None
         if duration is not None:
@@ -1410,25 +1396,19 @@ class Tab_Create_NavSignal(TabBase):
         self._sum_dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_mask_preview, self.lineEdit_scale_recip.text(), self.sum_dp.shape,
             center=center, old_artists=getattr(self, '_sum_dp_recip_circles', None))
-        if self.checkbox_autoCenterDp.isChecked():
-            centering_mode = 'auto (large-sigma blur) - uncheck "Auto-center" to set manually'
-        else:
-            centering_mode = 'manual - Ctrl+Click, drag the "+", or use the spinboxes'
         self.ax_mask_preview.set_xlabel(
-            f'Circle center: {centering_mode}\n'
-            'Hold Ctrl and drag the center (+) or a circle edge to move/resize the virtual mask.',
+            'Click "Auto Center" to find the beam center, or hold Ctrl and drag the '
+            'center (+) or a circle edge to move/resize the virtual mask manually.',
             fontsize=10)
         self.canvas.draw_idle()
 
-    def auto_find_center(self, silent=False):
+    def auto_find_center(self):
         """Auto-detect the direct-beam center in self.sum_dp and update the
-        center spinboxes. silent=True skips the "no Summed DP yet" dialog
-        (used when called automatically right after a Summed DP is computed)."""
+        center spinboxes - the "Auto Center" button's slot."""
         if not hasattr(self, 'sum_dp'):
-            if not silent:
-                qtw.QMessageBox.critical(self, 'No Summed DP',
-                    'Click "Compute Summed DP" first so there is a summed diffraction '
-                    'pattern to search for the center in.')
+            qtw.QMessageBox.critical(self, 'No Summed DP',
+                'Click "Compute Summed DP" first so there is a summed diffraction '
+                'pattern to search for the center in.')
             return
         x, y = io.find_dp_center_blurred(self.sum_dp)
         self.spinbox_centerX.setValue(int(round(x)))
@@ -1524,16 +1504,11 @@ class Tab_Create_NavSignal(TabBase):
             self._mask_drag_mode = 'r_in'
 
         if self._mask_drag_mode is None:
-            # Not a drag start - re-center directly to the click point,
-            # same gating as the other three tabs' click-anywhere DP
-            # recentering (only while Auto-center is off, so it isn't
-            # immediately overwritten by the next auto-centered Summed DP
-            # computation).
-            if not self.checkbox_autoCenterDp.isChecked():
-                # setValue() below fires valueChanged -> _sync_active_detector,
-                # which already calls update_mask_overlay().
-                self.spinbox_centerX.setValue(int(round(event.xdata)))
-                self.spinbox_centerY.setValue(int(round(event.ydata)))
+            # Not a drag start - re-center directly to the click point.
+            # setValue() below fires valueChanged -> _sync_active_detector,
+            # which already calls update_mask_overlay().
+            self.spinbox_centerX.setValue(int(round(event.xdata)))
+            self.spinbox_centerY.setValue(int(round(event.ydata)))
             return
 
         # Blit setup: snapshot everything in ax_mask_preview *except*
@@ -1781,7 +1756,7 @@ class Tab_Create_NavSignal(TabBase):
                 return
             dtype = dtype[0]
 
-        dwellTime = self.spinbox_dwellTime_detection.value()
+        dwellTime = self.spinbox_dwellTime_acquisition.value()
         if self.checkbox_scanSize.isChecked():
             scanSize = None
         else:

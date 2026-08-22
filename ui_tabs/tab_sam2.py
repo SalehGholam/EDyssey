@@ -315,17 +315,14 @@ class Tab_SAM2(TabBase):
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
+        self.button_centerRecip = qtw.QPushButton('Center')
+        self.button_centerRecip.setToolTip(
+            'Find the beam center now (large-sigma blur) and re-center the '
+            'reciprocal-space rings there. Hold Ctrl and click on the DP plot to '
+            'set the center manually instead.')
+        self.button_centerRecip.clicked.connect(self.find_and_center_recip)
+        layout_scale_row.addWidget(self.button_centerRecip)
         layout_box_scanSize.addLayout(layout_scale_row)
-
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the DP '
-            'plot to set the center manually.')
-        layout_box_scanSize.addWidget(self.checkbox_autoCenterDp)
-        self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
 
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
@@ -1761,10 +1758,8 @@ class Tab_SAM2(TabBase):
             self.delete_last_point()
             return
         if (event.inaxes == self.ax_dp and event.button == 1 and event.xdata is not None
-                and 'ctrl' in event.modifiers and not self.checkbox_autoCenterDp.isChecked()):
-            # Manual re-centering of the reciprocal-space rings - only takes
-            # effect when auto-centering is off, so it isn't immediately
-            # overwritten by the next auto-centered redraw.
+                and 'ctrl' in event.modifiers):
+            # Manual re-centering of the reciprocal-space rings.
             self.dp_center = (event.xdata, event.ydata)
             self.add_scalebar()
             return
@@ -1942,47 +1937,31 @@ class Tab_SAM2(TabBase):
         # at every 1 1/A (centered on the DP) work better.
         dp_array = self.img_display['dp'].get_array()
         shape = dp_array.shape
-        # Skip auto-centering on the all-zero placeholder shown before any
-        # object has a diffraction pattern yet - the blurred-max search
-        # degenerates to (0, 0) on blank data, which would otherwise leave
-        # the reciprocal-space rings looking "missing" right after a fresh
-        # load (draw_reciprocal_scale_circles has no room for any ring
-        # around a corner center). Leaving dp_center at None instead falls
-        # back to the image's own geometric center.
-        # find_dp_center_blurred is a real HyperSpy call (Signal2D + a
-        # gaussian-blur map) - only worth re-running when the displayed DP
-        # has actually changed since the last time (id() is a cheap,
-        # reliable proxy: set_data() always replaces the artist's array
-        # wholesale, never mutates it in place), not on every redraw -
-        # add_scalebar() is wired to per-keystroke text-field edits.
-        dp_key = id(dp_array)
-        if (self.checkbox_autoCenterDp.isChecked() and np.any(dp_array)
-                and self._dp_center_cache_key != dp_key):
-            try:
-                self.dp_center = io.find_dp_center_blurred(dp_array)
-                self._dp_center_cache_key = dp_key
-            except Exception:
-                self.logger.exception('Auto-centering the diffraction pattern failed.')
+        # Centering is purely manual now (see find_and_center_recip and
+        # Ctrl+Click) - self.dp_center just persists across redraws until
+        # one of those changes it, no more continuous auto-re-finding here.
         self._dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_dp, self.lineEdit_scale_recip.text(), shape,
             center=self.dp_center, old_artists=getattr(self, '_dp_recip_circles', None))
-        if self.checkbox_autoCenterDp.isChecked():
-            self.ax_dp.set_xlabel(
-                'Circle center: auto (large-sigma blur) - uncheck "Auto-center" '
-                'to set manually via Ctrl+Click', fontsize=9)
-        else:
-            self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click DP plot to set', fontsize=9)
+        self.ax_dp.set_xlabel(
+            'Circle center: click "Center" (Input Parameters) to find it, or hold '
+            'Ctrl and click the DP plot to set it manually', fontsize=9)
 
         self.canvas.draw()
 
-    def _on_auto_center_toggled(self):
-        """checkbox_autoCenterDp.stateChanged handler: force one fresh
-        find_dp_center_blurred re-run on the next redraw, even though the
-        displayed DP itself hasn't changed - otherwise re-enabling auto-
-        center after a manual Ctrl+Click override would silently keep
-        showing that stale manual center, since add_scalebar()'s cache only
-        re-runs it when the DP's identity has changed."""
-        self._dp_center_cache_key = None
+    def find_and_center_recip(self):
+        """Find the beam center now and jump the reciprocal-space rings
+        there - the "Center" button's slot."""
+        dp_array = self.img_display['dp'].get_array()
+        if not np.any(dp_array):
+            qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
+                'Load/segment an object first, so a beam center can be found.')
+            return
+        try:
+            self.dp_center = io.find_dp_center_blurred(dp_array)
+        except Exception:
+            self.logger.exception('Auto-centering failed.')
+            return
         self.add_scalebar()
 
     def show_mask(self, mask, cmap_idx=0):
