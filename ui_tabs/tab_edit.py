@@ -1,20 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Edit tab: lets the user interactively resize the top ribbon (text size)
-and the plots (font size of titles/axis labels/ticks) across every other
-tab, plus the vertical ribbon icon strip beside each canvas - see
-display_settings.py for the shared state this writes to, and
+"""Display Size dialog: lets the user interactively resize the top ribbon
+(text size), the vertical ribbon icon strip beside each canvas, and the
+plots (font size of titles/axis labels/ticks) across every other tab -
+opened from the main window's "Edit" menu, not a tab of its own, so it
+doesn't take up a permanent slot in the tab bar. Non-modal (.show(), not
+.exec_()) so it can stay open while the user switches tabs to see the live
+effect. See display_settings.py for the shared state this writes to, and
 TabBase.apply_display_settings() for how each of the other 4 tabs applies
 it live.
 """
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
-from .base_tab import TabBase
 from .display_settings import DisplaySettings
 
 
-class Tab_Edit(TabBase):
+class EditSettingsDialog(qtw.QDialog):
     def __init__(self, parent=None):
-        super().__init__('Tab_Edit', parent, own_threadpool=False)
+        super().__init__(parent)
+        self.setWindowTitle('Edit Display Size')
+        # Not Qt.Dialog's default modality - a plain top-level window the
+        # user can leave open (and move sliders on) while switching between
+        # the other tabs, which is the whole point of live-adjusting these.
+        self.setWindowFlags(Qt.Window)
         self.init_widget()
 
     def init_widget(self):
@@ -26,6 +33,7 @@ class Tab_Edit(TabBase):
             '(ROI on 4D, Navigator, ROI Tracker, SAM2 Tracker) - including any duplicate '
             'tabs opened later. Nothing here is saved between sessions.')
         intro.setWordWrap(True)
+        intro.setFixedWidth(360)
         intro.setStyleSheet('color: #cccccc; padding: 6px;')
         self.layout.addWidget(intro)
 
@@ -87,8 +95,9 @@ class Tab_Edit(TabBase):
         self.button_reset = qtw.QPushButton('Reset to Defaults')
         self.button_reset.clicked.connect(self.reset_defaults)
         button_row.addWidget(self.button_reset)
-
-        self.layout.addStretch(1)
+        self.button_close = qtw.QPushButton('Close')
+        self.button_close.clicked.connect(self.close)
+        button_row.addWidget(self.button_close)
 
         # Slider <-> spinbox: kept in sync with each other (blockSignals to
         # avoid feedback loops), and either one changing pushes the new

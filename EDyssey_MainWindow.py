@@ -39,18 +39,20 @@ import re
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
-                     Tab_ROI_on_4D, Tab_SAM2, Tab_Edit)
+                     Tab_ROI_on_4D, Tab_SAM2, EditSettingsDialog)
 from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler
 from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
 
-# Version is a plain "last updated" timestamp (YYYY-MM-DD HH:MM, local time)
-# rather than a semantic x.y.z number - update this whenever a user-facing
-# change is made anywhere in the app, so Help > About always reflects how
-# current the running build actually is. Shown directly in the Help menu
-# and repeated in the About dialog.
-APP_VERSION = '2026-08-21 15:00'
+# Version is a plain "last updated" timestamp (year.month.day.hourminute,
+# local time, zero-padded) rather than a semantic x.y.z number - update
+# this whenever a user-facing change is made anywhere in the app, so
+# Help > About always reflects how current the running build actually is.
+# A plain source constant (not computed at build/run time) so it's visible
+# directly in the repo on GitHub, not just at runtime. Shown only in the
+# About dialog (Help > About EDyssey) - not duplicated elsewhere in the UI.
+APP_VERSION = '2026.08.22.1500'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -81,21 +83,20 @@ class MainWindow(qtw.QMainWindow):
         self.tabs.addTab(self.tab_tracking_cv2, 'ROI Tracker')
         self.tab_sam2 = Tab_SAM2()
         self.tabs.addTab(self.tab_sam2, 'SAM2 Tracker')
-        self.tab_edit = Tab_Edit()
-        self.tabs.addTab(self.tab_edit, 'Edit')
+        # Display Size lives in the Edit menu (see show_display_size_dialog),
+        # not a tab of its own - created lazily on first use.
+        self._display_size_dialog = None
 
-        # Every tab instance that currently exists: the 5 fixed ones above,
-        # plus any duplicates opened via the File menu (Edit itself isn't
-        # duplicable - see _duplicate_tab - but still belongs in this list
-        # for closeEvent's cleanup pass below) - closeEvent cleans up all of
-        # them, not just the original 5, so a duplicate left open at exit
-        # doesn't leak its threadpool/subprocesses/matplotlib figure.
-        # self._primary_tabs (a fixed snapshot of just the original 5) is
-        # what _on_tab_close_requested refuses to close - closing e.g.
-        # self.tab_roi_on_4D itself would leave that attribute pointing at
-        # a destroyed widget.
+        # Every tab instance that currently exists: the 4 fixed ones above,
+        # plus any duplicates opened via the File menu - closeEvent below
+        # cleans up all of them, not just the original 4, so a duplicate
+        # left open at exit doesn't leak its threadpool/subprocesses/
+        # matplotlib figure. self._primary_tabs (a fixed snapshot of just
+        # the original 4) is what _on_tab_close_requested refuses to close -
+        # closing e.g. self.tab_roi_on_4D itself would leave that attribute
+        # pointing at a destroyed widget.
         self._all_tabs = [self.tab_roi_on_4D, self.tab_create_navSignal,
-                          self.tab_tracking_cv2, self.tab_sam2, self.tab_edit]
+                          self.tab_tracking_cv2, self.tab_sam2]
         self._primary_tabs = set(self._all_tabs)
 
         self.tabs.setTabsClosable(True)
@@ -218,10 +219,14 @@ class MainWindow(qtw.QMainWindow):
         action_exit.setShortcut('Ctrl+Q')
         action_exit.triggered.connect(self.close)
 
+        menu_edit = self.menuBar().addMenu('&Edit')
+        action_display_size = menu_edit.addAction('Display Size...')
+        action_display_size.setToolTip(
+            'Adjust the top ribbon text size, ribbon icon size, and plot text size, '
+            'live, across every tab')
+        action_display_size.triggered.connect(self.show_display_size_dialog)
+
         menu_help = self.menuBar().addMenu('&Help')
-        action_version = menu_help.addAction(f'Version {APP_VERSION}')
-        action_version.setEnabled(False)  # informational only, not clickable
-        menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
 
@@ -279,7 +284,19 @@ class MainWindow(qtw.QMainWindow):
             f'EDyssey\nVersion {APP_VERSION}\n\n'
             '4D-STEM and 4D-STEM Tomography analysis toolkit.')
 
+    def show_display_size_dialog(self):
+        """Open (or re-raise, if already open) the singleton Display Size
+        dialog - Edit menu > Display Size... Non-modal, so it can stay open
+        while the user switches tabs to see the live effect."""
+        if self._display_size_dialog is None:
+            self._display_size_dialog = EditSettingsDialog(self)
+        self._display_size_dialog.show()
+        self._display_size_dialog.raise_()
+        self._display_size_dialog.activateWindow()
+
     def closeEvent(self, event):
+        if self._display_size_dialog is not None:
+            self._display_size_dialog.close()
         for tab in self._all_tabs:
             try:
                 tab.cleanup()
