@@ -223,8 +223,8 @@ class Tab_ROI_on_4D(TabBase):
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
-        # Scale bars - Real, Recip., and Auto-center all share one line,
-        # below the grid (not part of it - a differently-shaped row).
+        # Scale bars - Real, Recip., and the "Center" button all share one
+        # line, below the grid (not part of it - a differently-shaped row).
         layout_scale_row = qtw.QHBoxLayout()
         label_scaleReal = qtw.QLabel('Real (nm)')
         label_scaleReal.setFixedWidth(50)
@@ -238,16 +238,14 @@ class Tab_ROI_on_4D(TabBase):
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
 
-        self.checkbox_autoCenterDp = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterDp.setChecked(True)
-        self.checkbox_autoCenterDp.setToolTip(
-            'When checked, the reciprocal-space rings are re-centered on the '
-            'direct beam automatically (found via a large-sigma blur) after '
-            'every redraw. When unchecked, hold Ctrl and click on the '
-            'diffraction pattern to set the center manually.')
-        layout_scale_row.addWidget(self.checkbox_autoCenterDp)
+        self.button_centerRecip = qtw.QPushButton('Center')
+        self.button_centerRecip.setToolTip(
+            'Find the beam center now (large-sigma blur) and re-center the '
+            'reciprocal-space rings there. Hold Ctrl and click on the diffraction '
+            'pattern to set the center manually instead.')
+        layout_scale_row.addWidget(self.button_centerRecip)
         layout_exp.addLayout(layout_scale_row)
-        self.checkbox_autoCenterDp.stateChanged.connect(self._on_auto_center_toggled)
+        self.button_centerRecip.clicked.connect(self.find_and_center_recip)
         self.lineEdit_scale_recip.textChanged.connect(
             lambda: self.update_canvas(ax='dp') if hasattr(self, 'dp') else None)
         self.lineEdit_scale_real.textChanged.connect(
@@ -282,18 +280,6 @@ class Tab_ROI_on_4D(TabBase):
             'the whole detector')
         layout_virtualImaging.addWidget(self.checkbox_useVirtualMask)
 
-        self.checkbox_autoCenterMask = qtw.QCheckBox('Auto-center')
-        self.checkbox_autoCenterMask.setChecked(True)
-        self.checkbox_autoCenterMask.setToolTip(
-            'When checked, the virtual mask (below) is re-centered on the direct '
-            'beam automatically (large-sigma blur), independently of the '
-            'reciprocal-space "Auto-center" above - the two centers can differ. '
-            'When unchecked, hold Ctrl and drag the mask\'s center "+" or a '
-            'circle edge on the diffraction pattern to move/resize it manually, '
-            'or use the Center/Radius spinboxes below.')
-        layout_virtualImaging.addWidget(self.checkbox_autoCenterMask)
-        self.checkbox_autoCenterMask.stateChanged.connect(self._on_auto_center_mask_toggled)
-
         # Center and Radius share one QGridLayout (rather than two
         # independent QHBoxLayouts) so their cells land in exactly the same
         # columns - X directly above In, Y directly above Out - instead of
@@ -316,8 +302,10 @@ class Tab_ROI_on_4D(TabBase):
         grid_vi_geometry.addWidget(self.spinbox_vi_centerY, 0, 4)
         self.button_vi_autoCenter = qtw.QPushButton('Auto Center')
         self.button_vi_autoCenter.setToolTip(
-            'Copy the diffraction pattern\'s beam center (see "Auto-center" above, '
-            'in Scale bars) into Center X/Y')
+            'Find the beam center now (large-sigma blur, or reuse it if already '
+            'found via "Center" in Scale bars) and copy it into Center X/Y. Hold '
+            'Ctrl and drag the mask\'s center "+" or a circle edge on the '
+            'diffraction pattern to move/resize it manually instead.')
         self.button_vi_autoCenter.clicked.connect(self.vi_auto_center)
         grid_vi_geometry.addWidget(self.button_vi_autoCenter, 0, 5)
 
@@ -673,7 +661,7 @@ class Tab_ROI_on_4D(TabBase):
                       'action', self.delete_last_seg_point),
             RibbonTool('sep1', kind='separator'),
             RibbonTool('center_recip', 'center_recip', 'Find the beam center now and re-center the '
-                      'reciprocal-space rings there (same as Ctrl+Click, when "Auto-center" above is off)',
+                      'reciprocal-space rings there (same as "Center" in Scale bars, or Ctrl+Click)',
                       'action', self.find_and_center_recip),
             RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
                       'virtual detector mask there (same as vi_auto_center)',
@@ -938,15 +926,13 @@ class Tab_ROI_on_4D(TabBase):
                 and 'ctrl' in event.modifiers and hasattr(self, 'dp')):
             # Grabbing the virtual mask's own center/edge handles always
             # takes priority over the reciprocal-space center below - the
-            # two centers are independent (see checkbox_autoCenterMask).
+            # two centers are independent (see find_and_center_recip vs.
+            # vi_auto_center).
             if self._try_start_vi_mask_drag(event):
                 return
-            if not self.checkbox_autoCenterDp.isChecked():
-                # Manual re-centering of the reciprocal-space rings (only
-                # takes effect when auto-centering is off, so it isn't
-                # immediately overwritten by the next auto-centered redraw).
-                self.dp_center = (event.xdata, event.ydata)
-                self.update_canvas(ax='dp')
+            # Manual re-centering of the reciprocal-space rings.
+            self.dp_center = (event.xdata, event.ydata)
+            self.update_canvas(ax='dp')
             return
         if event.inaxes != self.ax_nav:
             self.press = None
@@ -1234,78 +1220,19 @@ class Tab_ROI_on_4D(TabBase):
         # radially-symmetric diffraction pattern - concentric dashed rings
         # at every 1 1/A (centered on the DP) work better.
         dp_shape = self.img_display['dp'].get_array().shape
-        # find_dp_center_blurred is a real HyperSpy call (Signal2D + a
-        # gaussian-blur map) - only worth re-running when self.dp has
-        # actually been replaced since the last time (id() is a cheap,
-        # reliable proxy: self.dp is always reassigned wholesale, never
-        # mutated in place), not on every redraw - update_canvas() is wired
-        # directly to the (continuously-firing) DP contrast sliders.
-        dp_key = id(self.dp) if hasattr(self, 'dp') else None
-        # Recip.-space and virtual-mask centering are independent (see
-        # checkbox_autoCenterMask) but both auto-find via the same
-        # find_dp_center_blurred call when either wants it - only the
-        # underlying computation/cache is shared, not the behavior.
-        want_mask_auto_center = (self.checkbox_useVirtualMask.isChecked()
-                                 and self.checkbox_autoCenterMask.isChecked())
-        if ((self.checkbox_autoCenterDp.isChecked() or want_mask_auto_center)
-                and self._dp_center_cache_key != dp_key):
-            try:
-                self.dp_center = io.find_dp_center_blurred(self.dp)
-                self._dp_center_cache_key = dp_key
-            except Exception:
-                self.logger.exception('Auto-centering the diffraction pattern failed.')
+        # Centering is purely manual now (see find_and_center_recip/
+        # vi_auto_center, and Ctrl+Click/drag in on_press) - self.dp_center
+        # just persists across redraws until one of those changes it, no
+        # more continuous auto-re-finding here.
         center = self.dp_center if self.dp_center is not None else None
         self._dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
             center=center, old_artists=getattr(self, '_dp_recip_circles', None))
-        if self.checkbox_autoCenterDp.isChecked():
-            self.ax_dp.set_xlabel(
-                'Circle center: auto (large-sigma blur) - uncheck "Auto-center" '
-                'to set manually via Ctrl+Click', fontsize=9)
-        else:
-            self.ax_dp.set_xlabel('Circle center: manual - Ctrl+Click pattern to set', fontsize=9)
-
-        if want_mask_auto_center and center is not None:
-            self._apply_mask_center(center)
+        self.ax_dp.set_xlabel(
+            'Circle center: click "Center" (Scale bars) to find it, or hold Ctrl '
+            'and click the pattern to set it manually', fontsize=9)
 
         self.canvas.draw()
-
-    def _on_auto_center_toggled(self):
-        """checkbox_autoCenterDp.stateChanged handler: force one fresh
-        find_dp_center_blurred re-run on the next redraw, even though
-        self.dp itself hasn't changed - otherwise re-enabling auto-center
-        after a manual Ctrl+Click override would silently keep showing that
-        stale manual center, since update_canvas()'s cache only re-runs it
-        when self.dp's identity has changed."""
-        self._dp_center_cache_key = None
-        if hasattr(self, 'dp'):
-            self.update_canvas(ax='dp')
-
-    def _apply_mask_center(self, center, refresh=True):
-        """Push `center` (x, y) into the virtual-mask Center X/Y spinboxes
-        without re-triggering their own valueChanged->update_virtual_mask_overlay
-        (the caller does its own refresh once, via `refresh=True`, instead)."""
-        cx, cy = int(round(center[0])), int(round(center[1]))
-        if self.spinbox_vi_centerX.value() == cx and self.spinbox_vi_centerY.value() == cy:
-            return
-        self.spinbox_vi_centerX.blockSignals(True)
-        self.spinbox_vi_centerY.blockSignals(True)
-        self.spinbox_vi_centerX.setValue(cx)
-        self.spinbox_vi_centerY.setValue(cy)
-        self.spinbox_vi_centerX.blockSignals(False)
-        self.spinbox_vi_centerY.blockSignals(False)
-        if refresh:
-            self.update_virtual_mask_overlay()
-
-    def _on_auto_center_mask_toggled(self):
-        """checkbox_autoCenterMask.stateChanged handler: force one fresh
-        find_dp_center_blurred re-run on the next redraw (mirrors
-        _on_auto_center_toggled) - re-enabling it after a manual drag/Ctrl+Click
-        override should immediately snap back to the found center instead of
-        waiting for self.dp to change again."""
-        self._dp_center_cache_key = None
-        if hasattr(self, 'dp'):
-            self.update_canvas(ax='dp')
 
     def message_box_tpx3(self):
        msg = qtw.QMessageBox()
@@ -1344,11 +1271,10 @@ class Tab_ROI_on_4D(TabBase):
 
 #%% Virtual Imaging
     def find_and_center_recip(self):
-        """Right-hand ribbon quick-access action: find the beam center now
-        and jump the reciprocal-space rings there - the one-shot equivalent
-        of Ctrl+Click on the diffraction pattern (only takes visible effect
-        while "Auto-center" above is off; otherwise the next redraw
-        re-finds it anyway)."""
+        """Find the beam center now and jump the reciprocal-space rings
+        there - the "Center" button (Scale bars) and the right-hand
+        ribbon's quick-access action both call this; Ctrl+Click on the
+        diffraction pattern does the same thing manually instead."""
         if not hasattr(self, 'dp'):
             qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
                 'Draw an ROI, segment an image, use "Summed DP from Threshold", '
@@ -1365,8 +1291,8 @@ class Tab_ROI_on_4D(TabBase):
     def vi_auto_center(self):
         """Copy the diffraction pattern's beam center (self.dp_center -
         found automatically via the large-sigma blur, or set manually via
-        Ctrl+Click on the DP; see checkbox_autoCenterDp) into the
-        virtual-detector Center X/Y spinboxes."""
+        Ctrl+Click on the DP) into the virtual-detector Center X/Y
+        spinboxes - finds it fresh if it hasn't been found/set yet."""
         if not hasattr(self, 'dp'):
             qtw.QMessageBox.warning(self, 'No Diffraction Pattern',
                 'Draw an ROI, segment an image, or use "Summed DP from Threshold" '
@@ -1544,11 +1470,6 @@ class Tab_ROI_on_4D(TabBase):
             self._vi_mask_drag_mode = 'r_in'
         if self._vi_mask_drag_mode is None:
             return False
-
-        # Manually dragging the mask is a deliberate override - stop
-        # auto-center from immediately snapping it back on the next redraw.
-        if self.checkbox_autoCenterMask.isChecked():
-            self.checkbox_autoCenterMask.setChecked(False)
 
         # Blit setup - snapshot everything on ax_dp except the 3 dragged
         # artists, so on_motion can move just those on every mouse-move tick.
