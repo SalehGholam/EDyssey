@@ -233,7 +233,13 @@ class Tab_Tracking_CV2(TabBase):
         self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
         layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
 
+        # Hidden until it actually has something to say (see
+        # _set_smart_scan_summary) - an empty QLabel still reserves a full
+        # text-line's height in the grid, which otherwise left a persistent
+        # blank line at the bottom of this box before "Check Files..." was
+        # ever run.
         self.label_smartScanSummary = qtw.QLabel('')
+        self.label_smartScanSummary.setVisible(False)
         layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
 
         layout_dir.addWidget(groupbox_smartScan)
@@ -959,7 +965,7 @@ class Tab_Tracking_CV2(TabBase):
                 self.lineEdit_dir_4d.setText(path)
                 self._smart_scan_rows = None  # stale for a different folder
                 self._nav_4d_files = None  # stale navigator file list for a different folder
-                self.label_smartScanSummary.setText('')
+                self._set_smart_scan_summary('')
                 # Attempted for every format, not just .tpx3 - comment.txt is
                 # written for smart-scanned .mib/.hspy/.zspy acquisitions
                 # too, and load_metadata(silent=True) already no-ops
@@ -1104,7 +1110,7 @@ class Tab_Tracking_CV2(TabBase):
                 'pattern_file': item['pattern_file'],
                 'extra_files': [], 'status': ['ok'], 'excluded': False,
             } for item in smart_scan.get('files', [])]
-            self.label_smartScanSummary.setText(
+            self._set_smart_scan_summary(
                 f"{len(self._smart_scan_rows)} angle(s) from navigator metadata")
             applied.append('smart-scan file match')
         elif d4d and metadata.get('files'):
@@ -1122,6 +1128,14 @@ class Tab_Tracking_CV2(TabBase):
                 'Applied metadata.json from the navigator tab (%s): %s.',
                 fn_nav, ', '.join(applied))
 
+    def _set_smart_scan_summary(self, text):
+        """Set label_smartScanSummary's text and keep it hidden while
+        empty (see its own setVisible(False) at construction) - avoids a
+        permanent blank line at the bottom of the Smart Scan box before/
+        between "Check Files..." runs."""
+        self.label_smartScanSummary.setText(text)
+        self.label_smartScanSummary.setVisible(bool(text))
+
     def activate_smartScan_widgets(self):
         enable = self.checkbox_smartScan.isChecked()
         for wid in (self.lineEdit_patternDir, self.button_browsePatternDir,
@@ -1135,7 +1149,7 @@ class Tab_Tracking_CV2(TabBase):
         if path:
             self.lineEdit_patternDir.setText(path)
             self._smart_scan_rows = None
-            self.label_smartScanSummary.setText('')
+            self._set_smart_scan_summary('')
 
     def get_pattern_dir(self):
         return self.lineEdit_patternDir.text() or self.lineEdit_dir_4d.text()
@@ -1146,7 +1160,7 @@ class Tab_Tracking_CV2(TabBase):
         if path:
             self.lineEdit_detectionDir.setText(path)
             self._smart_scan_rows = None
-            self.label_smartScanSummary.setText('')
+            self._set_smart_scan_summary('')
 
     def get_detection_dir(self):
         return self.lineEdit_detectionDir.text() or None
@@ -1175,7 +1189,7 @@ class Tab_Tracking_CV2(TabBase):
         if dlg.exec_() == qtw.QDialog.Accepted:
             self._smart_scan_rows = dlg.rows
             n_ok = sum(1 for row in dlg.rows if not row['excluded'])
-            self.label_smartScanSummary.setText(f'{n_ok} / {len(dlg.rows)} angle(s) included')
+            self._set_smart_scan_summary(f'{n_ok} / {len(dlg.rows)} angle(s) included')
             self.logger.info('Smart-scan file check confirmed: %d / %d angle(s) included.',
                              n_ok, len(dlg.rows))
 
