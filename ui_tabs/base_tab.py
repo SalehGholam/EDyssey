@@ -13,9 +13,12 @@ Each tab still builds its own layout entirely itself, in its own
 init_widget() - besides the one shared piece of boilerplate factored out
 below (build_left_panel()), this module owns none of that.
 """
+import os
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool
+from PyQt5.QtGui import QFontDatabase
 import matplotlib.pyplot as plt
+import EDyssey.io_utils as io
 from .logging_utils import get_tab_logger
 from .display_settings import DisplaySettings, PLOT_DEFINITIONS
 
@@ -150,6 +153,41 @@ class TabBase(qtw.QWidget):
         super().cleanup() (currently a no-op, kept for future shared
         cleanup and so every override reads the same way)."""
         pass
+
+    def show_metadata_dialog(self):
+        """"View Metadata" button: show the raw comment.txt content this
+        tab's Load/Browse Metadata controls already read from (see
+        load_metadata()), read-only - lets the user see every field
+        actually logged there (e.g. accelerating voltage, camera length),
+        not just the scan size/dwell time load_metadata() itself parses
+        into a spinbox. Shared here because every tab with metadata support
+        resolves it the same way: self.metadata_path_override (set by that
+        tab's own Browse Metadata button) if set, else self.lineEdit_dir_signal."""
+        path_main = getattr(self, 'metadata_path_override', None) or self.lineEdit_dir_signal.text()
+        if not path_main:
+            qtw.QMessageBox.critical(self, 'No Signal Selected',
+                'Select a 4D signal first (see above) - metadata is read from '
+                'a comment.txt next to/inside it.')
+            return
+        try:
+            fn, text = io.read_metadata_text(path_main)
+        except OSError as e:
+            qtw.QMessageBox.warning(self, 'No Metadata Found',
+                f'Could not find/read a comment.txt for this signal:\n{e}')
+            return
+        dlg = qtw.QDialog(self)
+        dlg.setWindowTitle(f'Metadata - {os.path.basename(fn)}')
+        layout = qtw.QVBoxLayout(dlg)
+        text_edit = qtw.QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(text)
+        text_edit.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        layout.addWidget(text_edit)
+        button_close = qtw.QPushButton('Close')
+        button_close.clicked.connect(dlg.close)
+        layout.addWidget(button_close, alignment=Qt.AlignRight)
+        dlg.resize(520, 520)
+        dlg.exec_()
 
     # Tab_ROI_on_4D's own natural ribbon height (px) - the shared reference
     # every tab's ribbon is fixed to (see apply_display_settings), so all 4

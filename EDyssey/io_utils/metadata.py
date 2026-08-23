@@ -38,6 +38,26 @@ def get_metadata(path_main, count=0):
             pass
     return metadata
 
+def read_metadata_text(path_main):
+    """Raw text of the comment.txt resolved from `path_main` (see
+    _resolve_metadata_fn) - the whole file, not just the fields
+    get_metadata() knows how to parse (scan size x/y, dwelltime). Backs the
+    "View Metadata" button on the tabs that already call get_metadata(), so
+    the user can see every field actually logged (e.g. accelerating
+    voltage, camera length) instead of only the two this app itself reads.
+
+    Returns:
+        (fn, text): the resolved comment.txt path and its full contents.
+
+    Raises:
+        OSError (e.g. FileNotFoundError) if no comment.txt is found there -
+        same as get_metadata/get_metadata_block_count, left uncaught for
+        the caller to handle.
+    """
+    fn = _resolve_metadata_fn(path_main)
+    with open(fn, 'r') as f:
+        return fn, f.read()
+
 def get_metadata_block_count(path_main):
     """Number of measurement blocks logged in a tpx3 comment.txt (see
     `get_metadata`), i.e. how many separate acquisitions it records - blocks

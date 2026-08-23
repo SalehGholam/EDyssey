@@ -221,19 +221,25 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_exp_items.addWidget(self.spinbox_metadataCount, 3, 5)
 
+        self.button_viewMetadata = qtw.QPushButton('View...')
+        self.button_viewMetadata.setToolTip(
+            'Show the full raw comment.txt content in a read-only window - '
+            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
+        layout_exp_items.addWidget(self.button_viewMetadata, 3, 6, 1, 3)
+
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D signal
 
         # Scale bars - Real, Recip., and the "Center" button all share one
         # line, below the grid (not part of it - a differently-shaped row).
         layout_scale_row = qtw.QHBoxLayout()
-        label_scaleReal = qtw.QLabel('Real (nm)')
-        label_scaleReal.setFixedWidth(50)
+        label_scaleReal = qtw.QLabel('Real Space Scale (nm)')
         layout_scale_row.addWidget(label_scaleReal)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         self.lineEdit_scale_real.setValidator(self.double_validator)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
+        layout_scale_row.addWidget(qtw.QLabel('Reciprocal Space Scale (Å<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
@@ -416,16 +422,11 @@ class Tab_ROI_on_4D(TabBase):
             'independent of any ROI/SAM2 mask drawn elsewhere on this tab')
         layout_vi_actions.addWidget(self.button_computeVirtualImage)
 
-        self.button_sumDpWhole = qtw.QPushButton('Sum DP\n(Whole Signal)')
-        self.button_sumDpWhole.setFixedHeight(50)
-        self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
-        self.button_sumDpWhole.setToolTip(
-            'Sum every diffraction pattern of the WHOLE scan into one reference '
-            'DP, without needing to first draw an ROI/segment/threshold - useful '
-            'to see the beam and place the virtual mask before running "Compute '
-            'Virtual Image"')
-        layout_vi_actions.addWidget(self.button_sumDpWhole)
-
+        # button_sumDpWhole lives in the Summed DP Threshold sub-section
+        # below (beside button_sumDpFromThreshold) instead of here - both
+        # produce a whole-tab-level reference DP without an ROI/mask, so
+        # they belong together rather than one of them being off in
+        # Virtual Imaging.
         layout_vi_actions.addWidget(self.button_cancel)
         layout_virtualImaging.addLayout(layout_vi_actions)
 
@@ -442,7 +443,7 @@ class Tab_ROI_on_4D(TabBase):
         self._vi_mask_bg = None
         self._ribbon_group_end(layout_ribbon, layout_virtualImaging, 'Virtual Imaging')
 
-        #%% Edge Detection / SAM2 Segmentation / Summed DP Threshold
+        #%% SAM2 Segmentation / Edge Detection / Summed DP Threshold
         # These three used to each be their own full-height ribbon column;
         # they're now stacked vertically inside ONE column (box_edgeDetection)
         # instead, each sub-section separated by an HLine and captioned on
@@ -450,72 +451,14 @@ class Tab_ROI_on_4D(TabBase):
         # oriented groups into fewer ribbon columns. _ribbon_group_end() is
         # called once per sub-section (all still targeting the same
         # layout_edgeDetection), with `stretch=False` only for the very
-        # first one (Edge Detection - its controls should sit right above
+        # first one (SAM2 Segmentation - its controls should sit right above
         # its caption, not be pushed down by addStretch) and
         # `separator=False` for the second and third (no vertical-line
         # ribbon separator needed between them - the HLine above already
         # marks the boundary; only the group's outer edge needs one).
         self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=1)
 
-        # The group caption ("Edge Detection") already says what this
-        # toggle activates, so the checkbox itself just says "Activate".
-        # Directional/Revert Mask (both toggles) and Kernel/Angle (both
-        # numeric) all share one row - everything here is tightly related
-        # (they all only matter once Activate is checked).
-        layout_edgeDetection_row = qtw.QHBoxLayout()
-        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
-        self.checkbox_edgeOnly.setToolTip(
-            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
-            'before it is displayed or summed - applies to both mask sources below')
-        layout_edgeDetection_row.addWidget(self.checkbox_edgeOnly)
-        self.checkbox_edgeOnly.stateChanged.connect(self._refresh_edge_mask)
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge band facing one direction (e.g. just the mask\'s '
-            'top edge) instead of the full outline - erosion becomes one-sided, '
-            'along the angle to the right')
-        layout_edgeDetection_row.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
-        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
-        self.checkbox_revertMask.setToolTip(
-            'Only applies together with Activate: keep the mask\'s interior '
-            '(and, with "Directional" on, its other sides) but cut out the detected '
-            'edge band, instead of keeping only the edge band')
-        layout_edgeDetection_row.addWidget(self.checkbox_revertMask)
-        self.checkbox_revertMask.stateChanged.connect(self._refresh_edge_mask)
-
-        self._ribbon_inline_separator(layout_edgeDetection_row)
-        layout_edgeDetection_row.addWidget(qtw.QLabel('Kernel'))
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        self.spinbox_edgeKernel.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row.addWidget(self.spinbox_edgeKernel)
-
-        self._ribbon_inline_separator(layout_edgeDetection_row)
-        layout_edgeDetection_row.addWidget(qtw.QLabel('Angle (°)'))
-        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(0, 359.9)
-        self.spinbox_edgeDirection.setDecimals(1)
-        self.spinbox_edgeDirection.setSingleStep(5)
-        self.spinbox_edgeDirection.setValue(0)
-        self.spinbox_edgeDirection.setDisabled(True)
-        self.spinbox_edgeDirection.setToolTip(
-            'Only used when "Directional" is checked. 0° = right, increasing '
-            'clockwise (90° = down/bottom edge, 180° = left, 270° = up/top edge)')
-        self.spinbox_edgeDirection.valueChanged.connect(self._refresh_edge_mask)
-        layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
-        layout_edgeDetection.addLayout(layout_edgeDetection_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', stretch=False)
-        
-        sep = qtw.QFrame()
-        sep.setFrameShape(qtw.QFrame.HLine)
-        sep.setFrameShadow(qtw.QFrame.Sunken)
-        layout_edgeDetection.addWidget(sep)
-
-        #%% SAM2 segmentation (stacked below Edge Detection in the same
-        # ribbon column - see the module-level note above _ribbon_group_end)
+        #%% SAM2 segmentation (first sub-section in this combined column)
         layout_segmentation_row = qtw.QHBoxLayout()
 
         self.button_segment_image = qtw.QPushButton('Segment\nImage')
@@ -546,23 +489,114 @@ class Tab_ROI_on_4D(TabBase):
             'prompt (pending review). The ROI itself still works for diffraction-'
             'pattern extraction; draw a new one to replace it instead of clearing.')
         layout_edgeDetection.addLayout(layout_segmentation_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', separator=False, stretch=True)
-        
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', stretch=False)
+
         sep = qtw.QFrame()
         sep.setFrameShape(qtw.QFrame.HLine)
         sep.setFrameShadow(qtw.QFrame.Sunken)
         layout_edgeDetection.addWidget(sep)
-        #%% Summed DP from threshold (stacked below SAM2 Segmentation, same column)
+
+        #%% Edge Detection (stacked below SAM2 Segmentation in the same
+        # ribbon column - see the module-level note above _ribbon_group_end).
+        # The group caption ("Edge Detection") already says what this
+        # toggle activates, so the checkbox itself just says "Activate".
+        # Directional/Revert Mask (both toggles) and Kernel/Angle (both
+        # numeric) all share one row - everything here is tightly related
+        # (they all only matter once Activate is checked). None of these
+        # controls re-read the diffraction pattern from disk by themselves
+        # any more (see _preview_edge_mask) - they only update the on-screen
+        # mask preview live; button_computeEdgeDp is the one action that
+        # actually (re-)computes the masked DP, which used to happen
+        # automatically on every change here and made tuning these painfully
+        # slow for a large 4D signal.
+        layout_edgeDetection_row = qtw.QHBoxLayout()
+        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
+        self.checkbox_edgeOnly.setToolTip(
+            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
+            'before it is displayed or summed - applies to both mask sources below')
+        layout_edgeDetection_row.addWidget(self.checkbox_edgeOnly)
+        self.checkbox_edgeOnly.stateChanged.connect(self._preview_edge_mask)
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge band facing one direction (e.g. just the mask\'s '
+            'top edge) instead of the full outline - erosion becomes one-sided, '
+            'along the angle to the right')
+        layout_edgeDetection_row.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
+        self.checkbox_revertMask.setToolTip(
+            'Only applies together with Activate: keep the mask\'s interior '
+            '(and, with "Directional" on, its other sides) but cut out the detected '
+            'edge band, instead of keeping only the edge band')
+        layout_edgeDetection_row.addWidget(self.checkbox_revertMask)
+        self.checkbox_revertMask.stateChanged.connect(self._preview_edge_mask)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row)
+        layout_edgeDetection_row.addWidget(qtw.QLabel('Kernel'))
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        self.spinbox_edgeKernel.valueChanged.connect(self._preview_edge_mask)
+        layout_edgeDetection_row.addWidget(self.spinbox_edgeKernel)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row)
+        layout_edgeDetection_row.addWidget(qtw.QLabel('Angle (°)'))
+        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
+        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setDecimals(1)
+        self.spinbox_edgeDirection.setSingleStep(5)
+        self.spinbox_edgeDirection.setValue(0)
+        self.spinbox_edgeDirection.setDisabled(True)
+        self.spinbox_edgeDirection.setToolTip(
+            'Only used when "Directional" is checked. 0° = right, increasing '
+            'clockwise (90° = down/bottom edge, 180° = left, 270° = up/top edge)')
+        self.spinbox_edgeDirection.valueChanged.connect(self._preview_edge_mask)
+        layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row)
+        self.button_computeEdgeDp = qtw.QPushButton('Compute')
+        self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
+        self.button_computeEdgeDp.setToolTip(
+            'Re-derive the edge mask with the settings above and (re-)compute its '
+            'diffraction pattern from disk. Activate/Directional/Revert Mask/Kernel/'
+            'Angle above only update the on-screen mask preview live - this is the '
+            'slower, disk-reading step, kept behind its own button instead of '
+            'running automatically on every change above')
+        layout_edgeDetection_row.addWidget(self.button_computeEdgeDp)
+        layout_edgeDetection.addLayout(layout_edgeDetection_row)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', separator=False, stretch=True)
+
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+
+        #%% Summed DP from threshold / Sum DP (Whole Signal) (stacked below
+        # Edge Detection, same column) - both produce a reference DP without
+        # needing an ROI/SAM2 mask first, so they share a row.
+        layout_sumDp_row = qtw.QHBoxLayout()
         self.button_sumDpFromThreshold = qtw.QPushButton('Summed DP from\nThreshold...')
-        layout_edgeDetection.addWidget(self.button_sumDpFromThreshold, alignment=Qt.AlignCenter)
         self.button_sumDpFromThreshold.setFixedSize(140, 50)
         self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
         self.button_sumDpFromThreshold.setToolTip(
             'Open a window to check/adjust a real-space threshold on the loaded '
             'navigation image, then sum diffraction patterns only at the scan '
             'positions above it, instead of a rectangular ROI')
+        layout_sumDp_row.addWidget(self.button_sumDpFromThreshold)
+
+        self.button_sumDpWhole = qtw.QPushButton('Sum DP\n(Whole Signal)')
+        self.button_sumDpWhole.setFixedSize(140, 50)
+        self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
+        self.button_sumDpWhole.setToolTip(
+            'Sum every diffraction pattern of the WHOLE scan into one reference '
+            'DP, without needing to first draw an ROI/segment/threshold - useful '
+            'to see the beam and place the virtual mask before running "Compute '
+            'Virtual Image"')
+        layout_sumDp_row.addWidget(self.button_sumDpWhole)
+        layout_edgeDetection.addLayout(layout_sumDp_row)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Summed DP Threshold', separator=False, stretch=True)
-        
+
         sep = qtw.QFrame()
         sep.setFrameShape(qtw.QFrame.HLine)
         sep.setFrameShadow(qtw.QFrame.Sunken)
@@ -890,7 +924,7 @@ class Tab_ROI_on_4D(TabBase):
 
     def _on_edge_directional_toggled(self):
         self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
-        self._refresh_edge_mask()
+        self._preview_edge_mask()
 
     # _ribbon_group_start/_ribbon_group_end/_ribbon_inline_separator now
     # live on TabBase (base_tab.py) - shared by all 4 tabs' ribbons.
@@ -1896,14 +1930,35 @@ class Tab_ROI_on_4D(TabBase):
             self._threshold_method = dlg.combo_threshMethod.currentText()
             self._refresh_edge_mask()
 
-    def _refresh_edge_mask(self):
-        """Re-derive the displayed/extracted mask from the last raw SAM2 or
-        threshold result (self.seg_mask) and re-run its display+DP
-        computation - called both right after a new mask is produced, and
-        whenever "Edge Only"/the kernel size changes afterward, so the user
-        can freely retune the edge parameters without re-segmenting or
-        re-thresholding from scratch."""
+    def _preview_edge_mask(self):
+        """Live preview of the edge-detection mask (Activate/Directional/
+        Revert Mask/Kernel/Angle) - just the on-screen overlay, no
+        diffraction-pattern recomputation. Wired to those controls directly
+        so tuning them stays fast; button_computeEdgeDp (_refresh_edge_mask)
+        is the separate, deliberate action that re-reads the masked DP from
+        disk with whatever mask these controls currently describe."""
         if self.seg_mask is None or self._mask_source is None:
+            return
+        mask = self.apply_edge_mask(self.seg_mask)
+        if not mask.any():
+            self.logger.warning(
+                'Edge Only removed the entire mask (kernel too large for this mask\'s size).')
+            return
+        self.show_seg_mask(mask, title='Threshold Mask' if self._mask_source == 'threshold'
+                                  else 'SAM2 Segmentation')
+
+    def _refresh_edge_mask(self):
+        """Re-derive the mask from the last raw SAM2 or threshold result
+        (self.seg_mask) with the current edge-detection settings and
+        (re-)run its display+DP computation - the disk-reading half of
+        _preview_edge_mask, called right after a new mask is produced
+        (segmentation finishes, a threshold is accepted) and by
+        button_computeEdgeDp ("Compute") once the user is done tuning
+        Activate/Directional/Revert Mask/Kernel/Angle above."""
+        if self.seg_mask is None or self._mask_source is None:
+            qtw.QMessageBox.critical(self, 'No Mask',
+                'Segment an image (SAM2) or set a threshold (Summed DP from Threshold) '
+                'first - Edge Detection refines one of those, it doesn\'t create one.')
             return
         mask = self.apply_edge_mask(self.seg_mask)
         if not mask.any():
