@@ -17,7 +17,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool
 import matplotlib.pyplot as plt
 from .logging_utils import get_tab_logger
-from .display_settings import DisplaySettings
+from .display_settings import DisplaySettings, PLOT_DEFINITIONS
 
 
 def compute_left_panel_width(base=440, min_width=420, max_width=480, fraction=0.22):
@@ -201,42 +201,77 @@ class TabBase(qtw.QWidget):
         if ribbon_panel is not None and hasattr(ribbon_panel, 'set_icon_size'):
             ribbon_panel.set_icon_size(settings.ribbon_icon_size)
 
-        for figure in self._display_settings_figures():
+        for key, figure in self._display_settings_figures():
             self._rescale_figure_fonts(figure, settings.plot_font_scale)
-        self._apply_figure_size_scale(settings.figure_size_scale)
+            self._apply_single_figure_scale(figure, settings.figure_size_scales.get(key, 1.0))
 
-    def _apply_figure_size_scale(self, scale):
-        """Resize the whole top-level window by `scale`, relative to its
-        own size the FIRST time this ran (cached on the window itself as
-        _edyssey_base_window_size) - every tab's canvas already fills 100%
-        of its container via a stretch=1 layout factor, so a plain
-        setMinimumSize() on the canvas alone often has NO visible effect
-        (the canvas is frequently already bigger than a modest scale-up of
-        its own small default sizeHint, e.g. matplotlib's 640x480 default
-        figure size, well under what a normal window already allocates it)
-        - actually growing/shrinking the *window* is the only way this
-        control reliably does something visible regardless of the current
-        window size. One global scale (like every other Display Size
-        control), so calling this once per tab (it's invoked once, not per
-        figure) is enough - resizing again with the same target from
-        another tab's apply_display_settings() call is a harmless no-op."""
-        top = self.window()
-        if top is None:
+    def wrap_canvas_in_scroll(self, canvas):
+        """Wrap `canvas` in a QScrollArea and return it, to add to a layout
+        in `canvas`'s place - lets apply_display_settings() give this one
+        canvas an actual fixed pixel size (see _apply_single_figure_scale)
+        without it being silently stretched straight back to fill its
+        container, which is what a plain canvas.setMinimumSize() alone used
+        to do (every canvas fills 100% of its container via a stretch=1
+        layout factor, so shrinking/growing the canvas itself had no
+        visible effect - only resizing something with slack around it,
+        like this scroll area's viewport, does). setWidgetResizable stays
+        True until a scale away from 100% is actually applied, so this is a
+        no-op wrapper at every plot's default size - it still just fills
+        its container exactly like a bare canvas would."""
+        scroll = qtw.QScrollArea()
+        scroll.setWidget(canvas)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(qtw.QFrame.NoFrame)
+        canvas._edyssey_scroll_area = scroll
+        return scroll
+
+    def _apply_single_figure_scale(self, figure, scale):
+        """Resize one figure's canvas to `scale` of its own natural size,
+        relative to the size it had the FIRST time this ran (cached on the
+        canvas itself as _edyssey_base_canvas_size) - a fixed pixel size at
+        every scale except exactly 1.0 (where the canvas goes back to
+        filling its scroll area, same as a bare unscaled canvas), so each
+        plot resizes independently of every other plot and of the window.
+        No-op if this canvas was never wrapped via wrap_canvas_in_scroll()
+        (e.g. a tab still under construction, or a canvas this dialog
+        doesn't cover)."""
+        canvas = getattr(figure, 'canvas', None)
+        if canvas is None:
             return
-        base_size = getattr(top, '_edyssey_base_window_size', None)
+        scroll = getattr(canvas, '_edyssey_scroll_area', None)
+        if scroll is None:
+            return
+        if abs(scale - 1.0) < 1e-6:
+            scroll.setWidgetResizable(True)
+            canvas.setMinimumSize(0, 0)
+            canvas.setMaximumSize(16777215, 16777215)  # QWIDGETSIZE_MAX: clears any earlier setFixedSize
+            return
+        base_size = getattr(canvas, '_edyssey_base_canvas_size', None)
         if base_size is None:
-            base_size = (top.width(), top.height())
-            top._edyssey_base_window_size = base_size
-        top.resize(round(base_size[0] * scale), round(base_size[1] * scale))
+            base_size = (canvas.width(), canvas.height())
+            if base_size[0] < 100 or base_size[1] < 100:
+                # Not laid out/shown yet (e.g. its tab has never been the
+                # active one) - a real canvas.width()/height() at this point
+                # would just be Qt's tiny pre-layout default, not a usable
+                # "natural size" to scale from. matplotlib's own default
+                # figure size (6.4x4.8in @ 100dpi) is a reasonable stand-in.
+                base_size = (640, 480)
+            canvas._edyssey_base_canvas_size = base_size
+        scroll.setWidgetResizable(False)
+        canvas.setFixedSize(round(base_size[0] * scale), round(base_size[1] * scale))
 
     def _display_settings_figures(self):
-        """Every matplotlib Figure this tab owns, by whichever of the
-        common attribute names it uses."""
+        """(key, Figure) for every matplotlib Figure this tab owns, per
+        PLOT_DEFINITIONS in display_settings.py - covers all 4 tabs (1 plot
+        each for ROI on 4D/Navigator/SAM2, 2 for ROI Tracker's split
+        canvas) without needing a per-tab override."""
         figures = []
-        for attr in ('figure', 'figure_nav', 'figure_extract'):
+        for key, tab_name, attr, _label in PLOT_DEFINITIONS:
+            if tab_name != self._tab_name:
+                continue
             fig = getattr(self, attr, None)
             if fig is not None:
-                figures.append(fig)
+                figures.append((key, fig))
         return figures
 
     def _rescale_figure_fonts(self, figure, scale):

@@ -689,7 +689,7 @@ class Tab_SAM2(TabBase):
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
 
         # self.figure.tight_layout()
-        layout_canvas.addWidget(self.canvas)
+        layout_canvas.addWidget(self.wrap_canvas_in_scroll(self.canvas))
         self.ax_nav.set_xlabel(
             'Hold "ctrl" + Left Click => Positive Point\n'
             'Hold "ctrl" + Right Click => Negative Point\n'

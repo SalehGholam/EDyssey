@@ -692,7 +692,7 @@ class Tab_Create_NavSignal(TabBase):
         # it's a figure-wide supxlabel rather than repeated per-axis text.
         self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom either plot', fontsize=10)
 
-        layout_canvas.addWidget(self.canvas)
+        layout_canvas.addWidget(self.wrap_canvas_in_scroll(self.canvas))
         self.toolbar = NavigationToolbar(self.canvas, self)
         layout_canvas.addWidget(self.toolbar)
 

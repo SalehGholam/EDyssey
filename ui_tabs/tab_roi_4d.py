@@ -593,7 +593,7 @@ class Tab_ROI_on_4D(TabBase):
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        layout_canvas.addWidget(self.canvas)
+        layout_canvas.addWidget(self.wrap_canvas_in_scroll(self.canvas))
         
         self.ax_nav = self.figure.add_subplot(131)
         self.ax_nav_roi = self.figure.add_subplot(132)

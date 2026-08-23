@@ -789,7 +789,7 @@ class Tab_Tracking_CV2(TabBase):
 
         self._canvas_stack_widget = qtw.QWidget()
         layout_canvas_stack = qtw.QVBoxLayout(self._canvas_stack_widget)
-        layout_canvas_stack.addWidget(self.canvas_nav)
+        layout_canvas_stack.addWidget(self.wrap_canvas_in_scroll(self.canvas_nav))
         layout_canvas_stack.addWidget(self.toolbar_nav)
 
         # Clipping Thresholds beside ax_dp (the rightmost of canvas_extract's
@@ -797,7 +797,7 @@ class Tab_Tracking_CV2(TabBase):
         # Contrast box already covers the nav image on this tab (unlike
         # Tab_ROI_on_4D/Navigator, which had no equivalent).
         layout_canvas_extract_row = qtw.QHBoxLayout()
-        layout_canvas_extract_row.addWidget(self.canvas_extract, 1)
+        layout_canvas_extract_row.addWidget(self.wrap_canvas_in_scroll(self.canvas_extract), 1)
         self.clip_dp = ClippingThresholdsWidget()
         layout_canvas_extract_row.addWidget(self.clip_dp)
         layout_canvas_stack.addLayout(layout_canvas_extract_row)
