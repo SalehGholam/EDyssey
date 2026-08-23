@@ -958,8 +958,7 @@ class Tab_Tracking_CV2(TabBase):
 
 
         elif sender == self.button_dir_4dSignals:
-            path = get_existing_directory(self, "Select 4D Folder")
-            # if path and os.path.isdir(path[0]):
+            path = get_existing_directory(self, "Select 4D Folder", self.lineEdit_dir_4d.text())
             if path:
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_4d.setText(path)
@@ -973,8 +972,8 @@ class Tab_Tracking_CV2(TabBase):
                 self.load_metadata(silent=True)
 
         elif sender == self.button_dir_save:
-            path = get_existing_directory(self, "Select Destination Folder")
-            if path and os.path.isdir(path[0]):
+            path = get_existing_directory(self, "Select Destination Folder", self.lineEdit_dir_save.text())
+            if path:
                 self.lineEdit_dir_save.setText(path)
 
     def activate_lineEdit_scanSize(self):

@@ -79,31 +79,28 @@ def build_left_panel(splitter, width_userInput):
 
 
 def get_existing_directory(parent, caption, start_dir=''):
-    """Like `QFileDialog.getExistingDirectory()`, but shows files (not just
-    subfolders) while browsing, instead of hiding them entirely - the
-    built-in convenience function always sets ShowDirsOnly, which makes it
-    impossible to visually confirm a folder actually holds the files you're
-    looking for (e.g. .tpx3/.zspy 4D signals) before selecting it.
+    """Folder picker that actually shows files while browsing, so the user
+    can visually confirm a folder holds what they're looking for (e.g.
+    .tpx3/.zspy 4D signals) before selecting it.
 
-    Deliberately left native (no DontUseNativeDialog): on Windows, turning
-    ShowDirsOnly off is enough on its own to make Qt hand this off to the
-    OS's modern folder-picker (which lists files greyed-out alongside
-    folders and has its own native "Select Folder" button) instead of the
-    legacy dirs-only tree - so it keeps the native look and gains file
-    visibility, rather than swapping in Qt's own cross-platform dialog
-    widget (which looks different from the rest of the OS and was reported
-    as undesirable).
+    Two earlier approaches to this both turned out unreliable:
+    QFileDialog's own Directory mode with ShowDirsOnly=False either fell
+    back to Qt's own cross-platform dialog widget (DontUseNativeDialog=True
+    - functional, but a different look from the rest of the OS, reported
+    as undesirable) or, left native, silently kept using Windows' legacy
+    dirs-only folder tree anyway on at least some systems (ShowDirsOnly=False
+    alone wasn't enough to avoid it - files still didn't show).
 
-    Selection is still restricted to directories; the return value matches
-    getExistingDirectory's own contract (the chosen path, or '' if cancelled).
+    This instead uses the plain native "Open File" dialog (QFileDialog.getOpenFileName) -
+    guaranteed native chrome AND guaranteed to show files, since that's
+    what an open-file dialog is for - and returns the *folder* the chosen
+    file lives in, matching getExistingDirectory's own contract (a
+    directory path, or '' if cancelled). The user picks any file inside
+    the folder they want (their 4D signal itself, comment.txt, anything)
+    rather than the folder directly.
     """
-    dialog = qtw.QFileDialog(parent, caption, start_dir)
-    dialog.setFileMode(qtw.QFileDialog.Directory)
-    dialog.setOption(qtw.QFileDialog.ShowDirsOnly, False)
-    if dialog.exec_() == qtw.QFileDialog.Accepted:
-        selected = dialog.selectedFiles()
-        return selected[0] if selected else ''
-    return ''
+    fn, _ = qtw.QFileDialog.getOpenFileName(parent, caption, start_dir, 'All Files (*)')
+    return os.path.dirname(fn) if fn else ''
 
 
 class TabBase(qtw.QWidget):

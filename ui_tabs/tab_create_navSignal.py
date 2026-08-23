@@ -820,7 +820,7 @@ class Tab_Create_NavSignal(TabBase):
         button_dir_save) triggered it, and fill the corresponding line edit."""
         sender = self.sender()
         if sender == self.button_dir:
-            path = get_existing_directory(self, "Select 4D Signals Folder")
+            path = get_existing_directory(self, "Select 4D Signals Folder", self.lineEdit_dir_signal.text())
             if path:
                 self.metadata_path_override = None  # new folder - re-derive comment.txt location
                 self.lineEdit_dir_signal.setText(path)
@@ -831,7 +831,7 @@ class Tab_Create_NavSignal(TabBase):
                 # would otherwise silently leave the stale file list showing.
                 self.populate_file_list()
         elif sender == self.button_dir_save:
-            path = get_existing_directory(self, "Select Destination Folder")
+            path = get_existing_directory(self, "Select Destination Folder", self.lineEdit_dir_save.text())
             if path:
                 self.lineEdit_dir_save.setText(path)
 
