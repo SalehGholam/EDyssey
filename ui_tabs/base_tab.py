@@ -211,11 +211,10 @@ class TabBase(qtw.QWidget):
 
         Generic/shared for every tab: scales self.ribbon_page's font and
         height (the top parameter ribbon), self.ribbon's icon size (the
-        vertical RibbonPanel beside the canvas, if present), and every
-        Figure/canvas this tab owns (self.figure, or self.figure_nav/
-        self.figure_extract for Tab_Tracking_CV2's two-canvas layout) -
-        covers all 4 tabs without needing a per-tab override, since they
-        all use one of these attribute names."""
+        vertical RibbonPanel beside the canvas, if present), and self.figure
+        (every tab's one Figure/canvas - see PLOT_DEFINITIONS in
+        display_settings.py) - covers all 4 tabs without needing a per-tab
+        override, since they all use the same attribute name."""
         settings = DisplaySettings.instance()
 
         ribbon_page = getattr(self, 'ribbon_page', None)

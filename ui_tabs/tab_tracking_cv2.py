@@ -64,14 +64,12 @@ class Tab_Tracking_CV2(TabBase):
         # (canvas.draw()'s default behavior) is one of the most expensive
         # parts of a redraw; update_canvas() freezes it after the first
         # real draw, once subplot spacing has settled.
-        self._layout_frozen_nav = False
-        self._layout_frozen_extract = False
-        # Cached "clean" backgrounds (everything except the per-frame image/
+        self._layout_frozen = False
+        # Cached "clean" background (everything except the per-frame image/
         # ROI-box/title artists) used to blit slider-driven frame changes
         # instead of a full canvas redraw. None means "needs (re)capture" -
         # see _blit_canvas().
-        self._bg_nav = None
-        self._bg_extract = None
+        self._bg = None
 
         self.init_widget()
 
@@ -693,16 +691,17 @@ class Tab_Tracking_CV2(TabBase):
         layout_right_outer.addWidget(self._canvas_container, 1)
         layout_canvas = qtw.QVBoxLayout(self._canvas_container)
         
-        # self.figure_nav = Figure(constrained_layout=True)
-        self.figure_nav = Figure(constrained_layout=True)
-        self.canvas_nav = FigureCanvas(self.figure_nav)
-        self.ax_nav = self.figure_nav.add_subplot(121)
-        self.ax_track = self.figure_nav.add_subplot(122)
-
-        self.figure_extract = Figure(constrained_layout=True)
-        self.canvas_extract = FigureCanvas(self.figure_extract)
-        self.ax_mask = self.figure_extract.add_subplot(121)
-        self.ax_dp = self.figure_extract.add_subplot(122)
+        # All 4 subplots in one figure, one row (plt.subplots(1, 4)'s
+        # arrangement) - Figure()+add_subplot() rather than pyplot's own
+        # plt.subplots() to match every other tab's idiom (a bare Figure
+        # handed straight to FigureCanvas, not registered with pyplot's
+        # global figure manager).
+        self.figure = Figure(constrained_layout=True)
+        self.canvas = FigureCanvas(self.figure)
+        self.ax_nav = self.figure.add_subplot(1, 4, 1)
+        self.ax_track = self.figure.add_subplot(1, 4, 2)
+        self.ax_mask = self.figure.add_subplot(1, 4, 3)
+        self.ax_dp = self.figure.add_subplot(1, 4, 4)
 
         # titles for axes
         self.ax_nav.set_title('(1) Nav. Signal')
@@ -735,13 +734,10 @@ class Tab_Tracking_CV2(TabBase):
         self.ax_track.xaxis.label.set_visible(True)
         self.ax_dp.xaxis.label.set_visible(True)
 
-        # The Ctrl+Scroll zoom hint applies to every axis on its canvas, so
-        # it's a figure-wide supxlabel (one per figure) rather than repeated
-        # per-axis text.
-        self.figure_nav.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
-                                  fontsize=10)
-        self.figure_extract.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
-                                      fontsize=10)
+        # The Ctrl+Scroll zoom hint applies to every axis on the canvas, so
+        # it's one figure-wide supxlabel rather than repeated per-axis text.
+        self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
+                              fontsize=10)
 
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
@@ -754,67 +750,61 @@ class Tab_Tracking_CV2(TabBase):
         # 'mask' is excluded: it's a low-alpha threshold overlay on top of
         # 'img_mask', not an independently meaningful scalar image.
         self.colorbars = {}
-        self.colorbars['nav'] = self.figure_nav.colorbar(
+        self.colorbars['nav'] = self.figure.colorbar(
             self.img_display['nav'], ax=self.ax_nav, fraction=0.046, pad=0.04)
-        self.colorbars['track'] = self.figure_nav.colorbar(
+        self.colorbars['track'] = self.figure.colorbar(
             self.img_display['track'], ax=self.ax_track, fraction=0.046, pad=0.04)
-        self.colorbars['img_mask'] = self.figure_extract.colorbar(
+        self.colorbars['img_mask'] = self.figure.colorbar(
             self.img_display['img_mask'], ax=self.ax_mask, fraction=0.046, pad=0.04)
-        self.colorbars['dp'] = self.figure_extract.colorbar(
+        self.colorbars['dp'] = self.figure.colorbar(
             self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
 
-        self.canvas_nav.setMinimumHeight(650)
-        self.canvas_extract.setMinimumHeight(650)
-        self.toolbar_nav = NavigationToolbar(self.canvas_nav, self)
-        self.toolbar_extract = NavigationToolbar(self.canvas_extract, self)
+        self.canvas.setMinimumHeight(650)
+        self.toolbar = NavigationToolbar(self.canvas, self)
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
-        # canvas interactions already available via Ctrl-click/drag on
-        # canvas_nav (see on_press) and matplotlib's own toolbar_nav;
-        # deliberately does NOT duplicate the left panel's buttons (Track!,
-        # Extract All, Save Results, ...), only actions that act directly on
-        # the plot itself. 'select_roi' is the only tool mode on_press
-        # actually checks (see RibbonPanel.active_tool there) - it covers
-        # both a new ROI (on ax_nav) and a ROI-in-ROI (on ax_track), same as
-        # Ctrl+drag already does on each. Pan/Zoom/Home act on canvas_nav
-        # (where ROI selection happens) - canvas_extract keeps its own
-        # toolbar_extract below it.
+        # canvas interactions already available via Ctrl-click/drag on the
+        # canvas (see on_press) and matplotlib's own toolbar; deliberately
+        # does NOT duplicate the left panel's buttons (Track!, Extract All,
+        # Save Results, ...), only actions that act directly on the plot
+        # itself. 'select_roi' is the only tool mode on_press actually
+        # checks (see RibbonPanel.active_tool there) - it covers both a new
+        # ROI (on ax_nav) and a ROI-in-ROI (on ax_track), same as Ctrl+drag
+        # already does on each. Pan/Zoom/Home act on the one shared toolbar.
         self.ribbon = RibbonPanel([
             RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on Nav./Tracking Results '
                       'to draw a new ROI (or ROI-in-ROI, on the right axis)\n'
                       '(same as holding Ctrl and dragging)', 'tool'),
             RibbonTool('sep1', kind='separator'),
-            RibbonTool('pan', 'pan', 'Toggle pan mode on the Nav./Tracking canvas',
-                      'action', self.toolbar_nav.pan),
-            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode on the Nav./Tracking canvas',
-                      'action', self.toolbar_nav.zoom),
-            RibbonTool('home', 'home', 'Reset the Nav./Tracking canvas view',
-                      'action', self.toolbar_nav.home),
+            RibbonTool('pan', 'pan', 'Toggle pan mode on the canvas',
+                      'action', self.toolbar.pan),
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode on the canvas',
+                      'action', self.toolbar.zoom),
+            RibbonTool('home', 'home', 'Reset the canvas view',
+                      'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         # Deferred (see _apply_ribbon_cursor's docstring) - reapplies the
         # ribbon cursor after mpl's own NavigationToolbar2 cursor-restore
-        # logic (wrapped around every canvas_nav.draw()) has already run.
-        self.canvas_nav.mpl_connect(
+        # logic (wrapped around every canvas.draw()) has already run.
+        self.canvas.mpl_connect(
             'draw_event', lambda evt: QTimer.singleShot(0, self._apply_ribbon_cursor))
         layout_right_outer.addWidget(self.ribbon)
 
         self._canvas_stack_widget = qtw.QWidget()
         layout_canvas_stack = qtw.QVBoxLayout(self._canvas_stack_widget)
-        layout_canvas_stack.addWidget(self.wrap_canvas_in_scroll(self.canvas_nav))
-        layout_canvas_stack.addWidget(self.toolbar_nav)
 
-        # Clipping Thresholds beside ax_dp (the rightmost of canvas_extract's
-        # 2 subplots) - only the DP axis, per the decision that the Display
-        # Contrast box already covers the nav image on this tab (unlike
-        # Tab_ROI_on_4D/Navigator, which had no equivalent).
-        layout_canvas_extract_row = qtw.QHBoxLayout()
-        layout_canvas_extract_row.addWidget(self.wrap_canvas_in_scroll(self.canvas_extract), 1)
+        # Clipping Thresholds beside the canvas (only the DP axis's own
+        # clipping, per the decision that the Display Contrast box already
+        # covers the nav image on this tab - unlike Tab_ROI_on_4D/Navigator,
+        # which had no equivalent).
+        layout_canvas_row = qtw.QHBoxLayout()
+        layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
         self.clip_dp = ClippingThresholdsWidget()
-        layout_canvas_extract_row.addWidget(self.clip_dp)
-        layout_canvas_stack.addLayout(layout_canvas_extract_row)
-        layout_canvas_stack.addWidget(self.toolbar_extract)
+        layout_canvas_row.addWidget(self.clip_dp)
+        layout_canvas_stack.addLayout(layout_canvas_row)
+        layout_canvas_stack.addWidget(self.toolbar)
         # DP clip range is only reset the first time real data is shown
         # (see update_ax) - after that, the user's chosen thresholds
         # persist across frame scrubs instead of resetting every tick.
@@ -827,26 +817,25 @@ class Tab_Tracking_CV2(TabBase):
         self._canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout_canvas.addWidget(self._canvas_scroll)
 
-        # Connect mouse events - only the nav/track canvas has interactive
-        # ROI drawing; the mask/dp canvas is display-only apart from zoom.
+        # Connect mouse events - on_press/on_click_dp each already check
+        # event.inaxes themselves and no-op outside their own axes, so both
+        # can safely share the one canvas's button_press_event.
         self.rect = None            # Currently drawn rectangle
         self.rect_roiInRoi = None
         self.press = None           # Mouse press coordinates
 
-        self.canvas_nav.mpl_connect('button_press_event', self.on_press)
-        self.canvas_nav.mpl_connect('button_release_event', self.on_release)
-        self.canvas_nav.mpl_connect('motion_notify_event', self.on_motion)
-        self.canvas_nav.mpl_connect('scroll_event', self.on_scroll)
-        self.canvas_extract.mpl_connect('scroll_event', self.on_scroll)
-        self.canvas_extract.mpl_connect('button_press_event', self.on_click_dp)
-        # A resized canvas invalidates the cached blit backgrounds (wrong
+        self.canvas.mpl_connect('button_press_event', self.on_press)
+        self.canvas.mpl_connect('button_release_event', self.on_release)
+        self.canvas.mpl_connect('motion_notify_event', self.on_motion)
+        self.canvas.mpl_connect('scroll_event', self.on_scroll)
+        self.canvas.mpl_connect('button_press_event', self.on_click_dp)
+        # A resized canvas invalidates the cached blit background (wrong
         # pixel dimensions), so force a recapture on the next frame update.
-        self.canvas_nav.mpl_connect('resize_event', lambda evt: setattr(self, '_bg_nav', None))
-        self.canvas_extract.mpl_connect('resize_event', lambda evt: setattr(self, '_bg_extract', None))
+        self.canvas.mpl_connect('resize_event', lambda evt: setattr(self, '_bg', None))
 
         self.backgrounds = {}
         for ax_name, ax in (('nav', self.ax_nav), ('track', self.ax_track)):
-            self.backgrounds[ax_name] = self.canvas_nav.copy_from_bbox(ax.bbox)
+            self.backgrounds[ax_name] = self.canvas.copy_from_bbox(ax.bbox)
 
         #%% slider img num
         layout_slider = qtw.QHBoxLayout()
@@ -1244,9 +1233,8 @@ class Tab_Tracking_CV2(TabBase):
             except Exception: pass
         self.empty_main_dataframe()
         # New data may change image extents/overlays - force the blit
-        # backgrounds to be recaptured on the next frame update.
-        self._bg_nav = None
-        self._bg_extract = None
+        # background to be recaptured on the next frame update.
+        self._bg = None
 
         self.img_display['track'].set_data(self.img_zero)
         self.img_display['mask'].set_data(self.img_zero)
@@ -1278,8 +1266,7 @@ class Tab_Tracking_CV2(TabBase):
         self.img_display['nav'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
         self.img_display['track'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
         self.update_canvas()
-        self.canvas_nav.draw_idle()
-        self.canvas_extract.draw_idle()
+        self.canvas.draw_idle()
 
         self.box_contrast.rescale_async(self.s, self.threadpool, self.logger,
                                         on_done=self._on_nav_signal_rescaled)
@@ -1292,8 +1279,7 @@ class Tab_Tracking_CV2(TabBase):
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.update_canvas()
-        self.canvas_nav.draw_idle()
-        self.canvas_extract.draw_idle()
+        self.canvas.draw_idle()
 
     def initiate_processing(self, result, index):
         """WorkerThread_General callback for load_navSignal()/
@@ -1332,12 +1318,11 @@ class Tab_Tracking_CV2(TabBase):
         for ax in (self.ax_nav, self.ax_track):
             ax.set_xlim(0, shape_y)
             ax.set_ylim(shape_x, 0)
-        self.toolbar_nav.update()
-        self.toolbar_nav.push_current()
+        self.toolbar.update()
+        self.toolbar.push_current()
 
         self.update_canvas(0)
-        self.canvas_nav.draw()
-        self.canvas_extract.draw()
+        self.canvas.draw()
         # Scale fields may already hold a value from a previous session/load -
         # update_scalebar() is otherwise only triggered by the fields' own
         # textChanged signal, so a fresh load wouldn't show it until touched.
@@ -1594,33 +1579,27 @@ class Tab_Tracking_CV2(TabBase):
                 else:
                     self.update_ax(self.img_zero, 'dp', self.ax_dp)
 
-        # A single blit per canvas here (instead of a full canvas.draw()/
-        # draw_idle() per frame) avoids re-rendering every artist in the
-        # figure - scale bars, static titles/labels, axis chrome - on every
-        # single slider tick; only the image data, ROI boxes, and the
-        # per-frame title text actually change between frames, so only
-        # those are redrawn. constrained_layout's spacing solve is also one
-        # of the most expensive parts of a full draw and doesn't need to
-        # repeat once subplot spacing has settled.
+        # A single blit for the whole (single, 4-subplot) canvas here
+        # (instead of a full canvas.draw()/draw_idle() per frame) avoids
+        # re-rendering every artist in the figure - scale bars, static
+        # titles/labels, axis chrome - on every single slider tick; only
+        # the image data, ROI boxes, and the per-frame title text actually
+        # change between frames, so only those are redrawn.
+        # constrained_layout's spacing solve is also one of the most
+        # expensive parts of a full draw and doesn't need to repeat once
+        # subplot spacing has settled.
         nav_artists = ([self.img_display['nav'], self.img_display['track'],
                         self.ax_nav.title, self.ax_track.title]
                        + self.patches_axNav + self.patches_axTrack)
-        self._blit_canvas(
-            self.canvas_nav, self.figure_nav, '_bg_nav', nav_artists,
-            hide_for_background=[self.img_display['nav'], self.img_display['track']],
-            titles_for_background=(self.ax_nav, self.ax_track))
-        if not self._layout_frozen_nav:
-            self.figure_nav.set_layout_engine('none')
-            self._layout_frozen_nav = True
-
         extract_artists = [self.img_display['img_mask'], self.img_display['mask'],
                            self.img_display['dp']]
         self._blit_canvas(
-            self.canvas_extract, self.figure_extract, '_bg_extract', extract_artists,
-            hide_for_background=extract_artists)
-        if not self._layout_frozen_extract:
-            self.figure_extract.set_layout_engine('none')
-            self._layout_frozen_extract = True
+            self.canvas, self.figure, '_bg', nav_artists + extract_artists,
+            hide_for_background=[self.img_display['nav'], self.img_display['track']] + extract_artists,
+            titles_for_background=(self.ax_nav, self.ax_track))
+        if not self._layout_frozen:
+            self.figure.set_layout_engine('none')
+            self._layout_frozen = True
 
     def _blit_canvas(self, canvas, figure, bg_attr, artists,
                      hide_for_background=(), titles_for_background=()):
@@ -1685,7 +1664,7 @@ class Tab_Tracking_CV2(TabBase):
             return
         vmin, vmax = self.clip_dp.values()
         self.img_display['dp'].set_clim(vmin=vmin, vmax=vmax)
-        self.canvas_extract.draw_idle()
+        self.canvas.draw_idle()
 
     def draw_rois_in(self, imgNo):
         """Draw the input ROI rectangles (+ id labels) that start on frame
@@ -1785,15 +1764,12 @@ class Tab_Tracking_CV2(TabBase):
                 for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
                     io.add_readable_scalebar(ax, scale_real, 'nm')
 
-                # ax_nav/ax_track live on canvas_nav, ax_mask on canvas_extract.
                 # The scale bar itself is static across frames, so it needs
-                # to be baked into the cached blit backgrounds - invalidate
-                # them here so the next frame update recaptures it, while
+                # to be baked into the cached blit background - invalidate
+                # it here so the next frame update recaptures it, while
                 # still doing an immediate full draw for instant feedback now.
-                self._bg_nav = None
-                self._bg_extract = None
-                self.canvas_nav.draw_idle()
-                self.canvas_extract.draw_idle()
+                self._bg = None
+                self.canvas.draw_idle()
 
             except ValueError:
 
@@ -1802,10 +1778,8 @@ class Tab_Tracking_CV2(TabBase):
                         if isinstance(artist, ScaleBar):
                             artist.remove()
 
-                self._bg_nav = None
-                self._bg_extract = None
-                self.canvas_nav.draw_idle()
-                self.canvas_extract.draw_idle()
+                self._bg = None
+                self.canvas.draw_idle()
 
         elif which == 'reciprocal':
             # A conventional linear scale bar doesn't read naturally on a
@@ -1824,8 +1798,8 @@ class Tab_Tracking_CV2(TabBase):
                 'Circle center: click "Center" (Input Parameters) to find it, or '
                 'hold Ctrl and click the DP plot to set it manually', fontsize=9)
             # The circles are static across frames like the scale bars above.
-            self._bg_extract = None
-            self.canvas_extract.draw_idle()
+            self._bg = None
+            self.canvas.draw_idle()
 
     def find_and_center_recip(self):
         """Find the beam center now and jump the reciprocal-space rings
@@ -1889,7 +1863,7 @@ class Tab_Tracking_CV2(TabBase):
         self._apply_ribbon_cursor()
 
     def _apply_ribbon_cursor(self):
-        """Set canvas_nav's cursor (where ROI selection happens) to match
+        """Set the canvas's cursor to match
         the ribbon's active tool - besides the ribbon button's own
         highlighted (QToolButton:checked) style, this gives the active tool
         a distinct cursor too, since which mode is armed wasn't obvious
@@ -1900,13 +1874,14 @@ class Tab_Tracking_CV2(TabBase):
         afterward, which would otherwise silently undo this on the very
         next on_press/etc. redraw."""
         cursor = {'select_roi': Qt.CrossCursor}.get(self.ribbon.active_tool)
-        self.canvas_nav.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
+        self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):
-        """Mouse-button-press handler for canvas_nav: with Ctrl held (or the
-        ribbon's "Select ROI" tool active), start a new ROI rectangle on
-        ax_nav, or a ROI-in-ROI rectangle on ax_track, at the click
-        position."""
+        """Mouse-button-press handler (ax_nav/ax_track only - no-ops for a
+        click elsewhere on the shared canvas, see on_click_dp for ax_dp):
+        with Ctrl held (or the ribbon's "Select ROI" tool active), start a
+        new ROI rectangle on ax_nav, or a ROI-in-ROI rectangle on ax_track,
+        at the click position."""
         ribbon_tool = self.ribbon.active_tool
         if event.inaxes not in (self.ax_nav, self.ax_track) or (
                 ribbon_tool != 'select_roi' and 'ctrl' not in event.modifiers):
@@ -1924,11 +1899,11 @@ class Tab_Tracking_CV2(TabBase):
                                           edgecolor='r', facecolor='none')
             self.patches_axNav.append(self.rect)
             self.ax_nav.add_patch(self.rect)
-            self.canvas_nav.draw()
-            self.backgrounds['nav'] = self.canvas_nav.copy_from_bbox(self.ax_nav.bbox)
+            self.canvas.draw()
+            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
 
         elif (event.inaxes == self.ax_track):
-            self.canvas_nav.restore_region(self.backgrounds['track'])
+            self.canvas.restore_region(self.backgrounds['track'])
             if self.rect_roiInRoi is not None:
                 self.rect_roiInRoi.remove()
 
@@ -1936,17 +1911,17 @@ class Tab_Tracking_CV2(TabBase):
                                                    edgecolor='r', facecolor='none')
             self.patches_axTrack.append(self.rect_roiInRoi)
             self.ax_track.add_patch(self.rect_roiInRoi)
-            self.canvas_nav.draw()
-            self.backgrounds['track'] = self.canvas_nav.copy_from_bbox(self.ax_track.bbox)
+            self.canvas.draw()
+            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
             
         else:
             self.press = None
         
 
     def on_motion(self, event):
-        """Mouse-motion handler for canvas_nav: while a Ctrl+drag started by
-        on_press is in progress, resize the in-progress ROI rectangle
-        (clamped to the parent ROI's bounds for a ROI-in-ROI) and blit it."""
+        """Mouse-motion handler: while a Ctrl+drag started by on_press is in
+        progress, resize the in-progress ROI rectangle (clamped to the
+        parent ROI's bounds for a ROI-in-ROI) and blit it."""
         if self.press is None or event.inaxes is None:
             return
         # if (event.inaxes == self.ax_track) and (not self.checkbox_roiInRoi.isChecked()):
@@ -1961,9 +1936,9 @@ class Tab_Tracking_CV2(TabBase):
                 self.rect.set_xy((x0, y0))
             except AttributeError:
                 self.press = None
-            self.canvas_nav.restore_region(self.backgrounds['nav'])
+            self.canvas.restore_region(self.backgrounds['nav'])
             self.ax_nav.draw_artist(self.rect)
-            self.canvas_nav.blit(self.ax_nav.bbox)
+            self.canvas.blit(self.ax_nav.bbox)
             
         elif (event.inaxes == self.ax_track):
             if event.xdata is None or event.ydata is None:
@@ -2003,16 +1978,16 @@ class Tab_Tracking_CV2(TabBase):
                 self.press = None
                 return
         
-            self.canvas_nav.restore_region(self.backgrounds['track'])
+            self.canvas.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(self.rect_roiInRoi)
-            self.canvas_nav.blit(self.ax_track.bbox)
+            self.canvas.blit(self.ax_track.bbox)
 
 
     def on_release(self, event):
-        """Mouse-button-release handler for canvas_nav: finalize the
-        rectangle started by on_press into a new ROI row (left click) or an
-        additional init frame/box on the selected ROI (right click), and
-        add/update its tree entry."""
+        """Mouse-button-release handler: finalize the rectangle started by
+        on_press into a new ROI row (left click) or an additional init
+        frame/box on the selected ROI (right click), and add/update its
+        tree entry."""
         if self.press is None or event.inaxes is None:
             return
         x0, y0 = self.press
@@ -2080,10 +2055,10 @@ class Tab_Tracking_CV2(TabBase):
             t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center',
                                    verticalalignment='center', color='red', fontsize=6)
             self.patches_axTrack.append(t)
-            self.backgrounds['track'] = self.canvas_nav.copy_from_bbox(self.ax_track.bbox)
-            self.canvas_nav.restore_region(self.backgrounds['track'])
+            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
+            self.canvas.restore_region(self.backgrounds['track'])
             self.ax_track.draw_artist(t)
-            self.canvas_nav.blit(self.ax_track.bbox)
+            self.canvas.blit(self.ax_track.bbox)
             self.rect_roiInRoi = None
             
 # =============================================================================
@@ -2128,9 +2103,6 @@ class Tab_Tracking_CV2(TabBase):
         rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
         ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
         ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
-        # on_scroll is connected to both canvas_nav and canvas_extract, so
-        # the event's own originating canvas (not a hardcoded one) must be
-        # redrawn - the axis under the cursor could be on either.
         event.canvas.draw_idle()
 
     def on_click_dp(self, event):
@@ -2328,7 +2300,7 @@ class Tab_Tracking_CV2(TabBase):
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
         # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
-        self.canvas_nav.draw()
+        self.canvas.draw()
         self.logger.info('Auto-detector added %d object(s) on frame %d.',
                           len(objects), self.imgNo_autoDet)
             
@@ -2447,8 +2419,7 @@ class Tab_Tracking_CV2(TabBase):
             item = self.tree_objects.topLevelItem(0)
             item.setSelected(True)
             self.update_canvas(0)
-            self.canvas_nav.draw()
-            self.canvas_extract.draw()
+            self.canvas.draw()
             self.spinner.stop()
             self.button_cancel.setDisabled(True)
 
@@ -3099,8 +3070,7 @@ class Tab_Tracking_CV2(TabBase):
         self.threadpool.clear()
         self.kill_running_process()
         self.log_console.disconnect_log()
-        plt.close(self.figure_nav)
-        plt.close(self.figure_extract)
+        plt.close(self.figure)
 
 # =============================================================================
 # if __name__ == "__main__":

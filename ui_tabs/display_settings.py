@@ -30,12 +30,13 @@ FIGURE_SIZE_SCALE_DEFAULT = 1.0
 # `key` is the stable id used in figure_size_scales/JSON; `tab_name` is the
 # TabBase._tab_name each one belongs to (see TabBase._display_settings_figures,
 # which filters this list down to whichever figure(s) the current tab owns -
-# 1 each for ROI on 4D/Navigator/SAM2, 2 for ROI Tracker's split canvas).
+# 1 each for every tab, all sharing the single `figure`/`canvas` attribute
+# name (ROI Tracker's 4 subplots - Nav./Tracking/Threshold/DP - used to be
+# split across 2 figures, figure_nav/figure_extract, merged into one).
 PLOT_DEFINITIONS = [
     ('roi4d', 'Tab_ROI_on_4D', 'figure', 'ROI on 4D'),
     ('navigator', 'Tab_Create_NavSignal', 'figure', 'Navigator'),
-    ('tracker_nav', 'Tab_Tracking_CV2', 'figure_nav', 'ROI Tracker (Overview)'),
-    ('tracker_extract', 'Tab_Tracking_CV2', 'figure_extract', 'ROI Tracker (Extracted Pattern)'),
+    ('tracker', 'Tab_Tracking_CV2', 'figure', 'ROI Tracker'),
     ('sam2', 'Tab_SAM2', 'figure', 'SAM2 Tracker'),
 ]
 PLOT_KEYS = [key for key, *_ in PLOT_DEFINITIONS]
