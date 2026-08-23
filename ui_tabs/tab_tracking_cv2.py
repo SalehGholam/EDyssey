@@ -343,6 +343,13 @@ class Tab_Tracking_CV2(TabBase):
             'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
         layout_scanSize_row2.addWidget(self.button_browseMetadata)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+
+        self.button_viewMetadata = qtw.QPushButton('View...')
+        self.button_viewMetadata.setToolTip(
+            'Show the full raw comment.txt content in a read-only window - '
+            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
+        layout_scanSize_row2.addWidget(self.button_viewMetadata)
         layout_scanSize_row2.addStretch(1)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
@@ -357,12 +364,12 @@ class Tab_Tracking_CV2(TabBase):
         # Scale bars - Real | Recip. share one row, below everything else in
         # this column, matching Tab_ROI_on_4D/Navigator's merge.
         layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
+        layout_scale_row.addWidget(qtw.QLabel('Real Space Scale (nm)'))
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
         self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'))
+        layout_scale_row.addWidget(qtw.QLabel('Reciprocal Space Scale (Å<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)

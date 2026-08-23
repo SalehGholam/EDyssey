@@ -162,8 +162,11 @@ class TabBase(qtw.QWidget):
         not just the scan size/dwell time load_metadata() itself parses
         into a spinbox. Shared here because every tab with metadata support
         resolves it the same way: self.metadata_path_override (set by that
-        tab's own Browse Metadata button) if set, else self.lineEdit_dir_signal."""
-        path_main = getattr(self, 'metadata_path_override', None) or self.lineEdit_dir_signal.text()
+        tab's own Browse Metadata button) if set, else whichever 4D-signal
+        line edit this tab has - lineEdit_dir_signal (ROI on 4D/Navigator)
+        or lineEdit_dir_4d (ROI Tracker/SAM2), the two names in use."""
+        line_edit = getattr(self, 'lineEdit_dir_signal', None) or getattr(self, 'lineEdit_dir_4d', None)
+        path_main = getattr(self, 'metadata_path_override', None) or (line_edit.text() if line_edit else '')
         if not path_main:
             qtw.QMessageBox.critical(self, 'No Signal Selected',
                 'Select a 4D signal first (see above) - metadata is read from '
