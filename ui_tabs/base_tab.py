@@ -81,12 +81,20 @@ def get_existing_directory(parent, caption, start_dir=''):
     built-in convenience function always sets ShowDirsOnly, which makes it
     impossible to visually confirm a folder actually holds the files you're
     looking for (e.g. .tpx3/.zspy 4D signals) before selecting it.
+
+    DontUseNativeDialog is required for ShowDirsOnly=False to actually take
+    effect on Windows: the native "Browse For Folder" picker Qt otherwise
+    delegates to there is a plain OS folder tree with no concept of showing
+    files at all, so it silently ignores ShowDirsOnly regardless of how
+    it's set - only Qt's own cross-platform dialog widget honors it.
+
     Selection is still restricted to directories; the return value matches
     getExistingDirectory's own contract (the chosen path, or '' if cancelled).
     """
     dialog = qtw.QFileDialog(parent, caption, start_dir)
     dialog.setFileMode(qtw.QFileDialog.Directory)
     dialog.setOption(qtw.QFileDialog.ShowDirsOnly, False)
+    dialog.setOption(qtw.QFileDialog.DontUseNativeDialog, True)
     if dialog.exec_() == qtw.QFileDialog.Accepted:
         selected = dialog.selectedFiles()
         return selected[0] if selected else ''
