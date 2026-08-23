@@ -53,7 +53,13 @@ class Tab_Create_NavSignal(TabBase):
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
         button_w = 90
-        button_h_lrg = 50
+        # Was 50 - Batch Options stacks 3 rows (Mode/Role, CPU Cores/Clip
+        # FPS/Autosave, Test File/Calculate All/Save Results/Cancel) below
+        # Input Parameters in one column fixed to the shared ribbon height
+        # (see TabBase._reference_ribbon_height) - at 50px these buttons'
+        # row alone didn't leave enough room for all of that to fit without
+        # clipping.
+        button_h_lrg = 32
 
         #%% ribbon (top parameter ribbon, Word-style - see Tab_ROI_on_4D
         # for the original design/rationale, and TabBase for the shared
@@ -167,7 +173,13 @@ class Tab_Create_NavSignal(TabBase):
         self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
         layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
 
+        # Hidden until it actually has something to say (see
+        # _set_smart_scan_summary) - an empty QLabel still reserves a full
+        # text-line's height in the grid, which otherwise left a persistent
+        # blank line at the bottom of this box before "Check Files..." was
+        # ever run.
         self.label_smartScanSummary = qtw.QLabel('')
+        self.label_smartScanSummary.setVisible(False)
         layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
 
         layout_dir.addWidget(groupbox_smartScan)
@@ -176,13 +188,13 @@ class Tab_Create_NavSignal(TabBase):
         # Scale bars - Real | Recip. share one row, moved here (per user
         # request) rather than its own column - display-only calibration.
         layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real (nm)'))
+        layout_scale_row.addWidget(qtw.QLabel('Real Space Scale (nm)'))
         self.lineEdit_scale_real = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
         self.lineEdit_scale_real.textChanged.connect(lambda: self._update_nav_scalebar())
         self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Recip. (\u00C5<sup>-1</sup>)'))
+        layout_scale_row.addWidget(qtw.QLabel('Reciprocal Space Scale (\u00C5<sup>-1</sup>)'))
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
         layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
@@ -317,6 +329,13 @@ class Tab_Create_NavSignal(TabBase):
         # changes, instead of requiring an extra "Load" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
+
+        self.button_viewMetadata = qtw.QPushButton('View...')
+        self.button_viewMetadata.setToolTip(
+            'Show the full raw comment.txt content in a read-only window - '
+            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
+        layout_scanSize_row2.addWidget(self.button_viewMetadata)
         layout_scanSize.addLayout(layout_scanSize_row2)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
@@ -816,6 +835,14 @@ class Tab_Create_NavSignal(TabBase):
             if path:
                 self.lineEdit_dir_save.setText(path)
 
+    def _set_smart_scan_summary(self, text):
+        """Set label_smartScanSummary's text and keep it hidden while
+        empty (see its own setVisible(False) at construction) - avoids a
+        permanent blank line at the bottom of the Smart Scan box before/
+        between "Check Files..." runs."""
+        self.label_smartScanSummary.setText(text)
+        self.label_smartScanSummary.setVisible(bool(text))
+
     def populate_file_list(self):
         """Refresh the file list for the current 4D signals folder, derive the
         save directory/project name from it, auto-load comment.txt metadata if
@@ -830,7 +857,7 @@ class Tab_Create_NavSignal(TabBase):
         # A previously-reviewed smart-scan match table is only valid for the
         # folder it was built from - stale otherwise.
         self._smart_scan_rows = None
-        self.label_smartScanSummary.setText('')
+        self._set_smart_scan_summary('')
 
     def browse_metadata_file(self):
         start_dir = self.lineEdit_dir_signal.text()
@@ -890,7 +917,7 @@ class Tab_Create_NavSignal(TabBase):
                     self.spinbox_dwellTime_detection):
             wid.setEnabled(enable)
         self._smart_scan_rows = None
-        self.label_smartScanSummary.setText('')
+        self._set_smart_scan_summary('')
 
     def browse_pattern_dir(self):
         """Browse for the pattern-files folder; invalidates any previously-
@@ -900,7 +927,7 @@ class Tab_Create_NavSignal(TabBase):
         if path:
             self.lineEdit_patternDir.setText(path)
             self._smart_scan_rows = None
-            self.label_smartScanSummary.setText('')
+            self._set_smart_scan_summary('')
 
     def get_pattern_dir(self):
         return self.lineEdit_patternDir.text() or self.lineEdit_dir_signal.text()
@@ -913,7 +940,7 @@ class Tab_Create_NavSignal(TabBase):
         if path:
             self.lineEdit_detectionDir.setText(path)
             self._smart_scan_rows = None
-            self.label_smartScanSummary.setText('')
+            self._set_smart_scan_summary('')
 
     def get_detection_dir(self):
         return self.lineEdit_detectionDir.text() or None
@@ -945,7 +972,7 @@ class Tab_Create_NavSignal(TabBase):
         if dlg.exec_() == qtw.QDialog.Accepted:
             self._smart_scan_rows = dlg.rows
             n_ok = sum(1 for row in dlg.rows if not row['excluded'])
-            self.label_smartScanSummary.setText(f'{n_ok} / {len(dlg.rows)} angle(s) included')
+            self._set_smart_scan_summary(f'{n_ok} / {len(dlg.rows)} angle(s) included')
             self.logger.info('Smart-scan file check confirmed: %d / %d angle(s) included.',
                              n_ok, len(dlg.rows))
 
