@@ -2004,7 +2004,7 @@ class Tab_Create_NavSignal(TabBase):
         process.readyReadStandardOutput.connect(lambda: self._accumulate_output_nav(process))
         process.readyReadStandardError.connect(lambda: self.handle_error_nav(process))
         process.finished.connect(lambda: self.handle_finished_nav(process))
-        process.errorOccurred.connect(self.process_failed_nav)
+        process.errorOccurred.connect(lambda error: self.process_failed_nav(process, error))
         self.running_processes.append(process)
         self.process_task_map[process] = i_index
         self.process_output_buffers[process] = bytearray()
@@ -2078,6 +2078,45 @@ class Tab_Create_NavSignal(TabBase):
                 qtw.QMessageBox.warning(self, 'Worker Error', stderr_text[:500])
         self._stderr_buffer.discard(process)
         process.deleteLater()
+        self._advance_nav_batch()
+
+    def process_failed_nav(self, process, error):
+        """Handle a QProcess.errorOccurred signal (e.g. the worker process
+        failed to even start) for a nav-image batch run.
+
+        Previously this neither knew which process/task had failed
+        (errorOccurred was connected without capturing `process`, unlike
+        the other 3 per-process signals) nor advanced the queue at all -
+        one worker failing to start left that task's slot in
+        running_processes/process_task_map stuck forever, so
+        launch_next_nav_task() kept refusing to launch anything past
+        max_processes, nav_counter could never reach nav_counter_total,
+        and the whole batch silently stalled after however many files had
+        already finished (as few as just the first one) - the rest of the
+        queue was simply abandoned with no error surfaced beyond one modal
+        dialog. Now handled the same way a finished-but-failed worker is
+        (see handle_finished_nav): counted, logged, and the batch moves on
+        to the next queued file (or finalizes, if this was the last one)."""
+        if process in self.running_processes:
+            self.running_processes.remove(process)
+        i_index = self.process_task_map.pop(process, None)
+        self.process_output_buffers.pop(process, None)
+        self._stderr_buffer.discard(process)
+        if self._cancelling:
+            process.deleteLater()
+            return
+        self._nav_failed = True
+        self.logger.error(
+            'Worker process failed to start for file index %s (error code %s).', i_index, error)
+        process.deleteLater()
+        self._advance_nav_batch()
+
+    def _advance_nav_batch(self):
+        """Shared tail of handle_finished_nav/process_failed_nav: count this
+        task as done, update the progress bar, and either finalize the
+        whole batch (once every file has been accounted for, successfully
+        or not) or launch the next queued one - so a single failed/crashed/
+        never-started worker doesn't stall every file still queued behind it."""
         self.nav_counter += 1
         self.update_progress_bar(self.nav_counter, self.nav_counter_total)
         if self.nav_counter >= self.nav_counter_total:
@@ -2109,18 +2148,6 @@ class Tab_Create_NavSignal(TabBase):
                 self.save_results()
         else:
             self.launch_next_nav_task()
-
-    def process_failed_nav(self, error):
-        """Handle a QProcess.errorOccurred signal (e.g. the worker process
-        failed to start at all) for a nav-image batch run."""
-        if self._cancelling:
-            return
-        self._nav_failed = True
-        self.logger.error("QProcess error occurred: %s", error)
-        self.button_cancel.setDisabled(True)
-        qtw.QMessageBox.critical(self, 'Process Error',
-            f'A worker process failed to start (error code {error}).\n'
-            'Check that Python is on PATH and worker_nav_img.py exists.')
 
     def cancel_running_work(self):
         """Kill all running nav-image worker processes, clear the remaining
