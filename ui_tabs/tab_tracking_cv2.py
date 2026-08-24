@@ -12,7 +12,7 @@ from glob import glob
 from PyQt5.QtCore import Qt, QTimer
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
-from matplotlib.colors import SymLogNorm
+from matplotlib.colors import SymLogNorm, to_rgb
 import matplotlib.pyplot as plt
 import numpy as np
 import EDyssey.io_utils as io
@@ -1748,7 +1748,7 @@ class Tab_Tracking_CV2(TabBase):
         # the *whole* axis (mask=0 regions included, just a dim viridis(0)
         # purple), rather than only coloring where the mask is actually
         # True and leaving everything else fully see-through.
-        mask_color = np.array([*plt.get_cmap('tab10')(0)[:3], 0.6])
+        mask_color = np.array([*to_rgb('tab:orange'), 0.4])
         mask_rgba = img_mask.reshape(shape_x, shape_y, 1) * mask_color.reshape(1, 1, -1)
         self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
