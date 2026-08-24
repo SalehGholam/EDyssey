@@ -741,7 +741,10 @@ class Tab_Tracking_CV2(TabBase):
 
         self.ax_mask.set_axis_off()
         self.img_display['img_mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
-        self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='viridis', alpha=0.1)
+        # 'mask' gets an RGBA array (not scalar+cmap) from update_ax_mask()
+        # on every real update - see there, matching Tab_SAM2's show_mask().
+        # cmap/alpha here only ever apply to this one placeholder frame.
+        self.img_display['mask'] = self.ax_mask.imshow(self.img_zero, cmap='gray')
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))
         self.img_display['dp'].set_cmap('inferno')
 
@@ -1739,9 +1742,15 @@ class Tab_Tracking_CV2(TabBase):
         except ValueError:
             pass
         self.img_display['img_mask'].set_extent([0, shape_y, shape_x, 0])
-        
-        self.img_display['mask'].set_data(img_mask)
-        self.img_display['mask'].set_clim(vmin=0, vmax=1)
+
+        # A translucent RGBA overlay (like Tab_SAM2's show_mask) instead of
+        # a scalar viridis image at a fixed low alpha - that used to tint
+        # the *whole* axis (mask=0 regions included, just a dim viridis(0)
+        # purple), rather than only coloring where the mask is actually
+        # True and leaving everything else fully see-through.
+        mask_color = np.array([*plt.get_cmap('tab10')(0)[:3], 0.6])
+        mask_rgba = img_mask.reshape(shape_x, shape_y, 1) * mask_color.reshape(1, 1, -1)
+        self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
         # The ROI crop's size varies between ROIs/selections, so (unlike
         # nav/track) the view here is reset to fit it every single time,

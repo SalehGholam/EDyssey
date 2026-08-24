@@ -52,7 +52,7 @@ plt.style.use('dark_background')
 # A plain source constant (not computed at build/run time) so it's visible
 # directly in the repo on GitHub, not just at runtime. Shown only in the
 # About dialog (Help > About EDyssey) - not duplicated elsewhere in the UI.
-APP_VERSION = '2026.08.23.1345'
+APP_VERSION = '2026.08.24.0930'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
