@@ -9,6 +9,8 @@ Created on Wed Oct  2 15:34:09 2024
 
 import os
 import json
+import tempfile
+import shutil
 from time import perf_counter
 from PyQt5.QtCore import (pyqtSignal, Qt, QRunnable, QObject, QProcess, QTimer)
 import PyQt5.QtWidgets as qtw
@@ -47,38 +49,17 @@ class Tab_ROI_on_4D(TabBase):
         self.central_widget = qtw.QWidget(self)
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
-
+        
+        button_w = 90
+        button_h = 30
         #%% ribbon (top parameter ribbon, Word-style)
-        # Replaces the old left parameter panel: one horizontal band across
-        # the top of the tab, made of compact columns (each a captioned
-        # cluster of controls - what used to be one QGroupBox) separated by
-        # vertical lines, so the canvas below gets the tab's full width
-        # instead of being squeezed to the right of a tall left column.
-        # Three columns total (down from the original seven): related
-        # groups that don't each need a full-height column of their own are
-        # stacked vertically inside one column instead, divided by HLine
-        # separators - see the Edge Detection/SAM2 Segmentation/Summed DP
-        # Threshold column below for the pattern. No scrollbar: columns are
-        # packed to the left at their natural content width, with a
-        # trailing addStretch(1) absorbing any extra space on the right
-        # (deliberate - do not change this to a full-width stretch fill).
-        # The band's height is not fixed - it sizes itself to whichever
-        # column needs the most vertical space, and should end up the same
-        # across tabs as long as each one's busiest column has a similar
-        # number of stacked rows.
         ribbon_page = qtw.QWidget()
         self.ribbon_page = ribbon_page  # exposed for the Edit tab's ribbon-text-scale control
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
         self.layout.addWidget(ribbon_page)
-
-        #%% Experiment Info (ribbon group) - merges what used to be three
-        # separate groups (File, Input Parameters, Scale) into one column:
-        # 4D Signal/Smart Scan, then a QGridLayout for Detector
-        # Size/Scan Size/Dwell Time/Metadata (so their labels and X/Y value
-        # cells line up in columns instead of each row picking its own
-        # widths), then the Scale bars row.
+        #%% Experiment Info (ribbon group)
         self.box_dir, layout_exp = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         layout_file_entry = qtw.QHBoxLayout()
@@ -89,6 +70,7 @@ class Tab_ROI_on_4D(TabBase):
             self.lineEdit_dir_signal.text()))
 
         self.button_dir_navSignal = qtw.QPushButton('...')
+        self.button_dir_navSignal.setFixedWidth(30)
         layout_file_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
         layout_exp.addLayout(layout_file_entry)
@@ -99,9 +81,7 @@ class Tab_ROI_on_4D(TabBase):
         layout_file_dir = qtw.QHBoxLayout()
         self.checkbox_smartScan = qtw.QCheckBox('Smart Scanned')
         self.checkbox_smartScan.setToolTip(
-            'This 4D signal is a smart-scanned (sparsely acquired) file - a pattern '
-            'file is needed to reshape it correctly. See other_scripts/smart scanning '
-            'guide/ for background on the format.')
+            'Smart-scanned (sparsely acquired) file - needs a pattern file to reshape')
         layout_file_dir.addWidget(self.checkbox_smartScan)
         self.checkbox_smartScan.stateChanged.connect(self.activate_lineEdit_patternFile)
 
@@ -134,11 +114,13 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_detectorSize_x = qtw.QSpinBox()
         self.spinbox_detectorSize_x.setRange(1, 10000)
         self.spinbox_detectorSize_x.setValue(512)
+        self.spinbox_detectorSize_x.setFixedWidth(button_w)
         layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
         layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
         self.spinbox_detectorSize_y = qtw.QSpinBox()
         self.spinbox_detectorSize_y.setRange(1, 10000)
         self.spinbox_detectorSize_y.setValue(512)
+        self.spinbox_detectorSize_y.setFixedWidth(button_w)
         layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
         layout_exp.addLayout(layout_exp_items)
         self.activate_detectorSize_spinboxes()
@@ -152,11 +134,13 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
         self.spinbox_scanSize_x = qtw.QSpinBox()
+        self.spinbox_scanSize_x.setFixedWidth(button_w)
         layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
         self.spinbox_scanSize_x.setRange(1, 10000)
 
         layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
         self.spinbox_scanSize_y = qtw.QSpinBox()
+        self.spinbox_scanSize_y.setFixedWidth(button_w)
         layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
         self.spinbox_scanSize_y.setRange(1, 10000)
 
@@ -185,24 +169,17 @@ class Tab_ROI_on_4D(TabBase):
         # size/dwell time there, alongside the .tpx3 file itself (row 3 of
         # the same grid: Load Metadata/Browse, then Block #).
         self.button_loadMetadata = qtw.QPushButton('Load Metadata')
+        self.button_loadMetadata.setFixedSize(button_w, button_h)
         self.button_loadMetadata.setToolTip(
-            'Fill Scan Size and Dwell Time (above) from a comment.txt file next to '
-            'the 4D signal (tpx3 files only).\n\n'
-            'Expected format - one "key: value" line per parameter, e.g.:\n'
-            '  scan size x: 128\n'
-            '  scan size y: 128\n'
-            '  dwelltime: 500\n\n'
-            '"dwelltime" may include " microseconds" (e.g. "dwelltime: 500 '
-            'microseconds") - it\'s stripped automatically.\n\n'
-            'If comment.txt logs more than one acquisition, separate each block '
-            'with a blank line, then pick which one to read with Block # (right).')
+            'Fill Scan Size/Dwell Time from comment.txt next to the signal (tpx3 only) - '
+            '"key: value" lines, e.g. "scan size x: 128". Multiple acquisitions? '
+            'Pick the block with Block # (right).')
         layout_exp_items.addWidget(self.button_loadMetadata, 3, 0, 1, 2)
         self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
         self.button_browseMetadata = qtw.QPushButton('...')
         self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt next to the 4D signal)')
+        self.button_browseMetadata.setToolTip('Browse for the metadata file')
         layout_exp_items.addWidget(self.button_browseMetadata, 3, 2, 1, 2)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
 
@@ -213,18 +190,16 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_metadataCount.setValue(0)
         self.spinbox_metadataCount.setDisabled(True)  # re-enabled once >1 block is found
         self.spinbox_metadataCount.setToolTip(
-            'Which 0-indexed metadata block to read from comment.txt. Only '
-            'enabled when comment.txt logs more than one measurement')
+            'Which metadata block to read (enabled if comment.txt logs more than one)')
         # Re-reads comment.txt (a cheap text-file parse, not the 4D data
         # file itself) for the newly-selected block as soon as the value
         # changes, instead of requiring an extra "Load Metadata" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
         layout_exp_items.addWidget(self.spinbox_metadataCount, 3, 5)
 
-        self.button_viewMetadata = qtw.QPushButton('View...')
-        self.button_viewMetadata.setToolTip(
-            'Show the full raw comment.txt content in a read-only window - '
-            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata = qtw.QPushButton('View Metadata')
+        self.button_viewMetadata.setFixedSize(button_w, button_h)
+        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
         self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
         layout_exp_items.addWidget(self.button_viewMetadata, 3, 6, 1, 3)
 
@@ -246,9 +221,7 @@ class Tab_ROI_on_4D(TabBase):
 
         self.button_centerRecip = qtw.QPushButton('Center')
         self.button_centerRecip.setToolTip(
-            'Find the beam center now (large-sigma blur) and re-center the '
-            'reciprocal-space rings there. Hold Ctrl and click on the diffraction '
-            'pattern to set the center manually instead.')
+            'Find the beam center now, or Ctrl+Click the DP to set it manually')
         layout_scale_row.addWidget(self.button_centerRecip)
         layout_exp.addLayout(layout_scale_row)
         self.button_centerRecip.clicked.connect(self.find_and_center_recip)
@@ -264,12 +237,10 @@ class Tab_ROI_on_4D(TabBase):
         # SAM2 segmentation/DP computation further down and needs to exist
         # before any of those wire up to it.
         self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedHeight(50)
+        self.button_cancel.setFixedSize(button_w, button_h)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
-        self.button_cancel.setToolTip(
-            'Stop the running SAM2 segmentation or DP computation. Already-running '
-            'background computations finish silently; their results are discarded.')
+        self.button_cancel.setToolTip('Stop the running segmentation/computation')
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
         #%% Virtual Imaging (ribbon group)
@@ -282,8 +253,7 @@ class Tab_ROI_on_4D(TabBase):
 
         self.checkbox_useVirtualMask = qtw.QCheckBox('Use Virtual Mask')
         self.checkbox_useVirtualMask.setToolTip(
-            'When checked, only the annular region(s) below are used, instead of '
-            'the whole detector')
+            'Use only the annular region(s) below, instead of the whole detector')
         layout_virtualImaging.addWidget(self.checkbox_useVirtualMask)
 
         # Center and Radius share one QGridLayout (rather than two
@@ -308,10 +278,8 @@ class Tab_ROI_on_4D(TabBase):
         grid_vi_geometry.addWidget(self.spinbox_vi_centerY, 0, 4)
         self.button_vi_autoCenter = qtw.QPushButton('Auto Center')
         self.button_vi_autoCenter.setToolTip(
-            'Find the beam center now (large-sigma blur, or reuse it if already '
-            'found via "Center" in Scale bars) and copy it into Center X/Y. Hold '
-            'Ctrl and drag the mask\'s center "+" or a circle edge on the '
-            'diffraction pattern to move/resize it manually instead.')
+            'Find the beam center now and copy it into Center X/Y, or Ctrl+drag '
+            'the mask\'s "+"/circle edge on the DP to move/resize it manually')
         self.button_vi_autoCenter.clicked.connect(self.vi_auto_center)
         grid_vi_geometry.addWidget(self.button_vi_autoCenter, 0, 5)
 
@@ -358,10 +326,8 @@ class Tab_ROI_on_4D(TabBase):
         layout_vi_detectors.addLayout(layout_vi_list_buttons)
         self.button_vi_addDetector = qtw.QPushButton('Add Detector')
         self.button_vi_addDetector.setToolTip(
-            'Snapshot the center/radii above as a new virtual detector, on top of '
-            'whichever one is already listed - ALL listed detectors are combined '
-            'into the virtual image. Further edits above target the new '
-            '(now-selected) entry.')
+            'Add the center/radii above as a new virtual detector - all listed '
+            'detectors are combined into the virtual image')
         layout_vi_list_buttons.addWidget(self.button_vi_addDetector)
         self.button_vi_addDetector.clicked.connect(self.add_extra_detector_vi)
         self.button_vi_removeDetector = qtw.QPushButton('Remove Selected')
@@ -373,9 +339,7 @@ class Tab_ROI_on_4D(TabBase):
 
         self.list_detectors_vi = qtw.QListWidget()
         self.list_detectors_vi.setToolTip(
-            'Every virtual detector in play, combined together into the virtual '
-            'image - select one to edit it via the center/radii spinboxes above '
-            '(its values update live as you edit/drag them)')
+            'All virtual detectors in play - select one to edit via the spinboxes above')
         self.list_detectors_vi.setMaximumHeight(60)
         layout_vi_detectors.addWidget(self.list_detectors_vi)
         self.list_detectors_vi.addItem(self._format_detector_vi(self._extra_detectors_vi[0]))
@@ -403,23 +367,18 @@ class Tab_ROI_on_4D(TabBase):
         layout_vi_actions.addLayout(layout_vi_actions_mode)
         layout_vi_actions_mode.addWidget(qtw.QLabel('Mode'))
         self.combo_virtualMode = qtw.QComboBox()
+        self.combo_virtualMode.setFixedWidth(button_w)
         self.combo_virtualMode.addItems(['Sum', 'Variance'])
         self.combo_virtualMode.setToolTip(
-            'How "Compute Virtual Image" computes the navigation image. Sum: total '
-            'scattered intensity per scan position (standard vSTEM). Variance: '
-            'variance of intensities per scan position instead - highlights local '
-            'structural variation (e.g. amorphous vs. crystalline regions) rather '
-            'than total dose.')
+            'Sum: total scattered intensity per scan position (standard vSTEM). '
+            'Variance: highlights local structural variation instead')
         layout_vi_actions_mode.addWidget(self.combo_virtualMode)
 
         self.button_computeVirtualImage = qtw.QPushButton('Compute\nVirtual Image')
         self.button_computeVirtualImage.setFixedHeight(50)
         self.button_computeVirtualImage.clicked.connect(self.compute_virtual_image)
         self.button_computeVirtualImage.setToolTip(
-            'Load the 4D signal above (if not already loaded) and compute a '
-            'navigation image over the WHOLE scan using the mode/mask above (Sum '
-            'or Variance, optionally restricted to the virtual detector(s)) - '
-            'independent of any ROI/SAM2 mask drawn elsewhere on this tab')
+            'Compute a navigation image over the whole scan using the mode/mask above')
         layout_vi_actions.addWidget(self.button_computeVirtualImage)
 
         # button_sumDpWhole lives in the Summed DP Threshold sub-section
@@ -484,10 +443,7 @@ class Tab_ROI_on_4D(TabBase):
         # either (see its docstring), so there's nothing left for this
         # button to affect while it's off.
         self.button_clear_roi.setDisabled(True)
-        self.button_clear_roi.setToolTip(
-            'Temporarily deactivated - SAM2 no longer uses the drawn ROI as a box '
-            'prompt (pending review). The ROI itself still works for diffraction-'
-            'pattern extraction; draw a new one to replace it instead of clearing.')
+        self.button_clear_roi.setToolTip('Temporarily deactivated (pending review)')
         layout_edgeDetection.addLayout(layout_segmentation_row)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', stretch=False)
 
@@ -511,23 +467,17 @@ class Tab_ROI_on_4D(TabBase):
         # slow for a large 4D signal.
         layout_edgeDetection_row = qtw.QHBoxLayout()
         self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
-        self.checkbox_edgeOnly.setToolTip(
-            'Reduce the SAM2/threshold mask to just its outline (via binary erosion) '
-            'before it is displayed or summed - applies to both mask sources below')
+        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
         layout_edgeDetection_row.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(self._preview_edge_mask)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge band facing one direction (e.g. just the mask\'s '
-            'top edge) instead of the full outline - erosion becomes one-sided, '
-            'along the angle to the right')
+            'Keep only the edge facing one direction (angle below)')
         layout_edgeDetection_row.addWidget(self.checkbox_edgeDirectional)
         self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
-            'Only applies together with Activate: keep the mask\'s interior '
-            '(and, with "Directional" on, its other sides) but cut out the detected '
-            'edge band, instead of keeping only the edge band')
+            'With Activate: keep the interior, cut the edge band (inverse)')
         layout_edgeDetection_row.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(self._preview_edge_mask)
 
@@ -549,8 +499,7 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.setValue(0)
         self.spinbox_edgeDirection.setDisabled(True)
         self.spinbox_edgeDirection.setToolTip(
-            'Only used when "Directional" is checked. 0° = right, increasing '
-            'clockwise (90° = down/bottom edge, 180° = left, 270° = up/top edge)')
+            '0°=right, 90°=down, 180°=left, 270°=up (clockwise); needs "Directional"')
         self.spinbox_edgeDirection.valueChanged.connect(self._preview_edge_mask)
         layout_edgeDetection_row.addWidget(self.spinbox_edgeDirection)
 
@@ -558,11 +507,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_computeEdgeDp = qtw.QPushButton('Compute')
         self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
         self.button_computeEdgeDp.setToolTip(
-            'Re-derive the edge mask with the settings above and (re-)compute its '
-            'diffraction pattern from disk. Activate/Directional/Revert Mask/Kernel/'
-            'Angle above only update the on-screen mask preview live - this is the '
-            'slower, disk-reading step, kept behind its own button instead of '
-            'running automatically on every change above')
+            'Recompute the diffraction pattern with the settings above (slower, reads disk)')
         layout_edgeDetection_row.addWidget(self.button_computeEdgeDp)
         layout_edgeDetection.addLayout(layout_edgeDetection_row)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', separator=False, stretch=True)
@@ -580,19 +525,14 @@ class Tab_ROI_on_4D(TabBase):
         self.button_sumDpFromThreshold.setFixedSize(140, 50)
         self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
         self.button_sumDpFromThreshold.setToolTip(
-            'Open a window to check/adjust a real-space threshold on the loaded '
-            'navigation image, then sum diffraction patterns only at the scan '
-            'positions above it, instead of a rectangular ROI')
+            'Sum diffraction patterns at scan positions above a real-space threshold')
         layout_sumDp_row.addWidget(self.button_sumDpFromThreshold)
 
         self.button_sumDpWhole = qtw.QPushButton('Sum DP\n(Whole Signal)')
         self.button_sumDpWhole.setFixedSize(140, 50)
         self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
         self.button_sumDpWhole.setToolTip(
-            'Sum every diffraction pattern of the WHOLE scan into one reference '
-            'DP, without needing to first draw an ROI/segment/threshold - useful '
-            'to see the beam and place the virtual mask before running "Compute '
-            'Virtual Image"')
+            'Sum every DP in the whole scan into one reference DP - no ROI/mask needed')
         layout_sumDp_row.addWidget(self.button_sumDpWhole)
         layout_edgeDetection.addLayout(layout_sumDp_row)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Summed DP Threshold', separator=False, stretch=True)
@@ -780,7 +720,7 @@ class Tab_ROI_on_4D(TabBase):
     
     def image_handler(self, result):
         """Store a newly computed navigation image (see
-        compute_virtual_image/_on_virtual_image_computed) and reset the nav
+        compute_virtual_image/_handle_finished_vi) and reset the nav
         axis view/toolbar history to it."""
         self.navImg = result
         self.dp_center = None  # a new signal may have a different DP shape/center
@@ -1586,7 +1526,14 @@ class Tab_ROI_on_4D(TabBase):
         virtual mask reproduces what that used to do. Only the stale Nav.
         Image itself is cleared before recomputing (see
         _reset_nav_image_only) - an already-plotted diffraction pattern and
-        its virtual-detector mask circles are left showing throughout."""
+        its virtual-detector mask circles are left showing throughout.
+
+        Runs as a real QProcess subprocess (worker_nav_img.py, the same
+        script Tab_Create_NavSignal's own batch launches) rather than an
+        in-process QThreadPool worker, specifically so Cancel can actually
+        kill it outright - a large .tpx3 load through eventem used to just
+        keep running in the background with no way to stop it (see
+        cancel_running_work's docstring history)."""
         self._reset_nav_image_only()
         self.fn = self.lineEdit_dir_signal.text()
         if not self.fn or not os.path.exists(self.fn):
@@ -1608,21 +1555,78 @@ class Tab_ROI_on_4D(TabBase):
         self.button_computeVirtualImage.setDisabled(True)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
-        worker = Worker_VirtualImage(self.fn, self.scanSize, self.dwellTime, mode, detectors,
-                                     self.get_fn_pattern(), self.get_detector_shape(self.fn))
-        worker.signals.result.connect(self._on_virtual_image_computed)
-        worker.signals.error.connect(self._on_virtual_image_failed)
-        self.threadpool.start(worker)
 
-    def _on_virtual_image_computed(self, img):
-        """A virtual image IS a navigation image (just possibly computed
-        with a non-default mode/mask instead of "Load Signal"'s plain
-        whole-detector sum) - reuse image_handler() so it replaces
-        self.navImg/the "Nav. Image" panel exactly like Load Signal does,
-        rather than showing up as a separate plot."""
+        self._vi_temp_dir = tempfile.mkdtemp(prefix='edyssey_vimg_')
+        scanSize_str = str(self.scanSize) if self.scanSize is not None else 'None'
+        args = [self.fn, dtype, scanSize_str, str(self.dwellTime), '0', self._vi_temp_dir]
+        args += [json.dumps(detectors) if detectors else 'None']
+        args += [self.get_fn_pattern() or '']
+        args += [str(self.get_detector_shape(self.fn))]
+        args += [mode]
+        program, arguments = worker_command('nav_img', args)
+        self._process_vi = QProcess()
+        self._process_vi.setProgram(program)
+        self._process_vi.setArguments(arguments)
+        self._process_vi.readyReadStandardError.connect(self._handle_error_vi)
+        self._process_vi.finished.connect(self._handle_finished_vi)
+        self._process_vi.errorOccurred.connect(self._process_failed_vi)
+        self._process_vi.start()
+
+    def _handle_error_vi(self):
+        # eventem's own tpx3-loading progress lands on stderr, not an error -
+        # buffered so it can be surfaced if this run turns out to have
+        # actually failed (see _handle_finished_vi), same treatment as every
+        # other worker subprocess's stderr in this app.
+        self._stderr_buffer.append(self._process_vi)
+
+    def _handle_finished_vi(self, exit_code=0, exit_status=0):
+        """Collect the finished virtual-image worker process's result (a
+        .npy path printed to stdout, like Tab_Create_NavSignal's batch
+        workers) and display it - a virtual image IS a navigation image
+        (just possibly computed with a non-default mode/mask instead of
+        "Load Signal"'s plain whole-detector sum), so this reuses
+        image_handler() to replace self.navImg/the "Nav. Image" panel
+        exactly like Load Signal does, rather than showing up as a
+        separate plot."""
         self.button_computeVirtualImage.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            self._stderr_buffer.discard(self._process_vi)
+            shutil.rmtree(self._vi_temp_dir, ignore_errors=True)
+            return
+        raw_all = bytes(self._process_vi.readAllStandardOutput()).decode('utf-8', errors='replace')
+        result_lines = [line.strip() for line in raw_all.splitlines() if line.strip()]
+        raw = result_lines[-1] if result_lines else ''
+        try:
+            img = np.load(raw)
+            try:
+                os.remove(raw)
+            except OSError:
+                pass
+        except Exception as e:
+            stderr_text = self._stderr_buffer.pop_text(self._process_vi)
+            self.logger.error('Failed to compute virtual image: %s%s', e,
+                              f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
+            qtw.QMessageBox.critical(self, 'Virtual Image Failed',
+                (stderr_text or str(e)).strip().splitlines()[-1])
+            shutil.rmtree(self._vi_temp_dir, ignore_errors=True)
+            return
+        self._stderr_buffer.discard(self._process_vi)
+        shutil.rmtree(self._vi_temp_dir, ignore_errors=True)
         self.image_handler(img)
         self.logger.info('Virtual image computed successfully.')
+
+    def _process_failed_vi(self, error):
+        """Slot for the virtual-image worker's QProcess.errorOccurred (e.g.
+        it failed to even start)."""
+        self.button_computeVirtualImage.setEnabled(True)
+        self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            return
+        self.logger.error('Virtual-image worker process failed to start (error code %s).', error)
+        qtw.QMessageBox.critical(self, 'Process Error',
+            'The virtual-image worker process failed to start.\n'
+            'Check that Python is on PATH and worker_nav_img.py exists.')
 
     def compute_sum_dp_whole(self):
         """Sum every diffraction pattern of the WHOLE scan into one
@@ -1670,15 +1674,6 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.error('Failed to compute Sum DP (whole signal):\n%s', traceback_text)
         qtw.QMessageBox.critical(self, 'Sum DP Failed',
             f'Computing the whole-signal Sum DP failed:\n\n{traceback_text.strip().splitlines()[-1]}')
-
-    def _on_virtual_image_failed(self, traceback_text):
-        self.button_computeVirtualImage.setEnabled(True)
-        self.button_cancel.setDisabled(True)
-        if self._cancelling:
-            return
-        self.logger.error('Failed to compute virtual image:\n%s', traceback_text)
-        qtw.QMessageBox.critical(self, 'Virtual Image Failed',
-            f'Computing the virtual image failed:\n\n{traceback_text.strip().splitlines()[-1]}')
 
 #%% SAM2 segmentation
     def add_seg_point(self, event):
@@ -2022,29 +2017,43 @@ class Tab_ROI_on_4D(TabBase):
             'Computing the summed DP failed - see the log for details.')
 
     def cancel_running_work(self):
-        """Stop the running SAM2 segmentation or DP computation and
-        suppress the error popups that killing those workers would
-        otherwise trigger.
+        """Stop the running SAM2 segmentation, virtual-image computation, or
+        DP computation, and suppress the error popups that killing those
+        workers would otherwise trigger.
 
-        QThreadPool has no way to forcibly interrupt a runnable that has
-        already started (only queued-but-not-started ones can be dropped),
-        so an in-flight nav-image/DP computation will still finish in the
-        background - its result is simply ignored. The SAM2 segmentation
-        subprocess is a real OS process though, so that's actually killed
-        outright."""
+        Compute Virtual Image and the SAM2 segmentation each run as a real
+        QProcess subprocess, so both are killed outright. Sum DP (Whole
+        Signal)/Summed DP from Threshold/SAM2 mask-DP still run as
+        QThreadPool QRunnables, which Qt has no way to forcibly interrupt
+        once started (only queued-but-not-started ones can be dropped by
+        threadpool.clear()) - an in-flight one of those will still finish in
+        the background, its result simply ignored. Either way, every
+        button a computation could have left disabled is force-re-enabled
+        below regardless of whether its own worker ever gets the chance to
+        call back and do that itself - otherwise a runnable that
+        threadpool.clear() drops while still queued (never starts, so its
+        result/error signal never fires at all) would leave that button
+        disabled permanently, with no way to start a new computation short
+        of restarting the app."""
         self._cancelling = True
         self.threadpool.clear()
         n_killed = 0
         if hasattr(self, '_process_sam') and self._process_sam.state() != QProcess.NotRunning:
             self._process_sam.kill()
-            n_killed = 1
+            n_killed += 1
+        if hasattr(self, '_process_vi') and self._process_vi.state() != QProcess.NotRunning:
+            self._process_vi.kill()
+            n_killed += 1
+        self.button_computeVirtualImage.setEnabled(True)
+        self.button_sumDpWhole.setEnabled(True)
+        self.button_sumDpFromThreshold.setEnabled(True)
         self.button_cancel.setDisabled(True)
         self.logger.warning('Cancelled by user (%d running process(es) killed).', n_killed)
         qtw.QMessageBox.information(self, 'Cancelled',
             'Running computation was cancelled.\n\n'
-            'A nav-image/DP computation already running in the background will '
-            'still finish silently - only queued work and the SAM2 segmentation '
-            'process were stopped.')
+            'A Sum DP/DP computation already running in the background will '
+            'still finish silently (its result is discarded) - the virtual-image '
+            'and SAM2 segmentation processes were stopped outright.')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
@@ -2053,6 +2062,8 @@ class Tab_ROI_on_4D(TabBase):
         self.threadpool.clear()
         if hasattr(self, '_process_sam'):
             self._process_sam.kill()
+        if hasattr(self, '_process_vi'):
+            self._process_vi.kill()
         self.log_console.disconnect_log()
         plt.close(self.figure)
 
@@ -2060,47 +2071,6 @@ class WorkerSignals(QObject):
     finished = pyqtSignal()
     result = pyqtSignal(object)
     error = pyqtSignal(object)  # Formatted traceback string, emitted on failure
-
-class Worker_VirtualImage(QRunnable):
-    """Background QRunnable that computes a navigation image over the whole
-    scan using a Sum or Variance reduction, optionally restricted to one or
-    more virtual detectors - backs the "Compute Virtual Image" button."""
-    def __init__(self, fn, scanSize, dwellTime, mode, detectors=None, fn_pattern=None,
-                det_shape=(512, 512)):
-        super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
-        self._tic = perf_counter()
-        self.logger.info('Calculating virtual image...')
-        self.fn = fn
-        self.scanSize = scanSize
-        self.dwellTime = dwellTime
-        self.mode = mode
-        self.detectors = detectors
-        self.fn_pattern = fn_pattern
-        self.det_shape = det_shape
-        self.signals = WorkerSignals()
-
-    def run(self):
-        try:
-            if self.detectors:
-                img = io.calculate_nav_img_masked(
-                    self.fn, scanSize=self.scanSize, dwellTime=self.dwellTime,
-                    detectors=self.detectors, mode=self.mode, logger=self.logger,
-                    fn_pattern=self.fn_pattern, det_shape=self.det_shape)
-            else:
-                img = io.calculate_nav_img(
-                    self.fn, scanSize=self.scanSize, dwellTime=self.dwellTime,
-                    mode=self.mode, logger=self.logger, fn_pattern=self.fn_pattern,
-                    det_shape=self.det_shape)
-        except Exception:
-            import traceback
-            self.logger.exception('Failed to calculate virtual image after %s.',
-                                   io.format_duration_hms(perf_counter() - self._tic))
-            self.signals.error.emit(traceback.format_exc())
-            return
-        self.signals.result.emit(img)
-        self.logger.info('Virtual image calculated successfully in %s.',
-                          io.format_duration_hms(perf_counter() - self._tic))
 
 class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction
