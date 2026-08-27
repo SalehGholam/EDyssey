@@ -132,11 +132,9 @@ class Tab_Tracking_CV2(TabBase):
         self.combo_dtype_4d.setMaximumWidth(90)
         self.combo_dtype_4d.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', 'All Files'])
         self.combo_dtype_4d.setToolTip(
-            'Data type of the 4D signal files in the folder above - filters out any '
-            "stray non-signal file (comment.txt, pattern .txt files, logs, ...) that "
-            'would otherwise be picked up and cause a false frame-count mismatch. '
-            "Ignored whenever the navigator tab's own recorded file list "
-            '(metadata.json, loaded via "Load Signal") applies to this same folder.')
+            'Data type of the 4D signal files - filters out stray non-signal files '
+            '(comment.txt, pattern files, logs). Ignored if the navigator\'s own '
+            'recorded file list applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
         # save dir
@@ -192,9 +190,8 @@ class Tab_Tracking_CV2(TabBase):
 
         self.checkbox_smartScan = qtw.QCheckBox('Activate')
         self.checkbox_smartScan.setToolTip(
-            'The 4D signals folder holds a smart-scanned tomography series - 3DED '
-            'extraction will read each frame\'s acquisition file with its matching '
-            'pattern file, instead of every raw file in the folder.')
+            'Smart-scanned series - reads each frame\'s acquisition + pattern file, '
+            'not every raw file in the folder.')
         layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
         self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
 
@@ -210,8 +207,7 @@ class Tab_Tracking_CV2(TabBase):
 
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
         self.button_checkSmartScanFiles.setToolTip(
-            'Review the automatic per-frame detection/acquisition/pattern-file match '
-            'before extracting - fix or exclude any mismatched frame by hand')
+            'Review/fix the automatic per-frame file match before extracting')
         self.button_checkSmartScanFiles.setDisabled(True)
         self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
         layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
@@ -220,10 +216,7 @@ class Tab_Tracking_CV2(TabBase):
         self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
         self.lineEdit_detectionDir.setDisabled(True)
         self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if they live somewhere other than the '
-            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
-            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
-            'each in their own folder)')
+            'Folder to look for detection files in, if different from the 4D Signals folder')
         layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
         self.button_browseDetectionDir = qtw.QPushButton('...')
         self.button_browseDetectionDir.setFixedWidth(30)
@@ -255,10 +248,8 @@ class Tab_Tracking_CV2(TabBase):
         layout_exp_items = qtw.QGridLayout()
         layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
         detSize_tooltip = (
-            'Detector (diffraction pattern) size in pixels - used to size the extracted '
-            'DP array. Auto-detected from the 4D signal files for most formats; .tpx3 '
-            'needs this set explicitly (auto-detecting it would mean fully parsing a '
-            'file just to learn its shape) - Auto assumes 512x512.')
+            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
+            'set explicitly (Auto assumes 512x512).')
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
         self.checkbox_detectorSizeAuto.setChecked(True)
         self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
@@ -280,10 +271,7 @@ class Tab_Tracking_CV2(TabBase):
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         self.checkbox_scanSize.setChecked(True)
         self.checkbox_scanSize.setToolTip(
-            'When checked, scan size is taken from the loaded navigation '
-            "signal's shape. Uncheck (or Load Metadata below) to override "
-            'manually - needed when that shape does not match the raw 4D '
-            'signal files being extracted from.')
+            'Scan size from the loaded navigation signal - uncheck to override manually')
         layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
         layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
         self.spinbox_scanSize_x = qtw.QSpinBox()
@@ -320,8 +308,7 @@ class Tab_Tracking_CV2(TabBase):
 
         label_metadataCount = qtw.QLabel('Block #')
         label_metadataCount.setToolTip(
-            'Which 0-indexed metadata block to read from comment.txt. Only '
-            'enabled when comment.txt logs more than one measurement')
+            'Which metadata block to read (enabled if comment.txt logs more than one)')
         layout_scanSize_row2.addWidget(label_metadataCount)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
@@ -336,22 +323,18 @@ class Tab_Tracking_CV2(TabBase):
 
         self.button_loadMetadata = qtw.QPushButton('Load')
         self.button_loadMetadata.setToolTip(
-            'Fill scan size / dwell time from comment.txt in the 4D signals '
-            'folder (tpx3 acquisitions only)')
+            'Fill scan size/dwell time from comment.txt (tpx3 only)')
         layout_scanSize_row2.addWidget(self.button_loadMetadata)
         self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
         self.button_browseMetadata = qtw.QPushButton('...')
         self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
+        self.button_browseMetadata.setToolTip('Browse for the metadata file')
         layout_scanSize_row2.addWidget(self.button_browseMetadata)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
 
         self.button_viewMetadata = qtw.QPushButton('View...')
-        self.button_viewMetadata.setToolTip(
-            'Show the full raw comment.txt content in a read-only window - '
-            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
         self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
         layout_scanSize_row2.addWidget(self.button_viewMetadata)
         layout_scanSize_row2.addStretch(1)
@@ -379,9 +362,7 @@ class Tab_Tracking_CV2(TabBase):
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         self.button_centerRecip = qtw.QPushButton('Center')
         self.button_centerRecip.setToolTip(
-            'Find the beam center now (large-sigma blur) and re-center the '
-            'reciprocal-space rings there. Hold Ctrl and click on the DP plot to '
-            'set the center manually instead.')
+            'Find the beam center now, or Ctrl+Click the DP plot to set it manually')
         self.button_centerRecip.clicked.connect(self.find_and_center_recip)
         layout_scale_row.addWidget(self.button_centerRecip)
         layout_box_scanSize.addLayout(layout_scale_row)
@@ -485,9 +466,7 @@ class Tab_Tracking_CV2(TabBase):
         self.button_track.setDisabled(True)
 
         self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
-        self.button_fineTuneMask.setToolTip(
-            'Manually edit the selected ROI\'s mask, frame by frame - grow/shrink '
-            'it directionally or apply edge detection to one frame')
+        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
         layout_featureButtons.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
         self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
         self.button_fineTuneMask.setDisabled(True)
@@ -545,9 +524,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row1)
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
-        self.checkbox_edgeOnly.setToolTip(
-            'Reduce each frame\'s threshold mask to just its outline (via binary '
-            'erosion) before it is previewed, extracted, or saved')
+        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
         layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
         label_edgeKernel = qtw.QLabel('Kernel')
@@ -560,9 +537,7 @@ class Tab_Tracking_CV2(TabBase):
         self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
-            'Only applies together with Edge Detection: keep the mask\'s interior '
-            '(and, with "Directional" on, its other sides) but cut out the detected '
-            'edge band, instead of keeping only the edge band')
+            'With Edge Detection: keep the interior, cut the edge band (inverse)')
         layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
         layout_edgeDetection_row1.addStretch(1)
@@ -571,9 +546,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_box_3ded.addLayout(layout_edgeDetection_row2)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge band facing one direction (e.g. just the mask\'s '
-            'top edge) instead of the full outline - erosion becomes one-sided, '
-            'along the angle below')
+            'Keep only the edge facing one direction (angle below)')
         layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
         self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         label_edgeDirection = qtw.QLabel('Angle (°)')
@@ -585,8 +558,7 @@ class Tab_Tracking_CV2(TabBase):
         self.spinbox_edgeDirection.setValue(0)
         self.spinbox_edgeDirection.setDisabled(True)
         self.spinbox_edgeDirection.setToolTip(
-            '0° = right, increasing clockwise (90° = down/bottom edge, '
-            '180° = left, 270° = up/top edge)')
+            '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
         layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
         layout_edgeDetection_row2.addStretch(1)
@@ -645,8 +617,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_extract.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         self.button_extractCurrentFrame.setToolTip(
-            'Compute the diffraction pattern for just the selected ROI at the frame the '
-            'slider is currently on - a quick one-off check, not saved as part of the series')
+            'Compute the DP for the current frame only (not saved)')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
 
         self.button_save_results = qtw.QPushButton('Save Results')
@@ -671,9 +642,7 @@ class Tab_Tracking_CV2(TabBase):
         self.button_cancel.setFixedHeight(button_h_lrg)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
-        self.button_cancel.setToolTip(
-            'Stop the running tracking or 3DED extraction. Already-running '
-            'background computations finish silently; their results are discarded.')
+        self.button_cancel.setToolTip('Stop the running tracking/extraction')
         self.button_cancel.clicked.connect(self.cancel_running_work)
         layout_box_extract.addWidget(self.button_cancel)
 
@@ -897,24 +866,20 @@ class Tab_Tracking_CV2(TabBase):
 
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (Ctrl+O)')
-        self.button_loadSavedAnalysis.setToolTip(
-            'Load a previously saved analysis folder: navigation signal, '
-            'tracked ROIs, and extracted diffraction patterns (Ctrl+Shift+O)')
+        self.button_loadSavedAnalysis.setToolTip('Load a saved analysis folder (Ctrl+Shift+O)')
         self.button_track.setToolTip('Track all enabled ROIs across frames (Ctrl+T)')
         self.button_3ded.setToolTip('Extract 3D electron diffraction patterns (Ctrl+E)')
         self.button_save_results.setToolTip('Save tracking and 3DED results to disk (Ctrl+S)')
         self.combo_trackMethod.setToolTip(
-            'OpenCV tracking algorithm — CSRT is most accurate.\n'
-            'xcorr-phase/xcorr-template track by frame-to-frame cross-correlation '
-            'shift (fixed ROI size, best for drift-only motion)')
+            'Tracking algorithm - CSRT is most accurate; xcorr-phase/template '
+            'track by cross-correlation shift (best for drift-only motion)')
         self.combo_blur_track.setToolTip('Gaussian blur kernel applied before tracking (higher = more smoothing)')
         self.combo_thresh_method.setToolTip('Thresholding algorithm used to create the binary mask')
         self.combo_blur.setToolTip('Gaussian blur kernel applied before thresholding')
         self.spinbox_threadNo.setToolTip('Number of CPU cores used for parallel 4D extraction')
         self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
         self.checkbox_makePets2.setToolTip(
-            "Write a PETS2 project file (v1.pts2) into each ROI's pets/ folder on save, "
-            'ready to open directly in PETS for further 3D ED processing')
+            "Write a PETS2 project file (.pts2) into each ROI's folder on save")
 
         # keyboard shortcuts
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
@@ -2162,10 +2127,7 @@ class Tab_Tracking_CV2(TabBase):
         # duplicate
         duplicate_button = qtw.QPushButton('Dup')
         duplicate_button.setFixedSize(30, 30)
-        duplicate_button.setToolTip(
-            "Duplicate this item: deep-copies everything - use flag, start frame(s)/"
-            "box(es), end frame, reference, and (if already done) tracked boxes, "
-            "threshold mask, and extracted DPs - into a new, independent item")
+        duplicate_button.setToolTip('Duplicate this item (deep-copies everything) into a new one')
 
         def duplicate_row():
             index = self.tree_objects.indexOfTopLevelItem(item)

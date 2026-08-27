@@ -132,11 +132,9 @@ class Tab_SAM2(TabBase):
         self.combo_dtype_4d.setMaximumWidth(90)
         self.combo_dtype_4d.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', 'All Files'])
         self.combo_dtype_4d.setToolTip(
-            'Data type of the 4D signal files in the folder above - filters out any '
-            "stray non-signal file (comment.txt, pattern .txt files, logs, ...) that "
-            'would otherwise be picked up and cause a false frame-count mismatch. '
-            "Ignored whenever the navigator tab's own recorded file list "
-            '(metadata.json, loaded via "Load Signal") applies to this same folder.')
+            'Data type of the 4D signal files - filters out stray non-signal files '
+            '(comment.txt, pattern files, logs). Ignored if the navigator\'s own '
+            'recorded file list applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
         # save dir
@@ -183,9 +181,8 @@ class Tab_SAM2(TabBase):
 
         self.checkbox_smartScan = qtw.QCheckBox('Activate')
         self.checkbox_smartScan.setToolTip(
-            'The 4D signals folder holds a smart-scanned tomography series - 3DED '
-            'extraction will read each frame\'s acquisition file with its matching '
-            'pattern file, instead of every raw file in the folder.')
+            'Smart-scanned series - reads each frame\'s acquisition + pattern file, '
+            'not every raw file in the folder.')
         layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
         self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
 
@@ -201,8 +198,7 @@ class Tab_SAM2(TabBase):
 
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
         self.button_checkSmartScanFiles.setToolTip(
-            'Review the automatic per-frame detection/acquisition/pattern-file match '
-            'before extracting - fix or exclude any mismatched frame by hand')
+            'Review/fix the automatic per-frame file match before extracting')
         self.button_checkSmartScanFiles.setDisabled(True)
         self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
         layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
@@ -211,10 +207,7 @@ class Tab_SAM2(TabBase):
         self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
         self.lineEdit_detectionDir.setDisabled(True)
         self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if they live somewhere other than the '
-            '4D Signals folder (e.g. a separate folder of HAADF .tif/.tiff reference images '
-            'for .mib/.hspy/.zspy, or a cleaner acquisition layout with detection/acquisition '
-            'each in their own folder)')
+            'Folder to look for detection files in, if different from the 4D Signals folder')
         layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
         self.button_browseDetectionDir = qtw.QPushButton('...')
         self.button_browseDetectionDir.setFixedWidth(30)
@@ -246,10 +239,8 @@ class Tab_SAM2(TabBase):
         layout_exp_items = qtw.QGridLayout()
         layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
         detSize_tooltip = (
-            'Detector (diffraction pattern) size in pixels - used to size the extracted '
-            'DP array. Auto-detected from the 4D signal files for most formats; .tpx3 '
-            'needs this set explicitly (auto-detecting it would mean fully parsing a '
-            'file just to learn its shape) - Auto assumes 512x512.')
+            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
+            'set explicitly (Auto assumes 512x512).')
         self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
         self.checkbox_detectorSizeAuto.setChecked(True)
         self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
@@ -271,10 +262,7 @@ class Tab_SAM2(TabBase):
         self.checkbox_scanSize = qtw.QCheckBox('Auto')
         self.checkbox_scanSize.setChecked(True)
         self.checkbox_scanSize.setToolTip(
-            'When checked, scan size is taken from the loaded navigation '
-            "signal's shape. Uncheck (or Load Metadata below) to override "
-            'manually - needed when that shape does not match the raw 4D '
-            'signal files being extracted from.')
+            'Scan size from the loaded navigation signal - uncheck to override manually')
         layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
         layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
         self.spinbox_scanSize_x = qtw.QSpinBox()
@@ -319,8 +307,7 @@ class Tab_SAM2(TabBase):
 
         label_metadataCount = qtw.QLabel('Block #')
         label_metadataCount.setToolTip(
-            'Which 0-indexed metadata block to read from comment.txt. Only '
-            'enabled when comment.txt logs more than one measurement')
+            'Which metadata block to read (enabled if comment.txt logs more than one)')
         layout_scanSize_row2.addWidget(label_metadataCount)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
@@ -335,22 +322,18 @@ class Tab_SAM2(TabBase):
 
         self.button_loadMetadata = qtw.QPushButton('Load')
         self.button_loadMetadata.setToolTip(
-            'Fill scan size / dwell time from comment.txt in the 4D signals '
-            'folder (tpx3 acquisitions only)')
+            'Fill scan size/dwell time from comment.txt (tpx3 only)')
         layout_scanSize_row2.addWidget(self.button_loadMetadata)
         self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
 
         self.button_browseMetadata = qtw.QPushButton('...')
         self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip(
-            'Browse for the metadata file (defaults to comment.txt in the 4D signals folder)')
+        self.button_browseMetadata.setToolTip('Browse for the metadata file')
         layout_scanSize_row2.addWidget(self.button_browseMetadata)
         self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
 
         self.button_viewMetadata = qtw.QPushButton('View...')
-        self.button_viewMetadata.setToolTip(
-            'Show the full raw comment.txt content in a read-only window - '
-            'everything actually logged there, not just Scan Size/Dwell Time above')
+        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
         self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
         layout_scanSize_row2.addWidget(self.button_viewMetadata)
         layout_scanSize_row2.addStretch(1)
@@ -378,9 +361,7 @@ class Tab_SAM2(TabBase):
         self.lineEdit_scale_recip.setValidator(self.double_validator)
         self.button_centerRecip = qtw.QPushButton('Center')
         self.button_centerRecip.setToolTip(
-            'Find the beam center now (large-sigma blur) and re-center the '
-            'reciprocal-space rings there. Hold Ctrl and click on the DP plot to '
-            'set the center manually instead.')
+            'Find the beam center now, or Ctrl+Click the DP plot to set it manually')
         self.button_centerRecip.clicked.connect(self.find_and_center_recip)
         layout_scale_row.addWidget(self.button_centerRecip)
         layout_box_scanSize.addLayout(layout_scale_row)
@@ -454,11 +435,11 @@ class Tab_SAM2(TabBase):
         layout_stack.addLayout(layout_stack_top)
         
         label_stackNum = qtw.QLabel('Stack Num')
-        label_stackNum.setToolTip('Number of frames per SAM2 processing stack.\nLower values use less GPU memory but run more sequential processes.')
+        label_stackNum.setToolTip('Frames per SAM2 stack - lower = less GPU memory, more processes')
         layout_stack_top.addWidget(label_stackNum)
         self.spinbox_stackNum = qtw.QSpinBox()
         self.spinbox_stackNum.setMaximumWidth(80)
-        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack (e.g. 25 = process 25 frames at a time)')
+        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack')
         layout_stack_top.addWidget(self.spinbox_stackNum)
         self.spinbox_stackNum.setSingleStep(25)
         
@@ -475,9 +456,7 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_clip.setEnabled(False)
 
         self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
-        self.button_fineTuneMask.setToolTip(
-            'Manually edit the selected object\'s tracked mask, frame by frame - '
-            'grow/shrink it directionally or apply edge detection to one frame')
+        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
         layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
         self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
         self.button_fineTuneMask.setDisabled(True)
@@ -516,17 +495,13 @@ class Tab_SAM2(TabBase):
         self.button_cancel.setFixedHeight(button_h_lrg)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
-        self.button_cancel.setToolTip(
-            'Stop the running SAM2 tracking/segmentation or 3DED extraction. '
-            'Already-running background computations finish silently; their results are discarded.')
+        self.button_cancel.setToolTip('Stop the running tracking/segmentation/extraction')
         self.button_cancel.clicked.connect(self.cancel_running_work)
 
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row1)
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
-        self.checkbox_edgeOnly.setToolTip(
-            'Reduce each frame\'s SAM2 mask to just its outline (via binary erosion) '
-            'before it is displayed, extracted, or saved')
+        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
         layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
         label_edgeKernel = qtw.QLabel('Kernel')
@@ -539,9 +514,7 @@ class Tab_SAM2(TabBase):
         self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
-            'Only applies together with Edge Detection: keep the mask\'s interior '
-            '(and, with "Directional" on, its other sides) but cut out the detected '
-            'edge band, instead of keeping only the edge band')
+            'With Edge Detection: keep the interior, cut the edge band (inverse)')
         layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
         layout_edgeDetection_row1.addStretch(1)
@@ -550,9 +523,7 @@ class Tab_SAM2(TabBase):
         layout_box_3ded.addLayout(layout_edgeDetection_row2)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
         self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge band facing one direction (e.g. just the mask\'s '
-            'top edge) instead of the full outline - erosion becomes one-sided, '
-            'along the angle below')
+            'Keep only the edge facing one direction (angle below)')
         layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
         self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         label_edgeDirection = qtw.QLabel('Angle (°)')
@@ -564,8 +535,7 @@ class Tab_SAM2(TabBase):
         self.spinbox_edgeDirection.setValue(0)
         self.spinbox_edgeDirection.setDisabled(True)
         self.spinbox_edgeDirection.setToolTip(
-            '0° = right, increasing clockwise (90° = down/bottom edge, '
-            '180° = left, 270° = up/top edge)')
+            '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
         layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
         layout_edgeDetection_row2.addStretch(1)
@@ -630,8 +600,7 @@ class Tab_SAM2(TabBase):
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setToolTip(
-            'Compute the diffraction pattern for just the selected object at the frame the '
-            'slider is currently on - a quick one-off check, not saved as part of the series')
+            'Compute the DP for the current frame only (not saved)')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
 
         self.button_save_results = qtw.QPushButton('Save Results')
@@ -772,8 +741,7 @@ class Tab_SAM2(TabBase):
 
         label_stacks_nav = qtw.QLabel('Stacks:')
         label_stacks_nav.setFixedWidth(45)
-        label_stacks_nav.setToolTip('Click a button to jump to the first frame of that stack.\n'
-                                    'You must provide at least one point per stack.')
+        label_stacks_nav.setToolTip('Jump to a stack\'s first frame - each stack needs at least one point')
         layout_stacks.addWidget(label_stacks_nav)
 
         self._stack_scroll = qtw.QScrollArea()
@@ -851,20 +819,15 @@ class Tab_SAM2(TabBase):
         layout_canvas.addWidget(self.log_console)
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (.hspy or .zspy)  [Ctrl+O]')
-        self.button_loadSavedAnalysis.setToolTip(
-            'Load a previously saved analysis folder: navigation signal, '
-            'tracked objects, and extracted diffraction patterns  [Ctrl+Shift+O]')
+        self.button_loadSavedAnalysis.setToolTip('Load a saved analysis folder  [Ctrl+Shift+O]')
         self.button_runSeg_clip.setToolTip('Track objects across all frames using SAM2  [Ctrl+T]')
-        self.button_runSeg_img.setToolTip(
-            "Segment the selected object on the current frame only, using its "
-            "points on this frame (no tracking across other frames)")
+        self.button_runSeg_img.setToolTip('Segment the current frame only (no tracking)')
         self.button_3ded.setToolTip('Extract 3D electron diffraction patterns  [Ctrl+E]')
         self.button_save_results.setToolTip('Save segmentation and 3DED results to disk  [Ctrl+S]')
         self.spinbox_threadNum.setToolTip('Number of CPU cores used for parallel 4D extraction')
         self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
         self.checkbox_makePets2.setToolTip(
-            "Write a PETS2 project file (v1.pts2) into each object's pets/ folder on save, "
-            'ready to open directly in PETS for further 3D ED processing')
+            "Write a PETS2 project file (.pts2) into each object's folder on save")
 
         # keyboard shortcuts
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_loadNavigation.click)
@@ -1544,10 +1507,7 @@ class Tab_SAM2(TabBase):
 
         duplicate_button = qtw.QPushButton('Dup')
         duplicate_button.setFixedSize(30, 30)
-        duplicate_button.setToolTip(
-            'Duplicate this object into a new row - points, tracked masks, '
-            'extracted DPs, everything - so you can branch off it (e.g. tweak the '
-            'ROI/points and re-track) without losing the original')
+        duplicate_button.setToolTip('Duplicate this object (points, masks, DPs) into a new row')
         duplicate_button.clicked.connect(
             lambda: self.duplicate_object(self.df_obj.index[self.tree_objects.indexOfTopLevelItem(item)]))
 
