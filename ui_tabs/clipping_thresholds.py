@@ -166,10 +166,11 @@ class ClippingThresholdsWidget(qtw.QWidget):
 
         self.spinbox_vmax = qtw.QSpinBox()
         self.spinbox_vmax.setRange(0, 0)
+        self.spinbox_vmax.setSingleStep(1)  # rescaled in set_range() to ~8% of the data max
         self.spinbox_vmax.setAlignment(Qt.AlignCenter)
         self.spinbox_vmax.setButtonSymbols(qtw.QAbstractSpinBox.NoButtons)
         self.spinbox_vmax.setStyleSheet('font-size: 8pt;')
-        self.spinbox_vmax.setToolTip('Upper clipping threshold - type a value directly')
+        self.spinbox_vmax.setToolTip('Upper threshold')
         layout.addWidget(self.spinbox_vmax)
 
         self.range_slider = RangeSlider()
@@ -177,10 +178,11 @@ class ClippingThresholdsWidget(qtw.QWidget):
 
         self.spinbox_vmin = qtw.QSpinBox()
         self.spinbox_vmin.setRange(0, 0)
+        self.spinbox_vmin.setSingleStep(1)
         self.spinbox_vmin.setAlignment(Qt.AlignCenter)
         self.spinbox_vmin.setButtonSymbols(qtw.QAbstractSpinBox.NoButtons)
         self.spinbox_vmin.setStyleSheet('font-size: 8pt;')
-        self.spinbox_vmin.setToolTip('Lower clipping threshold - type a value directly')
+        self.spinbox_vmin.setToolTip('Lower threshold')
         layout.addWidget(self.spinbox_vmin)
 
         self.button_reset = qtw.QPushButton('Reset')
@@ -202,7 +204,12 @@ class ClippingThresholdsWidget(qtw.QWidget):
         used instead - either way the floor is always <= the real data
         minimum, so it never clips away real data on its own. Resets to
         "no clipping" (floor..vmax) unless reset=False (e.g. a same-image
-        redraw where the user's current thresholds should be kept)."""
+        redraw where the user's current thresholds should be kept).
+
+        spinbox_vmax's step (wheel-scroll/arrow-key increment) is rescaled
+        to ~8% of this new vmax each time - a step of 1 (spinbox_vmin's,
+        unchanged) is next to useless for scrubbing through a range that
+        can run into the thousands/millions."""
         vmin, vmax = int(vmin), int(vmax)
         floor = 0 if vmin >= 0 else vmin
         if vmax <= floor:
@@ -215,6 +222,7 @@ class ClippingThresholdsWidget(qtw.QWidget):
         self.spinbox_vmax.blockSignals(True)
         self.spinbox_vmin.setRange(floor, vmax)
         self.spinbox_vmax.setRange(floor, vmax)
+        self.spinbox_vmax.setSingleStep(max(1, round(vmax * 0.08)))
         self.spinbox_vmin.setValue(self.range_slider.low())
         self.spinbox_vmax.setValue(self.range_slider.high())
         self.spinbox_vmin.blockSignals(False)
