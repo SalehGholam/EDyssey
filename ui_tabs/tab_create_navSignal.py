@@ -690,14 +690,13 @@ class Tab_Create_NavSignal(TabBase):
         # click tool, so it keeps working exactly as before, only via
         # Ctrl+drag on the Summed DP preview.
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav./Test Image '
-                      'to draw a scan-space ROI (for "Summed DP from ROI")\n'
-                      '(same as holding Ctrl and dragging)', 'tool'),
+            RibbonTool('select_roi', 'select_roi', 'Select ROI for "Summed DP from ROI" - '
+                      'same as Ctrl+drag', 'tool'),
             RibbonTool('clear_roi', 'clear_roi', 'Clear the drawn scan-space ROI (same as right-click)',
                       'action', self.clear_navsig_roi),
             RibbonTool('sep1', kind='separator'),
-            RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
-                      'virtual detector mask there (same as "Auto-Find Center")',
+            RibbonTool('center_mask', 'center_mask', 'Find the beam center, re-center the virtual '
+                      'detector mask (same as "Auto-Find Center")',
                       'action', self.auto_find_center),
             RibbonTool('sep2', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',

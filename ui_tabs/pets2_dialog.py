@@ -111,8 +111,7 @@ class Pets2AutotaskDialog(qtw.QDialog):
         self.checkbox_keepautotasks = qtw.QCheckBox('Keep autotasks after all finished')
         self.checkbox_keepautotasks.setChecked(keepautotasks == 'yes')
         self.checkbox_keepautotasks.setToolTip(
-            'If yes, list of tasks to be automaticaly performed after the start is not '
-            'cleared when all tasks are finished.')
+            'Keep the autotask list instead of clearing it once all tasks finish')
         layout.addWidget(self.checkbox_keepautotasks)
 
         buttons = qtw.QHBoxLayout()
@@ -231,8 +230,7 @@ class Pets2ParamsDialog(qtw.QDialog):
         self.spinbox_alpha_step.setDecimals(4)
         self.spinbox_alpha_step.setSuffix(' deg/frame')
         self.spinbox_alpha_step.setToolTip(
-            'Alpha increment between consecutive frames - together with Alpha start, sets '
-            'every frame\'s tilt angle in the .pts2 image list. Not cached between studies.')
+            'Alpha increment between frames - not cached between studies')
         form.addRow('Alpha step', self.spinbox_alpha_step)
 
         self.spinbox_binning = qtw.QSpinBox()
@@ -255,8 +253,7 @@ class Pets2ParamsDialog(qtw.QDialog):
         self.checkbox_center_auto = qtw.QCheckBox('Auto-detect')
         self.checkbox_center_auto.setChecked(center is None)
         self.checkbox_center_auto.setToolTip(
-            'center of the diffraction pattern. Options: AUTO=find center automatically; '
-            'two numbers x y - position of the pattern center on the first frame in pixels.')
+            'AUTO finds the DP center automatically, or enter x y in pixels')
         row_center.addWidget(self.checkbox_center_auto)
         self.spinbox_center_x = qtw.QDoubleSpinBox()
         self.spinbox_center_x.setRange(0, 1e5)
@@ -283,9 +280,7 @@ class Pets2ParamsDialog(qtw.QDialog):
         self.checkbox_use_autotask = qtw.QCheckBox('Run autotasks on open')
         self.checkbox_use_autotask.setChecked(bool(cache.get('autotask_enabled', True)))
         self.checkbox_use_autotask.setToolTip(
-            'If unchecked, no autotask list is written to the .pts2 file at all, regardless '
-            'of what is configured below - the configured list is kept (and still cached) '
-            'but simply not applied.')
+            'Unchecked: no autotask list is written to the .pts2 file (still kept/cached)')
         row_autotask.addWidget(self.checkbox_use_autotask)
         self.button_autotasks = qtw.QPushButton('Configure Autotasks...')
         self.button_autotasks.clicked.connect(self._open_autotask_dialog)
@@ -308,9 +303,7 @@ class Pets2ParamsDialog(qtw.QDialog):
         self.spinbox_omega.setSuffix(' deg')
         self.spinbox_omega.setValue(cache.get('omega', 0.0))
         self.spinbox_omega.setToolTip(
-            'angle between the positive horizontal axis on the image and the projection of '
-            'the tilt axis on the image. Two keys define, if global search and local '
-            'refinement should be performed.')
+            'Angle between the image\'s horizontal axis and the tilt axis projection')
         row_omega = qtw.QHBoxLayout()
         row_omega.addWidget(self.spinbox_omega)
         self.checkbox_omega_global = qtw.QCheckBox('Global search')

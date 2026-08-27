@@ -214,9 +214,7 @@ class MaskEditDialog(qtw.QDialog):
             row_t3.addStretch(1)
             self.button_applyThreshAll = qtw.QPushButton('Apply to All Frames')
             self.button_applyThreshAll.setToolTip(
-                'Recompute every frame\'s mask from its ROI using the threshold '
-                'settings above, replacing the whole stack (edits included) - '
-                'Reset to Tracking still restores the original')
+                'Recompute every frame\'s mask from the threshold settings above')
             self.button_applyThreshAll.clicked.connect(self._apply_threshold_all)
             row_t3.addWidget(self.button_applyThreshAll)
         else:
@@ -233,9 +231,7 @@ class MaskEditDialog(qtw.QDialog):
         row1 = qtw.QHBoxLayout()
         layout_edge.addLayout(row1)
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
-        self.checkbox_edgeOnly.setToolTip(
-            'Live preview only, like the main tab - does not modify the mask '
-            'returned by this dialog, only how it is shown here')
+        self.checkbox_edgeOnly.setToolTip('Live preview only - doesn\'t change the returned mask')
         row1.addWidget(self.checkbox_edgeOnly)
         row1.addWidget(qtw.QLabel('Kernel'))
         self.spinbox_edgeKernel = qtw.QSpinBox()
@@ -287,9 +283,7 @@ class MaskEditDialog(qtw.QDialog):
         self.button_resetFrame.clicked.connect(self._reset_frame)
         row_buttons.addWidget(self.button_resetFrame)
         self.button_resetTracking = qtw.QPushButton('Reset to Tracking')
-        self.button_resetTracking.setToolTip(
-            'Discard every edit in this dialog, on every frame, and restore the '
-            "object's original tracking-derived mask")
+        self.button_resetTracking.setToolTip('Discard all edits, every frame, restore the original mask')
         self.button_resetTracking.clicked.connect(self._reset_to_tracking)
         row_buttons.addWidget(self.button_resetTracking)
         row_buttons.addStretch(1)

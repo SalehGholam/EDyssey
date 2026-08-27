@@ -625,20 +625,17 @@ class Tab_ROI_on_4D(TabBase):
         # only two tool modes on_press actually checks (see
         # RibbonPanel.active_tool there).
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav. Image to '
-                      'draw a new ROI (used for diffraction-pattern extraction)\n'
-                      '(same as holding Ctrl and dragging)', 'tool'),
-            RibbonTool('add_point', 'add_point', 'Add SAM2 point: click on the Nav. Image '
-                      '(left = positive, right = negative)\n(same as holding Shift and clicking)',
+            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav. Image '
+                      '(same as Ctrl+drag)', 'tool'),
+            RibbonTool('add_point', 'add_point', 'Add SAM2 point (left=+/right=-, same as Shift+click)',
                       'tool'),
             RibbonTool('remove_point', 'remove_point', 'Remove last SAM2 point (same as middle-click)',
                       'action', self.delete_last_seg_point),
             RibbonTool('sep1', kind='separator'),
-            RibbonTool('center_recip', 'center_recip', 'Find the beam center now and re-center the '
-                      'reciprocal-space rings there (same as "Center" in Scale bars, or Ctrl+Click)',
+            RibbonTool('center_recip', 'center_recip', 'Find the beam center, re-center the '
+                      'reciprocal-space rings (same as "Center" in Scale bars)',
                       'action', self.find_and_center_recip),
-            RibbonTool('center_mask', 'center_mask', 'Find the beam center now and re-center the '
-                      'virtual detector mask there (same as vi_auto_center)',
+            RibbonTool('center_mask', 'center_mask', 'Find the beam center, re-center the virtual detector mask',
                       'action', self.vi_auto_center),
             RibbonTool('sep2', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',

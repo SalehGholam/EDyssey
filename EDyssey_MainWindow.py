@@ -52,7 +52,7 @@ plt.style.use('dark_background')
 # A plain source constant (not computed at build/run time) so it's visible
 # directly in the repo on GitHub, not just at runtime. Shown only in the
 # About dialog (Help > About EDyssey) - not duplicated elsewhere in the UI.
-APP_VERSION = '2026.08.24.1130'
+APP_VERSION = '2026.08.24.1230'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -204,9 +204,7 @@ class MainWindow(qtw.QMainWindow):
 
         action_duplicate = menu_file.addAction('Duplicate Current Tab')
         action_duplicate.setShortcut('Ctrl+Shift+D')
-        action_duplicate.setToolTip(
-            'Open a new, empty tab of the same type as the currently active one - '
-            'e.g. a second "ROI on 4D" tab, for working on two signals side by side')
+        action_duplicate.setToolTip('Open a new, empty tab of the same type as the active one')
         action_duplicate.triggered.connect(self.duplicate_current_tab)
 
         action_close = menu_file.addAction('Close Current Tab')
@@ -221,9 +219,7 @@ class MainWindow(qtw.QMainWindow):
 
         menu_edit = self.menuBar().addMenu('&Edit')
         action_display_size = menu_edit.addAction('Display Size...')
-        action_display_size.setToolTip(
-            'Adjust the top ribbon text size, ribbon icon size, and plot text size, '
-            'live, across every tab')
+        action_display_size.setToolTip('Adjust ribbon/plot text and icon size, live, across every tab')
         action_display_size.triggered.connect(self.show_display_size_dialog)
 
         menu_help = self.menuBar().addMenu('&Help')

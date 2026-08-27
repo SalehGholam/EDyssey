@@ -745,9 +745,8 @@ class Tab_Tracking_CV2(TabBase):
         # ROI (on ax_nav) and a ROI-in-ROI (on ax_track), same as Ctrl+drag
         # already does on each. Pan/Zoom/Home act on the one shared toolbar.
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on Nav./Tracking Results '
-                      'to draw a new ROI (or ROI-in-ROI, on the right axis)\n'
-                      '(same as holding Ctrl and dragging)', 'tool'),
+            RibbonTool('select_roi', 'select_roi', 'Select ROI (or ROI-in-ROI, right axis) - '
+                      'same as Ctrl+drag', 'tool'),
             RibbonTool('sep1', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode on the canvas',
                       'action', self.toolbar.pan),

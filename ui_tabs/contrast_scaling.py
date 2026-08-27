@@ -65,13 +65,10 @@ class ContrastScalingBox(qtw.QGroupBox):
         self.combo_method.addItem('Min-Max', 'minmax')
         self.combo_method.addItem('Std. Dev.', 'std')
         self.combo_method.setToolTip(
-            'How the loaded navigation signal is contrast-stretched to 8-bit '
-            'for display and downstream processing:\n'
-            '- Percentile: stretch between the Low/High percentiles (robust '
-            'to hot/dead pixels)\n'
-            '- Min-Max: stretch between the raw min and max (default; simple, '
-            'but sensitive to outlier pixels)\n'
-            '- Std. Dev.: stretch between mean ± N standard deviations')
+            'Contrast-stretch to 8-bit:\n'
+            '- Percentile: robust to hot/dead pixels\n'
+            '- Min-Max: simple, sensitive to outliers (default)\n'
+            '- Std. Dev.: mean ± N standard deviations')
         layout_row1.addWidget(self.combo_method)
         self.combo_method.setCurrentIndex(self.combo_method.findData('minmax'))
         self.combo_method.currentIndexChanged.connect(self._on_changed)
@@ -130,8 +127,7 @@ class ContrastScalingBox(qtw.QGroupBox):
         self.slider_clip_low.setRange(self._data_min, self._data_max)
         self.slider_clip_low.setValue(self._data_min)
         self.slider_clip_low.setToolTip(
-            'Raw values below this are clamped to it before contrast-stretching '
-            '(e.g. to drop a dead-pixel border from consideration).')
+            'Raw values below this are clamped before contrast-stretching')
         layout_row3.addWidget(self.slider_clip_low)
         self.slider_clip_low.valueChanged.connect(self._on_clip_slider_changed)
 
@@ -144,8 +140,7 @@ class ContrastScalingBox(qtw.QGroupBox):
         self.slider_clip_high.setRange(self._data_min, self._data_max)
         self.slider_clip_high.setValue(self._data_max)
         self.slider_clip_high.setToolTip(
-            'Raw values above this are clamped to it before contrast-stretching '
-            '(e.g. to drop a saturated beam stop from consideration).')
+            'Raw values above this are clamped before contrast-stretching')
         layout_row4.addWidget(self.slider_clip_high)
         self.slider_clip_high.valueChanged.connect(self._on_clip_slider_changed)
 

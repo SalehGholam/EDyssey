@@ -773,10 +773,8 @@ class Tab_SAM2(TabBase):
         # choose positive/negative, and Shift still chooses
         # new-object-vs-append, exactly as before.
         self.ribbon = RibbonPanel([
-            RibbonTool('add_point', 'add_point', 'Add point: click on Navigation '
-                      '(left = positive, right = negative)\nAdd Shift to add to the '
-                      'selected object instead of starting a new one\n'
-                      '(same as holding Ctrl and clicking)', 'tool'),
+            RibbonTool('add_point', 'add_point', 'Add point (left=+/right=-); +Shift to append '
+                      'to the selected object - same as Ctrl+click', 'tool'),
             RibbonTool('remove_point', 'remove_point', 'Remove last point (same as middle-click)',
                       'action', self.delete_last_point),
             RibbonTool('sep1', kind='separator'),

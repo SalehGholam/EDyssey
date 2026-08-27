@@ -138,10 +138,8 @@ class SmartScanCheckDialog(qtw.QDialog):
         row_buttons.addWidget(self.button_select_none)
         self.button_swap_all = qtw.QPushButton('Swap Detection ↔ Acquisition (All Rows)')
         self.button_swap_all.setToolTip(
-            'The auto-match assumes, per tilt angle, the alphabetically-first file is '
-            'the detection one and the second is the acquisition one - if that\'s '
-            'backwards for this whole dataset, swap every row at once instead of one '
-            'by one.')
+            'Swap detection/acquisition for every row at once, if the auto-match got it '
+            'backwards for this whole dataset')
         self.button_swap_all.clicked.connect(self._swap_all_rows)
         row_buttons.addWidget(self.button_swap_all)
         self.label_summary = qtw.QLabel('')

@@ -64,9 +64,7 @@ class ThresholdDialog(qtw.QDialog):
         self.combo_blur = qtw.QComboBox()
         self.combo_blur.addItems([str(i) for i in range(1, 23, 2)])
         row.addWidget(self.combo_blur)
-        self.combo_blur.setToolTip(
-            'Gaussian blur kernel applied before thresholding (reduces noise in the '
-            'mask) - the displayed image itself stays sharp, only the mask is affected')
+        self.combo_blur.setToolTip('Blur applied before thresholding, to reduce mask noise')
         self.combo_blur.currentIndexChanged.connect(self.update_preview)
 
         self.label_threshDev = qtw.QLabel('Deviation: 100%')

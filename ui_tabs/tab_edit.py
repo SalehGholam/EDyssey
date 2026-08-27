@@ -93,9 +93,7 @@ class EditSettingsDialog(qtw.QDialog):
         self.spinbox_allPlots.valueChanged.connect(
             lambda v: self._sync(self.slider_allPlots, self.spinbox_allPlots, v))
         self.button_applyAllPlots = qtw.QPushButton('Set All')
-        self.button_applyAllPlots.setToolTip(
-            'Copy this percentage onto every individual plot slider below '
-            '(still requires "Apply" to take effect)')
+        self.button_applyAllPlots.setToolTip('Copy this % onto every plot slider below (still needs Apply)')
         self.button_applyAllPlots.clicked.connect(self._apply_all_plots)
         row_all.addWidget(self.button_applyAllPlots)
         form2.addRow('All Plots', row_all)
