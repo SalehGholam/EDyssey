@@ -104,11 +104,7 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
         fn: Path to the .tpx3 file.
         mask: 2-D boolean array matching the scan dimensions.
         scanSize: (nx, ny) scan dimensions.
-        roi: (x, y, w, h) scan-space crop - the mask's own bounding box in
-            every caller of this function, never None (mask is always used
-            together with its bounding box here - see the workaround note
-            below for why the ROI is still needed even though this loads a
-            mask, not a plain rectangular crop).
+        roi: (x, y, w, h) scan-space crop or None for the full scan.
         dwellTime: Dwell time in microseconds.
         fn_pattern: Optional path to a smart-scan pattern file for `fn` -
             reshapes/selects scan positions correctly for a smart-scanned
@@ -128,47 +124,64 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
     if det_shape is None:
         det_shape = (512, 512)
     repetitions = 1
-    bitDepth = 16
-    x, y, w, h = roi
-
-    # TEMPORARY WORKAROUND: eventem.Roi.set_roi_mask() is not actually
-    # implemented on the eventem side yet for .tpx3 (silently produces a
-    # wrong/unmasked result instead of erroring, so this was easy to miss -
-    # see the "Summed DP from Threshold" bug report it was found from).
-    # Until eventem implements it for real, extract the mask's bounding-box
-    # ROI as a full 4D block instead (extract_4D=True) and apply the mask
-    # ourselves in Python below - slower and more memory-hungry (the whole
-    # ROI's frames are all materialized at once, rather than summed on the
-    # fly inside eventem), but correct. Swap this back to set_roi_mask()
-    # once that's genuinely supported upstream.
-    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=True)
+    bitDepth=16
+# =============================================================================
+#     if roi is None:
+#         x=0
+#         y=0 
+#         w=scanSize[0]
+#         h=scanSize[1]
+#     else:
+#         # y, x, h, w = roi
+#         x, y, w, h = roi
+# =============================================================================
+        
+# =============================================================================
+#     s_roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
+#     s_roi.set_bitdepth(bitDepth)
+#     s_roi.nx = scanSize[0]
+#     s_roi.ny = scanSize[1]
+#     s_roi.set_file(fn)
+#     s_roi.set_roi(x=x, y=y, width=w, height=h)
+#     s_roi.set_dwell_time(dwellTime*1000)
+#     s_roi.run()
+#     # ROI_scan_image = np.asarray(roi.Roi_scan_image)
+#     # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
+#     s = np.asarray(s_roi.get_4D())
+# 
+#     mask_crop = mask[y:y+h, x:x+w]
+#     s = s.reshape(-1, *s.shape[-2:])
+#     dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+# =============================================================================
+    
+    roi = eventem.Roi(repetitions=repetitions, extract_4D=False)
     # eventem auto-sizes its own internal thread pool to the whole machine
     # per instance unless told otherwise - this script always runs as one
     # of several concurrent per-ROI/per-frame worker subprocesses, so
     # leaving that unset would oversubscribe the machine (N processes x
     # full-core-count threads each) exactly like the same bug in
     # worker_nav_img.py's use of io_utils_ui.py's eventem call sites.
-    roi_obj.n_threads = 1
-    roi_obj.set_file(fn)
-    roi_obj.set_dwell_time(dwellTime * 1000)
-    roi_obj.set_bitdepth(bitDepth)
-    roi_obj.nx = scanSize[0]
-    roi_obj.ny = scanSize[1]
+    roi.n_threads = 1
+    # roi.b_cumulative = True
+    roi.set_file(fn)
+    roi.set_dwell_time(dwellTime * 1000)
+    roi.set_bitdepth(bitDepth)
+    roi.nx = scanSize[0]
+    roi.ny = scanSize[1]
     # Only actually applied when it differs from what eventem itself already
     # reports (reflecting the real file's own hardware layout) - a genuine
     # mismatch segfaults .run() instead of gracefully reshaping/cropping.
-    if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
-        roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
+    if det_shape != (roi.detector_size_x, roi.detector_size_y):
+        roi.detector_size_x, roi.detector_size_y = det_shape
     if fn_pattern:
-        roi_obj.set_pattern_file(fn_pattern)
-    roi_obj.set_roi(x=x, y=y, width=w, height=h)
-    roi_obj.run()
-    s = np.asarray(roi_obj.get_4D())
-    roi_obj.close_socket()
-
-    mask_crop = mask[y:y+h, x:x+w]
-    s = s.reshape(-1, *s.shape[-2:])
-    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+        roi.set_pattern_file(fn_pattern)
+    # roi.set_roi_mask([np.where(mask.flatten())[0]])
+    # roi.set_roi_mask([np.where(mask.flatten())[0]])
+    roi.set_roi_mask([mask.flatten()])
+    roi.run()
+    dp = roi.Roi_diffraction_pattern
+    dp = np.array(dp).reshape(det_shape[1], det_shape[0])
+    roi.close_socket()
     return dp
 
 def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
