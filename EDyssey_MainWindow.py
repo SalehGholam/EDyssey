@@ -33,6 +33,20 @@ if len(sys.argv) > 1 and sys.argv[1] == '--worker':
     # keeps the module import below from happening if that ever changes.
     raise SystemExit(0)
 
+# A batch worker (worker_nav_img_batch.py/worker_extract_frame_batch.py,
+# dispatched via --worker above) runs its own multiprocessing.Pool
+# internally - on Windows/frozen, each pool worker re-invokes this same exe
+# with `--multiprocessing-fork ...` (multiprocessing's own bootstrap, not
+# ours). That has to be caught here too, at the same module level and for
+# the same reason as the --worker check above: left to fall through, every
+# pool worker would pay the full GUI-stack import cost below before
+# multiprocessing.freeze_support() (called from __main__, see the bottom of
+# this file) ever gets a chance to intercept it.
+if len(sys.argv) > 1 and sys.argv[1] == '--multiprocessing-fork':
+    import multiprocessing
+    multiprocessing.freeze_support()
+    raise SystemExit(0)
+
 import gc
 import logging
 import re
@@ -311,6 +325,12 @@ class MainWindow(qtw.QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    # Belt-and-suspenders alongside the --multiprocessing-fork check above
+    # (which already handles the frozen-build spawn-bootstrap case before
+    # any GUI imports happen) - a cheap no-op here otherwise, per the
+    # standard PyInstaller + multiprocessing guidance.
+    import multiprocessing
+    multiprocessing.freeze_support()
     # Must be set before the QApplication is constructed. Without these,
     # Qt falls back to raw-pixel rendering on a high-DPI (e.g. 4K) display -
     # every widget (including every setFixedSize/setFixedWidth value used
