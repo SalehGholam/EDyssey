@@ -2130,7 +2130,9 @@ class Worker_CalculateDP_Mask(QRunnable):
     bounding box) for efficiency. Reuses the same per-format masked loaders
     already used by the CV2/SAM2 tabs' 3DED extraction.
 
-    `patch_mode` (.tpx3 only): the SAM2 segmentation-DP caller passes a
+    `patch_mode` (.tpx3, smart-scanned frames only - ignored for a normal
+    dense-raster scan, which always applies the mask directly via eventem
+    regardless of this flag): the SAM2 segmentation-DP caller passes a
     naturally small `roi` (the segmentation's own bounding box) and leaves
     this False; the "Summed DP from Threshold" caller has no such small
     ROI (a threshold can select scan positions anywhere), so it passes

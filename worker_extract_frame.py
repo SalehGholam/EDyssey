@@ -118,12 +118,13 @@ def load_dp(fn, **kwargs):
     Args:
         fn: Path to the 4D-STEM file.
         **kwargs: Passed through to the format-specific loader (roi, mask,
-            scanSize, etc.). `patch_mode=True` (.tpx3 only - see
-            load_tpx3_patches) is for a mask with no single small bounding
-            box of its own (e.g. "Summed DP from Threshold"); leave it False
-            (the default) wherever `roi` is already a small tracked/
-            segmented box (ROI Tracker, SAM2 - both the per-frame tracking
-            extraction and SAM2 segmentation-DP on ROI on 4D).
+            scanSize, fn_pattern, etc.). `patch_mode=True` (.tpx3 only - see
+            load_tpx3_patches) only actually matters for a *smart-scanned*
+            frame (`fn_pattern` set) with no single small bounding box of
+            its own (e.g. "Summed DP from Threshold"); a normal dense-raster
+            frame always takes the direct eventem-mask path regardless of
+            patch_mode, since it doesn't need chopping down at all - see
+            load_tpx3.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
@@ -134,7 +135,7 @@ def load_dp(fn, **kwargs):
     patch_mode = kwargs.pop('patch_mode', False)
 
     if dtype == '.tpx3':
-        if patch_mode:
+        if patch_mode and kwargs.get('fn_pattern'):
             kwargs.pop('roi', None)  # patches derive their own ROI per component
             result = load_tpx3_patches(fn, **kwargs)
         else:
@@ -147,21 +148,34 @@ def load_dp(fn, **kwargs):
         result = load_mib(fn, **kwargs)
     return result
 
-def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
-    """Load a .tpx3 file, apply an ROI crop and mask, and return the summed diffraction pattern.
+def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
+    """Load a .tpx3 file and return the diffraction pattern summed over
+    mask-True scan pixels.
+
+    Two very different paths depending on whether `fn` is smart-scanned:
+
+    - Normal dense-raster scan (`fn_pattern` is None): `mask` is handed
+      straight to eventem via `set_roi_mask()`, which applies it correctly
+      over the *whole* scan in one call - no small ROI/bounding box needed,
+      `roi` is ignored.
+    - Smart-scanned (sparsely acquired) frame (`fn_pattern` given):
+      eventem.Roi.set_roi_mask() is not actually implemented on the eventem
+      side yet for smart-scanned .tpx3 (silently produces a wrong/unmasked
+      result instead of erroring) - see the workaround comment below. `roi`
+      is required here.
 
     Args:
         fn: Path to the .tpx3 file.
-        mask: 2-D boolean array matching the scan dimensions.
+        mask: 2-D boolean array matching the full scan dimensions - never
+            pre-cropped by the caller, even when `roi` is also given.
         scanSize: (nx, ny) scan dimensions.
-        roi: (x, y, w, h) scan-space crop - should be a small box (a tracked
-            ROI, a SAM2 segmentation's own bounding box, or one connected
-            patch from load_tpx3_patches below) rather than the whole scan -
-            see the workaround note below for why.
+        roi: (x, y, w, h) scan-space crop - required, and must be a small
+            box (a tracked ROI, a SAM2 segmentation's own bounding box, or
+            one connected patch from load_tpx3_patches below), only on the
+            smart-scanned path; unused otherwise.
         dwellTime: Dwell time in microseconds.
         fn_pattern: Optional path to a smart-scan pattern file for `fn` -
-            reshapes/selects scan positions correctly for a smart-scanned
-            (sparsely acquired) frame, same as `loaders.load_tpx3`.
+            None (the default) means a normal dense-raster scan.
         det_shape: (det_x, det_y) detector pixel dimensions ((512, 512) when
             this is None). Only actually applied to the eventem object when
             it differs from what eventem itself already reports after
@@ -178,26 +192,46 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
         det_shape = (512, 512)
     repetitions = 1
     bitDepth = 16
-    x, y, w, h = roi
 
-    # TEMPORARY WORKAROUND: eventem.Roi.set_roi_mask() is not actually
-    # implemented on the eventem side yet for .tpx3 (silently produces a
-    # wrong/unmasked result instead of erroring). Until eventem implements
-    # it for real, extract the ROI as a full 4D block instead
-    # (extract_4D=True) and apply the mask ourselves in Python below. This
-    # materializes the whole ROI's frames at once, so `roi` must stay a
-    # small box - callers with no natural small ROI (a scattered/large
-    # threshold mask) must split it into patches first, see
-    # load_tpx3_patches, rather than passing its full bounding box here
-    # (that was tried and crashed/OOM'd on smart-scanned data). Swap this
-    # back to set_roi_mask() once that's genuinely supported upstream.
-    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=True)
     # eventem auto-sizes its own internal thread pool to the whole machine
     # per instance unless told otherwise - this script always runs as one
-    # of several concurrent per-ROI/per-frame worker subprocesses, so
-    # leaving that unset would oversubscribe the machine (N processes x
-    # full-core-count threads each) exactly like the same bug in
-    # worker_nav_img.py's use of io_utils_ui.py's eventem call sites.
+    # of several concurrent pool workers, so leaving that unset would
+    # oversubscribe the machine (N processes x full-core-count threads
+    # each) exactly like the same bug in worker_nav_img.py's use of
+    # io_utils_ui.py's eventem call sites.
+    if fn_pattern is None:
+        # Normal dense-raster scan: eventem's own mask-based ROI works
+        # correctly here, so apply `mask` directly, server-side, in one
+        # call - no small ROI or Python-side masking needed at all.
+        roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=False)
+        roi_obj.n_threads = 1
+        roi_obj.set_file(fn)
+        roi_obj.set_dwell_time(dwellTime * 1000)
+        roi_obj.set_bitdepth(bitDepth)
+        roi_obj.nx = scanSize[0]
+        roi_obj.ny = scanSize[1]
+        if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
+            roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
+        roi_obj.set_roi_mask([mask.flatten()])
+        roi_obj.run()
+        dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
+        roi_obj.close_socket()
+        return dp
+
+    # TEMPORARY WORKAROUND (smart-scanned only): eventem.Roi.set_roi_mask()
+    # is not actually implemented on the eventem side yet for smart-scanned
+    # .tpx3 (silently produces a wrong/unmasked result instead of erroring).
+    # Until eventem implements it for real, extract the ROI as a full 4D
+    # block instead (extract_4D=True) and apply the mask ourselves in
+    # Python below. This materializes the whole ROI's frames at once, so
+    # `roi` must stay a small box - callers with no natural small ROI (a
+    # scattered/large threshold mask) must split it into patches first, see
+    # load_tpx3_patches, rather than passing its full bounding box here
+    # (that was tried and crashed/OOM'd on smart-scanned data). Swap this
+    # back to set_roi_mask() once that's genuinely supported upstream for
+    # smart-scanned data too.
+    x, y, w, h = roi
+    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=True)
     roi_obj.n_threads = 1
     roi_obj.set_file(fn)
     roi_obj.set_dwell_time(dwellTime * 1000)
@@ -209,8 +243,7 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
     # mismatch segfaults .run() instead of gracefully reshaping/cropping.
     if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
         roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
-    if fn_pattern:
-        roi_obj.set_pattern_file(fn_pattern)
+    roi_obj.set_pattern_file(fn_pattern)
     roi_obj.set_roi(x=x, y=y, width=w, height=h)
     roi_obj.run()
     s = np.asarray(roi_obj.get_4D())
@@ -223,11 +256,15 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
 
 def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
     """Sum diffraction patterns over an arbitrary (possibly large/scattered)
-    .tpx3 mask, for callers with no small ROI of their own to begin with -
-    "Summed DP from Threshold" is the only one today, since a real-space
-    threshold can select scan positions anywhere in the scan, unlike a
-    tracked ROI or a SAM2 segmentation (both already a single small box,
-    loaded directly via load_tpx3 instead - see load_dp's patch_mode note).
+    .tpx3 mask, for a *smart-scanned* caller with no small ROI of their own
+    to begin with - "Summed DP from Threshold" is the only one today, since
+    a real-space threshold can select scan positions anywhere in the scan,
+    unlike a tracked ROI or a SAM2 segmentation (both already a single small
+    box, loaded directly via load_tpx3 instead - see load_dp's patch_mode
+    note). Only reached at all when `fn_pattern` is set - a normal
+    dense-raster scan never needs patching, load_tpx3 applies `mask`
+    directly via eventem's own set_roi_mask() in one call regardless of the
+    mask's shape/extent.
 
     Splits `mask` into its connected components (8-connectivity, so
     diagonally-touching pixels count as one patch) and calls load_tpx3 once
@@ -235,16 +272,17 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
     the result - the multi-patch equivalent of load_tpx3's own
     extract_4D=True workaround, needed because a *single* extraction
     spanning the mask's full bounding box would materialize the whole
-    (potentially near-whole-scan) block at once and crash/OOM, especially on
-    smart-scanned data. Temporary, like load_tpx3's own workaround: swap
-    both back to a single set_roi_mask() call once eventem implements it.
+    (potentially near-whole-scan) block at once and crash/OOM on
+    smart-scanned data. Temporary, like load_tpx3's own workaround: drop
+    this once eventem's set_roi_mask() is genuinely supported for
+    smart-scanned data too.
 
     Args:
         fn: Path to the .tpx3 file.
         mask: 2-D boolean array matching the scan dimensions.
         scanSize: (nx, ny) scan dimensions.
         dwellTime: Dwell time in microseconds.
-        fn_pattern: Optional path to a smart-scan pattern file for `fn`.
+        fn_pattern: Path to the smart-scan pattern file for `fn`.
         det_shape: (det_x, det_y) detector pixel dimensions - see load_tpx3.
 
     Returns:
