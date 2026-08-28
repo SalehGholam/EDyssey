@@ -67,7 +67,7 @@ plt.style.use('dark_background')
 # directly in the repo on GitHub, not just at runtime. Shown only in the
 # About dialog (Help >
 #  About EDyssey).
-APP_VERSION = '2026.08.28.1600'
+APP_VERSION = '2026.08.28.2130'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
