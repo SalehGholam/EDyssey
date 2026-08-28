@@ -248,7 +248,7 @@ class MaskEditDialog(qtw.QDialog):
         row2.addWidget(self.checkbox_edgeDirectional)
         row2.addWidget(qtw.QLabel('Angle (°)'))
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setRange(-360, 360)
         self.spinbox_edgeDirection.setSingleStep(5)
         self.spinbox_edgeDirection.setDisabled(True)
         row2.addWidget(self.spinbox_edgeDirection)

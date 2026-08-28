@@ -62,6 +62,19 @@ def remove_scalebar(ax):
         if isinstance(artist, ScaleBar):
             artist.remove()
 
+def nonzero_display_min(array):
+    """The lowest non-zero value in `array`, for use as a display vmin -
+    navigation images commonly have literal 0-count background/unscanned
+    positions that would otherwise dominate the low end of the displayed
+    intensity range, washing out the real (non-zero) contrast. Falls back
+    to the array's true minimum if every value is zero (or the array is
+    empty), so a blank image still gets a usable number instead of raising."""
+    array = np.asarray(array)
+    nonzero = array[array != 0]
+    if nonzero.size == 0:
+        return array.min() if array.size else 0
+    return nonzero.min()
+
 def draw_reciprocal_scale_circles(ax, scale_recip, shape, center=None, old_artists=None):
     """Draw concentric dashed circles marking whole-1/A radii on a
     diffraction-pattern axis, in place of a conventional scale bar (which

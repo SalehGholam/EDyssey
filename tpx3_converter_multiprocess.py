@@ -20,6 +20,7 @@ import eventem
 from multiprocessing import Pool
 from glob import glob
 import os
+import numpy as np
 from time import perf_counter, sleep
 
 def process_file(in_file,out_file):
@@ -27,11 +28,11 @@ def process_file(in_file,out_file):
     # tic = perf_counter()
 
     #### SET PARAMETERS #####
-    det_size = 512
+    det_size = (512,512)
     det_bin = 1
     scan_bin = 1  # noqa: F841 - not wired up to fourD yet, kept as a documented parameter slot
     scan_size = (512,512)
-    dwellTime = 200 # usec
+    dwellTime = 100 # usec
     chunksize = 8
     compression_factor =  4 # 1 is least compression, 9 is most compression
     bitdepth = 8
@@ -49,7 +50,8 @@ def process_file(in_file,out_file):
     fourD = FourD(output_filename=out_file, repetitions=1, bitdepth=bitdepth,
                   compression_factor=compression_factor) # create a new instance of the FourD class with the output file name
     fourD.set_file(in_file) # set the input file
-    fourD.detector_size = det_size
+    fourD.detector_size_x = det_size[0]
+    fourD.detector_size_y = det_size[1]
     fourD.det_bin = det_bin
     fourD.chunksize = chunksize
     fourD.nx = scan_size[0]
@@ -58,9 +60,9 @@ def process_file(in_file,out_file):
     fourD.init_4D_file() # initialize the hdf5 file writing
     fourD.set_dwell_time(dwellTime)
     fourD.run() # run the processing
-    fourD.save_dose_image() # save the dose image
-    # toc = perf_counter()
-    # print(f'Duration: {(toc-tic)/60:0.2f} min')
+    dose_image = np.array(fourD.Dose_image).reshape(scan_size)
+    fn_dose = os.path.join(out_file + '_nav')
+    np.save(fn_dose, dose_image)
 
 def delete_existing(fns_tpx3, path_hdf5):
     fns_tpx3_new = []
@@ -75,17 +77,18 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Convert .tpx3 files to .hdf5 across a multiprocessing pool.')
-    parser.add_argument('path_in', help='Directory containing the .tpx3 files.')
-    parser.add_argument('--path-out', default=None,
-                         help='Directory to write converted files to (default: same as path_in).')
-    parser.add_argument('--n-processes', type=int, default=1,
-                         help='Number of worker processes (default: 1).')
-    args = parser.parse_args()
+    smartScanned = False
+    path_in = r'Z:\emattecnai\Saleh_Tecnai\0_test\New folder (3)'
+    # path_in = r'C:\test data\Conversion test'
+    path_out = path_in
+    n_processes = 5
+    
+    in_files = glob(os.path.join(path_in, '*.tpx3'))
+    if smartScanned:
+        fns_pat = glob(os.path.join(path_in, '*.txt'))
+        fns_pat = [fn for fn in fns_pat if 'comment.txt' not in fn]
+        fns_pat.sort()
 
-    path_in = args.path_in
-    path_out = args.path_out if args.path_out is not None else path_in
     in_files = glob(os.path.join(path_in, '*.tpx3'))
 
     #### delete existing files
@@ -93,7 +96,7 @@ if __name__ == '__main__':
     tic = perf_counter()
     out_files = [os.path.split(fn)[1] for fn in in_files]
     out_files = [os.path.join(path_out, os.path.splitext(fn)[0]) for fn in out_files]
-    with Pool(args.n_processes) as p:
+    with Pool(n_processes) as p:
         p.starmap(process_file, zip(in_files,out_files))
     toc = perf_counter()
     print(f'Duration: {(toc-tic)/60:0.2f} min')

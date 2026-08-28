@@ -26,10 +26,10 @@ def process_file(in_file,out_file, fn_pattern=None):
     det_size = (512, 512)
     det_bin = 1  # noqa: F841 - not wired up to fourD yet, kept as a documented parameter slot
     scan_bin = 1  # noqa: F841 - not wired up to fourD yet, kept as a documented parameter slot
-    scan_size = (30872,1)
-    dwellTime = 200 # usec
+    scan_size = (512, 512)
+    dwellTime = 100 # usec
     chunksize = 8
-    compression_factor =  4 # 1 is least compression, 9 is most compression
+    compression_factor =  6 # 1 is least compression, 9 is most compression
     bitdepth = 8
     ##########################
 
@@ -77,22 +77,10 @@ def delete_existing(fns_tpx3, path_hdf5):
     return fns_tpx3_new
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='Convert .tpx3 files to .hdf5 (single-process, smart-scan capable).')
-    parser.add_argument('path_in', help='Directory containing the .tpx3 files (and, '
-                         'for a smart scan, their matching pattern .txt files).')
-    parser.add_argument('--path-out', default=None,
-                         help='Directory to write converted files to (default: same as path_in).')
-    parser.add_argument('--smart-scanned', dest='smart_scanned', action='store_true', default=True,
-                         help='Treat the acquisition as smart-scanned (default).')
-    parser.add_argument('--full-scan', dest='smart_scanned', action='store_false',
-                         help='Treat the acquisition as a normal dense raster scan.')
-    args = parser.parse_args()
-
-    path_in = args.path_in
-    path_out = args.path_out if args.path_out is not None else path_in
-    smartScanned = args.smart_scanned
-
+    smartScanned = False
+    path_in = r'C:\test data\Conversion test'
+    path_out = path_in
+    
     in_files = glob(os.path.join(path_in, '*.tpx3'))
     if smartScanned:
         fns_pat = glob(os.path.join(path_in, '*.txt'))

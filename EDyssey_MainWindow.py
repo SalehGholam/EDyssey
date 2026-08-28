@@ -67,7 +67,7 @@ plt.style.use('dark_background')
 # directly in the repo on GitHub, not just at runtime. Shown only in the
 # About dialog (Help >
 #  About EDyssey).
-APP_VERSION = '2026.08.28.2130'
+APP_VERSION = '1.1.1.2026.08.29.0040'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -331,22 +331,10 @@ if __name__ == "__main__":
     # standard PyInstaller + multiprocessing guidance.
     import multiprocessing
     multiprocessing.freeze_support()
-    # Must be set before the QApplication is constructed. Without these,
-    # Qt falls back to raw-pixel rendering on a high-DPI (e.g. 4K) display -
-    # every widget (including every setFixedSize/setFixedWidth value used
-    # throughout the tabs) is then sized in *physical* pixels instead of
-    # *logical* ones, which is why it looked either tiny or - if Windows
-    # compensated with its own bitmap stretching instead - blurry with
-    # widgets overlapping. Enabling this makes Qt do the scaling itself, so
-    # every existing fixed pixel size scales consistently with the display.
+
     qtw.QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     qtw.QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    # Without this, a window dragged between two monitors with different
-    # (non-integer-ratio) scale factors - e.g. a 100% laptop screen and a
-    # 150%/200% external 4K one - gets Qt's *rounded* scale factor per
-    # monitor rather than the exact one, which is what actually produces
-    # visibly wrong/inconsistent widget sizes and overlap right after such
-    # a move. PassThrough uses the real factor instead of rounding it.
+
     qtw.QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 

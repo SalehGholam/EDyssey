@@ -189,16 +189,6 @@ class TabBase(qtw.QWidget):
         dlg.resize(520, 520)
         dlg.exec_()
 
-    # Tab_ROI_on_4D's own natural ribbon height (px) - the shared reference
-    # every tab's ribbon is fixed to (see apply_display_settings), so all 4
-    # tabs get the SAME absolute ribbon height, not just the same relative
-    # scale off 4 different natural heights. Set once, the first time
-    # Tab_ROI_on_4D itself applies display settings; every other tab falls
-    # back to its own natural height only in the (normally unreachable)
-    # case where it's asked to apply settings before Tab_ROI_on_4D exists
-    # yet - EDyssey_MainWindow always constructs it first.
-    _reference_ribbon_height = None
-
     # -- Display settings (Edit menu's Display Size dialog) ----------------
     def apply_display_settings(self):
         """Re-apply the shared DisplaySettings (ribbon text scale, ribbon
@@ -227,12 +217,9 @@ class TabBase(qtw.QWidget):
             if base_height is None:
                 base_height = ribbon_page.sizeHint().height()
                 ribbon_page._edyssey_base_height = base_height
-                if self._tab_name == 'Tab_ROI_on_4D':
-                    TabBase._reference_ribbon_height = base_height
             base_pt = getattr(self, '_ribbon_base_pt', 9)
             ribbon_page.setStyleSheet(f'font-size: {round(base_pt * settings.ribbon_text_scale)}pt;')
-            reference_height = TabBase._reference_ribbon_height or base_height
-            ribbon_page.setFixedHeight(round(reference_height * settings.ribbon_height_scale))
+            ribbon_page.setFixedHeight(round(base_height * settings.ribbon_height_scale))
 
         ribbon_panel = getattr(self, 'ribbon', None)
         if ribbon_panel is not None and hasattr(ribbon_panel, 'set_icon_size'):

@@ -81,8 +81,8 @@ class Tab_SAM2(TabBase):
         self.central_widget = qtw.QWidget(self)
         self.layout = qtw.QVBoxLayout(self)
 
-        button_w = 95
-        button_h_lrg = 50
+        button_w = 100
+        button_h_lrg = 25
 
         #%% ribbon (top parameter ribbon, Word-style - see Tab_ROI_on_4D for
         # the original design, and TabBase for the shared helpers). Same
@@ -103,9 +103,10 @@ class Tab_SAM2(TabBase):
         layout_dir.addLayout(layout_dir_entry)
         label_dir = qtw.QLabel('Nav. Signal')
         layout_dir_entry.addWidget(label_dir)
-        label_dir.setFixedWidth(55)
+        label_dir.setFixedWidth(60)
         
         self.lineEdit_dir_navSignal = qtw.QLineEdit()
+        self.lineEdit_dir_navSignal.setFixedWidth(340)
         layout_dir_entry.addWidget(self.lineEdit_dir_navSignal)
         
         self.button_dir_navSignal = qtw.QPushButton('...')
@@ -118,7 +119,7 @@ class Tab_SAM2(TabBase):
         
         label_dir_4d = qtw.QLabel('4D Signals')
         layout_dir_4dSignals.addWidget(label_dir_4d)
-        label_dir_4d.setFixedWidth(55)
+        label_dir_4d.setFixedWidth(60)
         
         self.lineEdit_dir_4d = qtw.QLineEdit()
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
@@ -142,7 +143,7 @@ class Tab_SAM2(TabBase):
         
         label_dir_save = qtw.QLabel('Save Dir.')
         layout_dir_save.addWidget(label_dir_save)
-        label_dir_save.setFixedWidth(55)
+        label_dir_save.setFixedWidth(60)
         
         self.lineEdit_dir_save = qtw.QLineEdit()
         layout_dir_save.addWidget(self.lineEdit_dir_save)
@@ -151,21 +152,24 @@ class Tab_SAM2(TabBase):
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
         #%% load buttons (scale bars now live in the Input Parameters box below)
-        layout_loadSignal = qtw.QHBoxLayout()
-        layout_dir.addLayout(layout_loadSignal)
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
 
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        # self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
-        layout_loadSignal.addWidget(self.button_loadNavigation)
-        self.button_loadNavigation.clicked.connect(self.load_navSignal)
-
-        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
-        # self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg)
-        layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
-        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
+        # Acquisition Dwell T. - moved here from Input Parameters (mirrors
+        # Navigator's convention: dwell time lives with the File/Smart Scan
+        # controls, not with Detector/Scan Size). 3DED extraction always
+        # reads the acquisition (smart-scanned) file when Smart Scanned is
+        # checked (see the Smart Scan groupbox below), so a single dwell
+        # time covers both the smart-scan and plain cases.
+        layout_dwell_row = qtw.QHBoxLayout()
+        label_dwellTime = qtw.QLabel('Acquisition Dwell T. (μs)')
+        label_dwellTime.setToolTip('Dwell time in microseconds')
+        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
+        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
+        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
+        layout_dwell_row.addWidget(label_dwellTime)
+        layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
+        layout_dwell_row.addStretch(1)
+        layout_dir.addLayout(layout_dwell_row)
 
         # Smart-scan support - a titled box (matches the Navigator tab's
         # identical "Smart Scan" groupbox convention), merged into Files
@@ -195,7 +199,7 @@ class Tab_SAM2(TabBase):
         self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
         layout_smartScan.addWidget(self.button_browsePatternDir, 0, 2)
 
-        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files')
         self.button_checkSmartScanFiles.setToolTip(
             'Review/fix the automatic per-frame file match before extracting')
         self.button_checkSmartScanFiles.setDisabled(True)
@@ -233,47 +237,7 @@ class Tab_SAM2(TabBase):
         # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
         # column, including QSpinBox for Scan Size too - was a QLineEdit)
         # so their labels/X/Y cells line up row-to-row.
-        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        layout_exp_items = qtw.QGridLayout()
-        layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
-        detSize_tooltip = (
-            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
-            'set explicitly (Auto assumes 512x512).')
-        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
-        self.checkbox_detectorSizeAuto.setChecked(True)
-        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
-        layout_exp_items.addWidget(self.checkbox_detectorSizeAuto, 0, 2)
-        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 0, 3)
-        self.spinbox_detectorSize_x = qtw.QSpinBox()
-        self.spinbox_detectorSize_x.setRange(1, 8192)
-        self.spinbox_detectorSize_x.setValue(512)
-        layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
-        self.spinbox_detectorSize_y = qtw.QSpinBox()
-        self.spinbox_detectorSize_y.setRange(1, 8192)
-        self.spinbox_detectorSize_y.setValue(512)
-        layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
-        self.activate_detectorSize_spinboxes()
-        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-
-        layout_exp_items.addWidget(qtw.QLabel('Scan Size'), 1, 0, 1, 2)
-        self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        self.checkbox_scanSize.setChecked(True)
-        self.checkbox_scanSize.setToolTip(
-            'Scan size from the loaded navigation signal - uncheck to override manually')
-        layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
-        self.spinbox_scanSize_x = qtw.QSpinBox()
-        self.spinbox_scanSize_x.setRange(1, 99999)
-        layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
-        self.spinbox_scanSize_y = qtw.QSpinBox()
-        self.spinbox_scanSize_y.setRange(1, 99999)
-        layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-        layout_box_scanSize.addLayout(layout_exp_items)
+        self.box_scanSize, layout_box_experiment = self._ribbon_group_start(layout_ribbon, stretch=1)
 
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
         # id(dp_array) at the time dp_center was last auto-found - lets
@@ -283,31 +247,85 @@ class Tab_SAM2(TabBase):
         # _on_auto_center_toggled.
         self._dp_center_cache_key = None
 
-        # Acquisition Dwell T. - 3DED extraction always reads the
-        # acquisition (smart-scanned) file when Smart Scanned is checked
-        # (see the Smart Scan groupbox in Files), so a single dwell time
-        # covers both the smart-scan and plain cases - unlike Navigator,
-        # there's no separate "Detection"-role extraction path here that
-        # would need its own dwell spinbox.
-        layout_dwell_row = qtw.QHBoxLayout()
-        label_dwellTime = qtw.QLabel('Acquisition Dwell T. (μs)')
-        label_dwellTime.setToolTip('Dwell time in microseconds')
-        self.spinbox_dwellTime_acquisition = qtw.QSpinBox()
-        self.spinbox_dwellTime_acquisition.setFixedWidth(70)
-        self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
-        layout_dwell_row.addWidget(label_dwellTime)
-        layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_box_scanSize.addLayout(layout_dwell_row)
+        # Detector Size/Scan Size/Metadata/Scales each get their own
+        # QGroupBox, arranged 2x2 (mirrors Tab_ROI_on_4D/Navigator's Input
+        # Parameters column exactly): Detector Size beside Scan Size,
+        # Metadata beside Scales below them.
+        layout_exp_groups = qtw.QGridLayout()
+        spin_w_size = 55  # detector/scan size spinboxes only hold a handful of digits
 
-        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
-        # size/dwell time there, alongside the .tpx3 file(s).
-        layout_scanSize_row2 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row2)
+        #### Detector Size
+        self.groupbox_detectorSize = qtw.QGroupBox('Detector Size')
+        layout_detSize = qtw.QHBoxLayout(self.groupbox_detectorSize)
+        detSize_tooltip = (
+            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
+            'set explicitly (Auto assumes 512x512).')
+        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
+        self.checkbox_detectorSizeAuto.setChecked(True)
+        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
+        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        self.spinbox_detectorSize_x = qtw.QSpinBox()
+        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setValue(512)
+        self.spinbox_detectorSize_x.setFixedWidth(spin_w_size)
+        layout_detSize.addWidget(self.spinbox_detectorSize_x)
+        layout_detSize.addWidget(qtw.QLabel('×', alignment=Qt.AlignCenter))
+        self.spinbox_detectorSize_y = qtw.QSpinBox()
+        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setValue(512)
+        self.spinbox_detectorSize_y.setFixedWidth(spin_w_size)
+        layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        layout_exp_groups.addWidget(self.groupbox_detectorSize, 0, 0)
+        self.activate_detectorSize_spinboxes()
+        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
+
+        #### Scan Size
+        self.groupbox_scanSize = qtw.QGroupBox('Scan Size')
+        layout_scanSizeBox = qtw.QHBoxLayout(self.groupbox_scanSize)
+        self.checkbox_scanSize = qtw.QCheckBox('Auto')
+        self.checkbox_scanSize.setChecked(True)
+        self.checkbox_scanSize.setToolTip(
+            'Scan size from the loaded navigation signal - uncheck to override manually')
+        layout_scanSizeBox.addWidget(self.checkbox_scanSize)
+        self.spinbox_scanSize_x = qtw.QSpinBox()
+        self.spinbox_scanSize_x.setFixedWidth(spin_w_size)
+        self.spinbox_scanSize_x.setRange(1, 99999)
+        layout_scanSizeBox.addWidget(self.spinbox_scanSize_x)
+        layout_scanSizeBox.addWidget(qtw.QLabel('×', alignment=Qt.AlignCenter))
+        self.spinbox_scanSize_y = qtw.QSpinBox()
+        self.spinbox_scanSize_y.setFixedWidth(spin_w_size)
+        self.spinbox_scanSize_y.setRange(1, 99999)
+        layout_scanSizeBox.addWidget(self.spinbox_scanSize_y)
+        layout_exp_groups.addWidget(self.groupbox_scanSize, 0, 1)
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
+
+        #### Metadata (comment.txt) auto-fill - Load/Browse/View on row 0,
+        # Block # on row 1 (keeps this box narrow, matching Navigator/
+        # Tab_ROI_on_4D).
+        self.groupbox_metadata = qtw.QGroupBox('Metadata')
+        layout_metadata = qtw.QGridLayout(self.groupbox_metadata)
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size/dwell time from comment.txt (tpx3 only)')
+        layout_metadata.addWidget(self.button_loadMetadata, 0, 0)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip('Browse for the metadata file')
+        layout_metadata.addWidget(self.button_browseMetadata, 0, 1)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+
+        self.button_viewMetadata = qtw.QPushButton('View...')
+        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
+        layout_metadata.addWidget(self.button_viewMetadata, 0, 2)
+        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
 
         label_metadataCount = qtw.QLabel('Block #')
         label_metadataCount.setToolTip(
             'Which metadata block to read (enabled if comment.txt logs more than one)')
-        layout_scanSize_row2.addWidget(label_metadataCount)
+        layout_metadata.addWidget(label_metadataCount, 1, 0)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
         self.spinbox_metadataCount.setRange(0, 99999)
@@ -317,25 +335,8 @@ class Tab_SAM2(TabBase):
         # file itself) for the newly-selected block as soon as the value
         # changes, instead of requiring an extra "Load" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
-        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_loadMetadata = qtw.QPushButton('Load')
-        self.button_loadMetadata.setToolTip(
-            'Fill scan size/dwell time from comment.txt (tpx3 only)')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
-        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
-
-        self.button_browseMetadata = qtw.QPushButton('...')
-        self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip('Browse for the metadata file')
-        layout_scanSize_row2.addWidget(self.button_browseMetadata)
-        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
-
-        self.button_viewMetadata = qtw.QPushButton('View...')
-        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
-        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
-        layout_scanSize_row2.addWidget(self.button_viewMetadata)
-        layout_scanSize_row2.addStretch(1)
+        layout_metadata.addWidget(self.spinbox_metadataCount, 1, 1)
+        layout_exp_groups.addWidget(self.groupbox_metadata, 1, 0)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
@@ -346,189 +347,85 @@ class Tab_SAM2(TabBase):
         self._nav_4d_files = None
         self._nav_4d_directory = None
 
-        # Scale bars - Real | Recip. share one row, below everything else
-        # in this column, matching the other 3 tabs' identical merge.
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real Space Scale (nm)'))
+        #### Scales - Real (row 0), then Recip. + "Center" (row 1) - moved
+        # into a groupbox, matching Tab_ROI_on_4D/Navigator.
+        self.groupbox_scales = qtw.QGroupBox('Scales')
+        layout_scales = qtw.QGridLayout(self.groupbox_scales)
+        layout_scales.addWidget(qtw.QLabel('Real (nm)'), 0, 0)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Reciprocal Space Scale (Å<sup>-1</sup>)'))
+        self.lineEdit_scale_real.setMaximumWidth(70)
+        layout_scales.addWidget(self.lineEdit_scale_real, 0, 1)
+
+        layout_scales.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'), 1, 0)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
+        self.lineEdit_scale_recip.setMaximumWidth(70)
+        layout_scales.addWidget(self.lineEdit_scale_recip, 1, 1)
+
         self.button_centerRecip = qtw.QPushButton('Center')
         self.button_centerRecip.setToolTip(
             'Find the beam center now, or Ctrl+Click the DP plot to set it manually')
         self.button_centerRecip.clicked.connect(self.find_and_center_recip)
-        layout_scale_row.addWidget(self.button_centerRecip)
-        layout_box_scanSize.addLayout(layout_scale_row)
-
+        layout_scales.addWidget(self.button_centerRecip, 1, 2)
+        layout_exp_groups.addWidget(self.groupbox_scales, 1, 1)
         self.lineEdit_scale_recip.textChanged.connect(self.add_scalebar)
         self.lineEdit_scale_real.textChanged.connect(self.add_scalebar)
-        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters')
 
-        #%% Display Contrast (ribbon column) - see the identical treatment
-        # in Tab_Tracking_CV2 for why this is added directly rather than
-        # via _ribbon_group_start/_end.
-        self.box_contrast = ContrastScalingBox()
-        layout_ribbon.addWidget(self.box_contrast, 1)
-        self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
-        sep_contrast = qtw.QFrame()
-        sep_contrast.setFrameShape(qtw.QFrame.VLine)
-        sep_contrast.setFrameShadow(qtw.QFrame.Sunken)
-        layout_ribbon.addWidget(sep_contrast)
+        layout_box_experiment.addLayout(layout_exp_groups)
+        self._ribbon_group_end(layout_ribbon, layout_box_experiment, 'Input Parameters', stretch=0)
 
-        #%% Feature Handling (ribbon column) - tree_objects is height-capped
-        # to fit the ribbon (same treatment as the other 2 tabs' tall lists).
-        self.box_table, layout_features = self._ribbon_group_start(layout_ribbon, stretch=1)
+        #### Load buttons
+        layout_loadSignal = qtw.QHBoxLayout()
+        layout_box_experiment.addLayout(layout_loadSignal)
+        
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
+        # self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg*2)
+        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
+        self.button_loadNavigation.clicked.connect(self.load_navSignal)
 
-        # tree
-        self.tree_objects = qtw.QTreeWidget()
-        layout_features.addWidget(self.tree_objects)
-        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "dup", "del"]
-        self.tree_objects.setColumnCount(len(self.cols_tree))
-        self.tree_objects.setHeaderLabels(
-            ["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Duplicate", "Delete"])
-        # Wide enough for their content: dup/del hold a 30px button, end
-        # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
-        col_widths = {'use': 35, 'idx': 30, 'fr_idx': 50, 'end': 60,
-                      'trk': 60, 'ext': 65, 'dup': 45, 'del': 45}
-        for i, col in enumerate(self.cols_tree):
-            self.tree_objects.setColumnWidth(i, col_widths[col])
-        self.tree_objects.setMinimumWidth(200)
-        # Height-capped (rather than the generous min-height=280 this had
-        # in the old left panel) to fit the ribbon's height budget.
-        self.tree_objects.setMaximumHeight(110)
-        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
-        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
+        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
+        # self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
+        self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg*2)
+        layout_loadSignal.addWidget(self.button_loadSavedAnalysis, alignment=Qt.AlignCenter)
+        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
         
-# =============================================================================
-#         header = self.tree_objects.header()
-#         # Prevent the last column from auto-stretching
-#         header.setStretchLastSection(False)
-#         # Let all columns resize to contents
-#         header.setSectionResizeMode(qtw.QHeaderView.ResizeToContents)
-# =============================================================================
-        #%% run sam2
-        layout_sam_buttons_1 = qtw.QHBoxLayout()
-        layout_features.addLayout(layout_sam_buttons_1)
-        layout_sam_buttons_2 = qtw.QHBoxLayout()
-        layout_features.addLayout(layout_sam_buttons_2)
-        
-        # image
-        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
-        # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons_1.addWidget(self.button_runSeg_img)
-        # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
-        self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
-        self.button_runSeg_img.setDisabled(True)
-        
-        # layout_sam_buttons.addItem(spacer)
-        
-        # num
-        layout_stack = qtw.QVBoxLayout()
-        layout_sam_buttons_2.addLayout(layout_stack)
-        layout_stack_top = qtw.QHBoxLayout()
-        layout_stack.addLayout(layout_stack_top)
-        
-        label_stackNum = qtw.QLabel('Stack Num')
-        label_stackNum.setToolTip('Frames per SAM2 stack - lower = less GPU memory, more processes')
-        layout_stack_top.addWidget(label_stackNum)
-        self.spinbox_stackNum = qtw.QSpinBox()
-        self.spinbox_stackNum.setMaximumWidth(80)
-        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack')
-        layout_stack_top.addWidget(self.spinbox_stackNum)
-        self.spinbox_stackNum.setSingleStep(25)
-        
-        self.label_stack = qtw.QLabel('')
-        # layout_stack.addWidget(self.label_stack)
-        layout_features.addWidget(self.label_stack)
-        self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
-        
-        # clip
-        self.button_runSeg_clip = qtw.QPushButton('Track', self)
-        # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
-        self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
-        self.button_runSeg_clip.setEnabled(False)
-
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
-        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
-        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
-
-        self.button_stop_tr = qtw.QPushButton('Stop')
-        layout_sam_buttons_2.addWidget(self.button_stop_tr)
-        self.button_stop_tr.clicked.connect(self.stop_processes)
-        # self.button_stop_tr.setEnabled(False)
-        
-# =============================================================================
-#         self.button_reset_state = qtw.QPushButton('Reset State', self)
-#         self.button_reset_state.setFixedSize(button_w, button_h)
-#         layout_sam.addWidget(self.button_reset_state)
-#         self.button_reset_state.clicked.connect(self.reset_state)
-# =============================================================================
-        
-        for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
-            wid.setDisabled(True)
-        for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
-            wid.setDisabled(True)
-        self._ribbon_group_end(layout_ribbon, layout_features, 'Feature Handling')
-
-        #%% Edge Detection / Extract (combined ribbon column, stacked like
-        # Tab_Tracking_CV2's Threshold/Edge Detection column) - SAM2
-        # doesn't need a Threshold/Deviation section (segmentation comes
-        # from SAM2 itself), so Edge Detection pairs with Extract directly
-        # instead of needing a 3rd column.
+        #%% Edge Detection / Extract 
         self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        # Cancel needs to stay clickable regardless of tracking/segmentation/
-        # extraction state (unlike the rest of this column, whose widgets
-        # are enabled/disabled together elsewhere) - built here, before
-        # disable_3ded_widgets() runs, since that sweep checks
-        # `wid is self.button_cancel`.
-        self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedHeight(button_h_lrg)
-        self.button_cancel.setStyleSheet("background-color: red; color: white;")
-        self.button_cancel.setDisabled(True)
-        self.button_cancel.setToolTip('Stop the running tracking/segmentation/extraction')
-        self.button_cancel.clicked.connect(self.cancel_running_work)
-
+        #### edge detection
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row1)
         self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
         self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
         layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
-        label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection_row1.addWidget(label_edgeKernel)
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection_row1.addWidget(self.spinbox_edgeKernel)
-        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge facing one direction (angle below)')
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
             'With Edge Detection: keep the interior, cut the edge band (inverse)')
         layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
-        layout_edgeDetection_row1.addStretch(1)
 
         layout_edgeDetection_row2 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row2)
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge facing one direction (angle below)')
-        layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        label_edgeKernel = qtw.QLabel('Kernel')
+        layout_edgeDetection_row2.addWidget(label_edgeKernel)
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
+        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
+        self._ribbon_inline_separator(layout_edgeDetection_row2)
         label_edgeDirection = qtw.QLabel('Angle (°)')
         layout_edgeDetection_row2.addWidget(label_edgeDirection)
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setRange(-360, 360)
         self.spinbox_edgeDirection.setDecimals(1)
         self.spinbox_edgeDirection.setSingleStep(5)
         self.spinbox_edgeDirection.setValue(0)
@@ -537,14 +434,13 @@ class Tab_SAM2(TabBase):
             '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
         layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
-        layout_edgeDetection_row2.addStretch(1)
         self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', stretch=False)
 
         sep_3ded = qtw.QFrame()
         sep_3ded.setFrameShape(qtw.QFrame.HLine)
         sep_3ded.setFrameShadow(qtw.QFrame.Sunken)
         layout_box_3ded.addWidget(sep_3ded)
-
+        #### Extract
         layout_threadNum = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_threadNum)
 
@@ -554,7 +450,7 @@ class Tab_SAM2(TabBase):
         self.spinbox_threadNum.setMaximumWidth(80)
         layout_threadNum.addWidget(self.spinbox_threadNum)
         self.spinbox_threadNum.setRange(1, os.cpu_count() or 1)
-        self.spinbox_threadNum.setValue(max(1, (os.cpu_count() or 2) - 2))
+        self.spinbox_threadNum.setValue(2)
         self.spinbox_threadNum.valueChanged.connect(self.set_threadNo)
         
         label_fps = qtw.QLabel('Clip FPS')
@@ -584,40 +480,143 @@ class Tab_SAM2(TabBase):
 
         layout_saveOptions.addStretch()
 
+        #### Buttons
         layout_extract_button = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_extract_button)
-        # Natural (content-sized) width, not Expanding - lets the 3 buttons
-        # form a compact cluster centered in the row via the stretches
-        # below, instead of stretching edge-to-edge across the panel.
-        layout_extract_button.addStretch(1)
         self.button_3ded = qtw.QPushButton('Extract All')
         self.button_3ded.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_3ded)
         self.button_3ded.clicked.connect(self.extract_3ded)
 
-        self.button_extractCurrentFrame = qtw.QPushButton('Extract DP\n(Current Frame)')
+        self.button_extractCurrentFrame = qtw.QPushButton('Extract Frame')
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setToolTip(
             'Compute the DP for the current frame only (not saved)')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
-
+        
+        layout_ribbon_final = qtw.QVBoxLayout()
+        layout_ribbon.addLayout(layout_ribbon_final)
         self.button_save_results = qtw.QPushButton('Save Results')
-        self.button_save_results.setFixedHeight(button_h_lrg)
-        layout_extract_button.addWidget(self.button_save_results)
+        self.button_save_results.setFixedSize(button_w, button_h_lrg*3)
+        layout_ribbon_final.addWidget(self.button_save_results)
         self.button_save_results.clicked.connect(self.save_results)
-        layout_extract_button.addStretch(1)
-
-        # Same width for all three - sized to fit the widest label
-        # ("Extract DP\n(Current Frame)") rather than a hardcoded guess.
-        extract_btn_width = self.button_extractCurrentFrame.sizeHint().width()
-        for btn in (self.button_3ded, self.button_extractCurrentFrame, self.button_save_results):
-            btn.setFixedWidth(extract_btn_width)
-
-        layout_box_3ded.addWidget(self.button_cancel)
+        
+        self.button_cancel = qtw.QPushButton('Cancel')
+        self.button_cancel.setFixedSize(button_w, button_h_lrg*3)
+        self.button_cancel.setStyleSheet("background-color: red; color: white;")
+        self.button_cancel.setDisabled(True)
+        self.button_cancel.setToolTip('Stop the running tracking/segmentation/extraction')
+        self.button_cancel.clicked.connect(self.cancel_running_work)
+        layout_ribbon_final.addWidget(self.button_cancel)
         self.disable_3ded_widgets(True)
         self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract', separator=False)
         layout_ribbon.addStretch(1)
+
+        #%% Display Contrast (top) + Feature Handling (below it) - moved out
+        # of the ribbon into one stacked column beside the canvas, same
+        # position as the Navigator tab's file list (see the #%% canvas
+        # section below for where this widget is actually placed).
+        widget_featurePanel = qtw.QWidget()
+        layout_featurePanel = qtw.QVBoxLayout(widget_featurePanel)
+        layout_featurePanel.setContentsMargins(2, 2, 2, 2)
+
+        self.box_contrast = ContrastScalingBox()
+        self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        layout_featurePanel.addWidget(self.box_contrast)
+
+        # tree - stretches to fill the rest of this column's height now that
+        # it sits beside the (tall) canvas, rather than being capped to fit
+        # inside a short ribbon column.
+        self.tree_objects = qtw.QTreeWidget()
+        layout_featurePanel.addWidget(self.tree_objects, 1)
+        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "dup", "del"]
+        self.tree_objects.setColumnCount(len(self.cols_tree))
+        self.tree_objects.setHeaderLabels(
+            ["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Duplicate", "Delete"])
+        # Wide enough for their content: dup/del hold a 30px button, end
+        # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
+        col_widths = {'use': 35, 'idx': 30, 'fr_idx': 50, 'end': 60,
+                      'trk': 60, 'ext': 65, 'dup': 45, 'del': 45}
+        for i, col in enumerate(self.cols_tree):
+            self.tree_objects.setColumnWidth(i, col_widths[col])
+        self.tree_objects.setMinimumWidth(200)
+        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
+        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
+
+        #%% run sam2
+        layout_sam_buttons_1 = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(layout_sam_buttons_1)
+        layout_sam_buttons_2 = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(layout_sam_buttons_2)
+
+        # image
+        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
+        # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_img)
+        # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
+        self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
+        self.button_runSeg_img.setDisabled(True)
+
+        # num
+        layout_stack = qtw.QVBoxLayout()
+        layout_sam_buttons_2.addLayout(layout_stack)
+        layout_stack_top = qtw.QHBoxLayout()
+        layout_stack.addLayout(layout_stack_top)
+
+        label_stackNum = qtw.QLabel('Stack Num')
+        label_stackNum.setToolTip('Frames per SAM2 stack - lower = less GPU memory, more processes')
+        layout_stack_top.addWidget(label_stackNum)
+        self.spinbox_stackNum = qtw.QSpinBox()
+        self.spinbox_stackNum.setMaximumWidth(80)
+        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack')
+        layout_stack_top.addWidget(self.spinbox_stackNum)
+        self.spinbox_stackNum.setSingleStep(25)
+
+        # Stack navigation buttons (jump to a stack's first frame) - stacked
+        # below the Stack Num row itself, in the same column, rather than
+        # under the slider beside the canvas (moved here per user request).
+        layout_stack_nav = qtw.QHBoxLayout()
+        layout_stack.addLayout(layout_stack_nav)
+        label_stacks_nav = qtw.QLabel('Stacks:')
+        label_stacks_nav.setToolTip('Jump to a stack\'s first frame - each stack needs at least one point')
+        layout_stack_nav.addWidget(label_stacks_nav)
+
+        self._stack_scroll = qtw.QScrollArea()
+        self._stack_scroll.setWidgetResizable(True)
+        self._stack_scroll.setFixedHeight(36)
+        self._stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._stack_scroll.setFrameShape(qtw.QFrame.NoFrame)
+        layout_stack_nav.addWidget(self._stack_scroll)
+
+        self._stack_buttons_widget = qtw.QWidget()
+        self._stack_buttons_layout = qtw.QHBoxLayout(self._stack_buttons_widget)
+        self._stack_buttons_layout.setContentsMargins(2, 2, 2, 2)
+        self._stack_buttons_layout.setSpacing(3)
+        self._stack_scroll.setWidget(self._stack_buttons_widget)
+
+        self.label_stack = qtw.QLabel('')
+        layout_featurePanel.addWidget(self.label_stack)
+        self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
+
+        # clip
+        self.button_runSeg_clip = qtw.QPushButton('Track', self)
+        # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
+        self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
+        self.button_runSeg_clip.setEnabled(False)
+
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
+        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
+        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+
+        for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
+            wid.setDisabled(True)
+        for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
+            wid.setDisabled(True)
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -625,6 +624,7 @@ class Tab_SAM2(TabBase):
         layout_right_outer = qtw.QHBoxLayout(self._right_widget)
         layout_right_outer.setContentsMargins(0, 0, 0, 0)
         layout_right_outer.setSpacing(0)
+        layout_right_outer.addWidget(widget_featurePanel)
         self._canvas_container = qtw.QWidget()
         layout_right_outer.addWidget(self._canvas_container, 1)
         layout_canvas = qtw.QVBoxLayout(self._canvas_container)
@@ -734,54 +734,38 @@ class Tab_SAM2(TabBase):
 
         # self.update_canvas(0)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
-        #%% stack navigation buttons
-        layout_stacks = qtw.QHBoxLayout()
-        layout_canvas.addLayout(layout_stacks)
-
-        label_stacks_nav = qtw.QLabel('Stacks:')
-        label_stacks_nav.setFixedWidth(45)
-        label_stacks_nav.setToolTip('Jump to a stack\'s first frame - each stack needs at least one point')
-        layout_stacks.addWidget(label_stacks_nav)
-
-        self._stack_scroll = qtw.QScrollArea()
-        self._stack_scroll.setWidgetResizable(True)
-        self._stack_scroll.setFixedHeight(36)
-        self._stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._stack_scroll.setFrameShape(qtw.QFrame.NoFrame)
-        layout_stacks.addWidget(self._stack_scroll)
-
-        self._stack_buttons_widget = qtw.QWidget()
-        self._stack_buttons_layout = qtw.QHBoxLayout(self._stack_buttons_widget)
-        self._stack_buttons_layout.setContentsMargins(2, 2, 2, 2)
-        self._stack_buttons_layout.setSpacing(3)
-        self._stack_scroll.setWidget(self._stack_buttons_widget)
 
         self.tree_objects.itemSelectionChanged.connect(self.update_stack_guide)
+        # Kept alive (not shown) purely for its view-stack bookkeeping
+        # (.update()/.push_current(), used to seed the ribbon's Home button)
+        # and as the target of the ribbon's own Pan/Zoom/Home actions below -
+        # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
-        layout_canvas.addWidget(self.toolbar)
+        self.toolbar.hide()
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
-        # canvas interaction already available via Ctrl-click (see on_click)
-        # and matplotlib's own toolbar (below); deliberately does NOT
-        # duplicate the left panel's buttons (Seg Image, Track, Extract All,
-        # Save Results, ...), only actions that act directly on the plot
-        # itself. 'add_point' is the only tool mode on_click actually checks
-        # (see RibbonPanel.active_tool there) - left/right click still
-        # choose positive/negative, and Shift still chooses
-        # new-object-vs-append, exactly as before.
+        # canvas interaction already available via Ctrl-click (see on_click);
+        # deliberately does NOT duplicate the left panel's buttons (Seg
+        # Image, Track, Extract All, Save Results, ...), only actions that
+        # act directly on the plot itself. 'add_point' is the only tool mode
+        # on_click actually checks (see RibbonPanel.active_tool there) -
+        # left/right click still choose positive/negative, and Shift still
+        # chooses new-object-vs-append, exactly as before. Pan/Zoom/Home
+        # drive matplotlib's own toolbar (kept alive but hidden - see
+        # self.toolbar above), which no longer has a visible strip of its
+        # own under the canvas.
         self.ribbon = RibbonPanel([
             RibbonTool('add_point', 'add_point', 'Add point (left=+/right=-); +Shift to append '
                       'to the selected object - same as Ctrl+click', 'tool'),
             RibbonTool('remove_point', 'remove_point', 'Remove last point (same as middle-click)',
                       'action', self.delete_last_point),
             RibbonTool('sep1', kind='separator'),
-            RibbonTool('pan', 'pan', 'Toggle pan mode (same as the toolbar below)',
+            RibbonTool('pan', 'pan', 'Toggle pan mode',
                       'action', self.toolbar.pan),
-            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode (same as the toolbar below)',
+            RibbonTool('zoom', 'zoom', 'Toggle rectangle-zoom mode',
                       'action', self.toolbar.zoom),
-            RibbonTool('home', 'home', 'Reset the view (same as the toolbar below)',
+            RibbonTool('home', 'home', 'Reset the view',
                       'action', self.toolbar.home),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)

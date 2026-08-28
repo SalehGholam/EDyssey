@@ -102,6 +102,15 @@ def _drawn_icon(kind, size):
         d = r_in * 0.6
         painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
         painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+    elif kind == 'hide_mask':
+        # center_mask's same concentric-ring annulus, struck through - "hide
+        # the virtual detector overlay" (a checkable toggle, not a one-shot
+        # action - see RibbonTool.kind == 'toggle').
+        r_out = size / 2 - margin
+        r_in = r_out * 0.5
+        painter.drawEllipse(QPointF(cx, cy), r_out, r_out)
+        painter.drawEllipse(QPointF(cx, cy), r_in, r_in)
+        painter.drawLine(QPointF(margin, margin), QPointF(size - margin, size - margin))
     else:
         raise ValueError(f'Unknown drawn-icon kind {kind!r}')
 
@@ -110,7 +119,7 @@ def _drawn_icon(kind, size):
 
 
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
-                      'center_recip', 'center_mask'}
+                      'center_recip', 'center_mask', 'hide_mask'}
 
 
 def build_icon(key, size=_ICON_SIZE):
@@ -140,8 +149,14 @@ class RibbonTool:
         the same panel; selecting it sets `active_tool` and stays pressed
         until another tool (or the same one again, to deselect) is clicked.
         'action' - a momentary click that does not change `active_tool`.
+        'toggle' - checkable like 'tool', but independent of it: any number
+        of 'toggle' buttons (and the one 'tool' selection) can be pressed at
+        once, since these represent persistent on/off display state (e.g.
+        "hide virtual detectors") rather than a mutually-exclusive
+        interaction mode.
         'separator' - a thin dividing line; every other field is ignored.
-    callback: Called with no arguments on click, for kind='action' only.
+    callback: Called with no arguments on click for kind='action'; called
+        with the new checked state (bool) for kind='toggle'.
     """
     id: str
     icon: str = ''
@@ -198,6 +213,10 @@ class RibbonPanel(qtw.QWidget):
             elif tool.kind == 'action':
                 if tool.callback is not None:
                     btn.clicked.connect(tool.callback)
+            elif tool.kind == 'toggle':
+                btn.setCheckable(True)
+                if tool.callback is not None:
+                    btn.toggled.connect(tool.callback)
             else:
                 raise ValueError(f"Unknown RibbonTool.kind {tool.kind!r} for tool {tool.id!r}")
 

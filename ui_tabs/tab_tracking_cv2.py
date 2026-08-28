@@ -77,8 +77,8 @@ class Tab_Tracking_CV2(TabBase):
         # client = Client(cluster)
 
     def init_widget(self):
-        button_w = 110
-        button_h_lrg = 50
+        button_w = 100
+        button_h_lrg = 25
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
         spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
@@ -103,9 +103,10 @@ class Tab_Tracking_CV2(TabBase):
         layout_dir.addLayout(layout_dir_entry)
         label_dir = qtw.QLabel('Nav. Signal')
         layout_dir_entry.addWidget(label_dir)
-        label_dir.setFixedWidth(55)
+        label_dir.setFixedWidth(60)
         
         self.lineEdit_dir_navSignal = qtw.QLineEdit()
+        self.lineEdit_dir_navSignal.setFixedWidth(340)
         layout_dir_entry.addWidget(self.lineEdit_dir_navSignal)
         
         
@@ -119,7 +120,7 @@ class Tab_Tracking_CV2(TabBase):
         
         label_dir_4d = qtw.QLabel('4D Signals')
         layout_dir_4dSignals.addWidget(label_dir_4d)
-        label_dir_4d.setFixedWidth(55)
+        label_dir_4d.setFixedWidth(60)
         
         self.lineEdit_dir_4d = qtw.QLineEdit()
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
@@ -143,7 +144,7 @@ class Tab_Tracking_CV2(TabBase):
         
         label_dir_save = qtw.QLabel('Save Dir.')
         layout_dir_save.addWidget(label_dir_save)
-        label_dir_save.setFixedWidth(55)
+        label_dir_save.setFixedWidth(60)
         
         self.lineEdit_dir_save = qtw.QLineEdit()
         layout_dir_save.addWidget(self.lineEdit_dir_save)
@@ -152,7 +153,6 @@ class Tab_Tracking_CV2(TabBase):
         layout_dir_save.addWidget(self.button_dir_save)
         self.button_dir_save.clicked.connect(lambda: self.show_dialog('folder'))
         #%% load buttons (scale bars now live in the Input Parameters box below)
-        layout_loadSignal = qtw.QHBoxLayout()
         self.double_validator = QDoubleValidator(0.0, 1e5, 5)
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
         # id(dp_array) at the time dp_center was last auto-found - lets
@@ -162,135 +162,14 @@ class Tab_Tracking_CV2(TabBase):
         # See _on_auto_center_toggled.
         self._dp_center_cache_key = None
 
-        layout_dir.addLayout(layout_loadSignal)
-
-        self.button_loadNavigation = qtw.QPushButton('Load Signal')
-        # self.button_loadNavigation.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg)
-        layout_loadSignal.addWidget(self.button_loadNavigation)
-        
-        self.button_loadNavigation.clicked.connect(self.load_navSignal)
-
-        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
-        # self.button_loadSavedAnalysis.setSizePolicy(qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Expanding)
-        self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg)
-        layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
-        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
-
-        # Smart-scan support - a titled box (matches the Navigator tab's
-        # identical "Smart Scan" groupbox convention), merged into Files
-        # rather than its own column. 3DED extraction always reads the
-        # acquisition (smart-scanned) file - see EDyssey/io_utils/smart_scan.py -
-        # so there's no role combo here (unlike Navigator, which can batch
-        # over either role). 2x2: left column = activation controls
-        # (checkbox, then Check Files button), right column = directory
-        # pickers (pattern dir, then detection dir).
-        groupbox_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_smartScan = qtw.QGridLayout(groupbox_smartScan)
-
-        self.checkbox_smartScan = qtw.QCheckBox('Activate')
-        self.checkbox_smartScan.setToolTip(
-            'Smart-scanned series - reads each frame\'s acquisition + pattern file, '
-            'not every raw file in the folder.')
-        layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
-        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
-
-        self.lineEdit_patternDir = qtw.QLineEdit()
-        self.lineEdit_patternDir.setPlaceholderText('Pattern Dir. (defaults to 4D Signals folder)')
-        self.lineEdit_patternDir.setDisabled(True)
-        layout_smartScan.addWidget(self.lineEdit_patternDir, 0, 1)
-        self.button_browsePatternDir = qtw.QPushButton('...')
-        self.button_browsePatternDir.setFixedWidth(30)
-        self.button_browsePatternDir.setDisabled(True)
-        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
-        layout_smartScan.addWidget(self.button_browsePatternDir, 0, 2)
-
-        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files...')
-        self.button_checkSmartScanFiles.setToolTip(
-            'Review/fix the automatic per-frame file match before extracting')
-        self.button_checkSmartScanFiles.setDisabled(True)
-        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
-        layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
-
-        self.lineEdit_detectionDir = qtw.QLineEdit()
-        self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
-        self.lineEdit_detectionDir.setDisabled(True)
-        self.lineEdit_detectionDir.setToolTip(
-            'Folder to look for detection files in, if different from the 4D Signals folder')
-        layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
-        self.button_browseDetectionDir = qtw.QPushButton('...')
-        self.button_browseDetectionDir.setFixedWidth(30)
-        self.button_browseDetectionDir.setDisabled(True)
-        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
-        layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
-
-        # Hidden until it actually has something to say (see
-        # _set_smart_scan_summary) - an empty QLabel still reserves a full
-        # text-line's height in the grid, which otherwise left a persistent
-        # blank line at the bottom of this box before "Check Files..." was
-        # ever run.
-        self.label_smartScanSummary = qtw.QLabel('')
-        self.label_smartScanSummary.setVisible(False)
-        layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
-
-        layout_dir.addWidget(groupbox_smartScan)
-        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
-        self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
-
-        #%% Input Parameters (ribbon column) - scan dims, scale bars,
-        # detector size, dwell time, metadata block - everything needed to
-        # extract DPs for 3DED. Detector Size/Scan Size share one
-        # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
-        # column, including QSpinBox for Scan Size too - was a QLineEdit)
-        # so their labels/X/Y cells line up row-to-row.
-        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
-
-        layout_exp_items = qtw.QGridLayout()
-        layout_exp_items.addWidget(qtw.QLabel('Detector Size'), 0, 0, 1, 2)
-        detSize_tooltip = (
-            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
-            'set explicitly (Auto assumes 512x512).')
-        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
-        self.checkbox_detectorSizeAuto.setChecked(True)
-        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
-        layout_exp_items.addWidget(self.checkbox_detectorSizeAuto, 0, 2)
-        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 0, 3)
-        self.spinbox_detectorSize_x = qtw.QSpinBox()
-        self.spinbox_detectorSize_x.setRange(1, 8192)
-        self.spinbox_detectorSize_x.setValue(512)
-        layout_exp_items.addWidget(self.spinbox_detectorSize_x, 0, 4, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 0, 6)
-        self.spinbox_detectorSize_y = qtw.QSpinBox()
-        self.spinbox_detectorSize_y.setRange(1, 8192)
-        self.spinbox_detectorSize_y.setValue(512)
-        layout_exp_items.addWidget(self.spinbox_detectorSize_y, 0, 7, 1, 2)
-        self.activate_detectorSize_spinboxes()
-        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
-
-        layout_exp_items.addWidget(qtw.QLabel('Scan Size'), 1, 0, 1, 2)
-        self.checkbox_scanSize = qtw.QCheckBox('Auto')
-        self.checkbox_scanSize.setChecked(True)
-        self.checkbox_scanSize.setToolTip(
-            'Scan size from the loaded navigation signal - uncheck to override manually')
-        layout_exp_items.addWidget(self.checkbox_scanSize, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('X', alignment=Qt.AlignCenter), 1, 3)
-        self.spinbox_scanSize_x = qtw.QSpinBox()
-        self.spinbox_scanSize_x.setRange(1, 99999)
-        layout_exp_items.addWidget(self.spinbox_scanSize_x, 1, 4, 1, 2)
-        layout_exp_items.addWidget(qtw.QLabel('Y', alignment=Qt.AlignCenter), 1, 6)
-        self.spinbox_scanSize_y = qtw.QSpinBox()
-        self.spinbox_scanSize_y.setRange(1, 99999)
-        layout_exp_items.addWidget(self.spinbox_scanSize_y, 1, 7, 1, 2)
-        self.activate_lineEdit_scanSize()
-        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
-        layout_box_scanSize.addLayout(layout_exp_items)
-
-        # Acquisition Dwell T. - 3DED extraction always reads the
-        # acquisition (smart-scanned) file when Smart Scanned is checked
-        # (see the Smart Scan groupbox in Files), so a single dwell time
-        # covers both the smart-scan and plain cases - unlike Navigator,
-        # there's no separate "Detection"-role extraction path here that
-        # would need its own dwell spinbox.
+        # Acquisition Dwell T. - moved here from Input Parameters (mirrors
+        # Navigator's convention: dwell time lives with the File/Smart Scan
+        # controls, not with Detector/Scan Size). 3DED extraction always
+        # reads the acquisition (smart-scanned) file when Smart Scanned is
+        # checked (see the Smart Scan groupbox below), so a single dwell
+        # time covers both the smart-scan and plain cases - unlike
+        # Navigator, there's no separate "Detection"-role extraction path
+        # here that would need its own dwell spinbox.
         layout_dwell_row = qtw.QHBoxLayout()
         label_dwellTime = qtw.QLabel('Acquisition Dwell T. (μs)')
         label_dwellTime.setToolTip('Dwell time in microseconds')
@@ -299,17 +178,145 @@ class Tab_Tracking_CV2(TabBase):
         self.spinbox_dwellTime_acquisition.setRange(1, 99999999)
         layout_dwell_row.addWidget(label_dwellTime)
         layout_dwell_row.addWidget(self.spinbox_dwellTime_acquisition)
-        layout_box_scanSize.addLayout(layout_dwell_row)
+        layout_dwell_row.addStretch(1)
+        layout_dir.addLayout(layout_dwell_row)
 
-        # metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
-        # size/dwell time there, alongside the .tpx3 file(s).
-        layout_scanSize_row2 = qtw.QHBoxLayout()
-        layout_box_scanSize.addLayout(layout_scanSize_row2)
+        #### Smart-scan support
+        groupbox_smartScan = qtw.QGroupBox('Smart Scan')
+        layout_smartScan = qtw.QVBoxLayout(groupbox_smartScan)
+        layout_smartScan_1 = qtw.QHBoxLayout()
+        layout_smartScan.addLayout(layout_smartScan_1)
+        self.checkbox_smartScan = qtw.QCheckBox('Activate')
+        self.checkbox_smartScan.setToolTip(
+            'Smart-scanned series - reads each frame\'s acquisition + pattern file, '
+            'not every raw file in the folder.')
+        layout_smartScan_1.addWidget(self.checkbox_smartScan)
+        self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
+
+        self.lineEdit_patternDir = qtw.QLineEdit()
+        self.lineEdit_patternDir.setPlaceholderText('Pattern Dir. (defaults to 4D Signals folder)')
+        self.lineEdit_patternDir.setDisabled(True)
+        layout_smartScan_1.addWidget(self.lineEdit_patternDir)
+        self.button_browsePatternDir = qtw.QPushButton('...')
+        self.button_browsePatternDir.setFixedWidth(30)
+        self.button_browsePatternDir.setDisabled(True)
+        self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
+        layout_smartScan_1.addWidget(self.button_browsePatternDir)
+        
+        layout_smartScan_2 = qtw.QHBoxLayout()        
+        layout_smartScan.addLayout(layout_smartScan_2)
+                
+        self.button_checkSmartScanFiles = qtw.QPushButton('Check Files')
+        self.button_checkSmartScanFiles.setFixedWidth(75)
+        self.button_checkSmartScanFiles.setToolTip(
+            'Review/fix the automatic per-frame file match before extracting')
+        self.button_checkSmartScanFiles.setDisabled(True)
+        self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
+        layout_smartScan_2.addWidget(self.button_checkSmartScanFiles)
+
+        self.lineEdit_detectionDir = qtw.QLineEdit()
+        self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
+        self.lineEdit_detectionDir.setDisabled(True)
+        self.lineEdit_detectionDir.setToolTip(
+            'Folder to look for detection files in, if different from the 4D Signals folder')
+        layout_smartScan_2.addWidget(self.lineEdit_detectionDir)
+        self.button_browseDetectionDir = qtw.QPushButton('...')
+        self.button_browseDetectionDir.setFixedWidth(30)
+        self.button_browseDetectionDir.setDisabled(True)
+        self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
+        layout_smartScan_2.addWidget(self.button_browseDetectionDir)
+
+        layout_dir.addWidget(groupbox_smartScan)
+
+        self._smart_scan_rows = None  # set by open_smart_scan_check_dialog() or apply_nav_signal_metadata()
+        self._ribbon_group_end(layout_ribbon, layout_dir, 'Files')
+        #%% Input Parameters (ribbon column) - scan dims, scale bars,
+        # detector size, dwell time, metadata block - everything needed to
+        # extract DPs for 3DED. Detector Size/Scan Size share one
+        # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
+        # column, including QSpinBox for Scan Size too - was a QLineEdit)
+        # so their labels/X/Y cells line up row-to-row.
+        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
+
+        # Detector Size/Scan Size/Metadata/Scales each get their own
+        # QGroupBox, arranged 2x2 (mirrors Tab_ROI_on_4D/Navigator's Input
+        # Parameters column exactly): Detector Size beside Scan Size,
+        # Metadata beside Scales below them.
+        layout_exp_groups = qtw.QGridLayout()
+        spin_w_size = 55  # detector/scan size spinboxes only hold a handful of digits
+
+        #### Detector Size
+        self.groupbox_detectorSize = qtw.QGroupBox('Detector Size')
+        layout_detSize = qtw.QHBoxLayout(self.groupbox_detectorSize)
+        detSize_tooltip = (
+            'Detector size in pixels - auto-detected for most formats; .tpx3 needs it '
+            'set explicitly (Auto assumes 512x512).')
+        self.checkbox_detectorSizeAuto = qtw.QCheckBox('Auto')
+        self.checkbox_detectorSizeAuto.setChecked(True)
+        self.checkbox_detectorSizeAuto.setToolTip(detSize_tooltip)
+        layout_detSize.addWidget(self.checkbox_detectorSizeAuto)
+        self.spinbox_detectorSize_x = qtw.QSpinBox()
+        self.spinbox_detectorSize_x.setRange(1, 8192)
+        self.spinbox_detectorSize_x.setValue(512)
+        self.spinbox_detectorSize_x.setFixedWidth(spin_w_size)
+        layout_detSize.addWidget(self.spinbox_detectorSize_x)
+        layout_detSize.addWidget(qtw.QLabel('×', alignment=Qt.AlignCenter))
+        self.spinbox_detectorSize_y = qtw.QSpinBox()
+        self.spinbox_detectorSize_y.setRange(1, 8192)
+        self.spinbox_detectorSize_y.setValue(512)
+        self.spinbox_detectorSize_y.setFixedWidth(spin_w_size)
+        layout_detSize.addWidget(self.spinbox_detectorSize_y)
+        layout_exp_groups.addWidget(self.groupbox_detectorSize, 0, 0)
+        self.activate_detectorSize_spinboxes()
+        self.checkbox_detectorSizeAuto.stateChanged.connect(self.activate_detectorSize_spinboxes)
+
+        #### Scan Size
+        self.groupbox_scanSize = qtw.QGroupBox('Scan Size')
+        layout_scanSizeBox = qtw.QHBoxLayout(self.groupbox_scanSize)
+        self.checkbox_scanSize = qtw.QCheckBox('Auto')
+        self.checkbox_scanSize.setChecked(True)
+        self.checkbox_scanSize.setToolTip(
+            'Scan size from the loaded navigation signal - uncheck to override manually')
+        layout_scanSizeBox.addWidget(self.checkbox_scanSize)
+        self.spinbox_scanSize_x = qtw.QSpinBox()
+        self.spinbox_scanSize_x.setFixedWidth(spin_w_size)
+        self.spinbox_scanSize_x.setRange(1, 99999)
+        layout_scanSizeBox.addWidget(self.spinbox_scanSize_x)
+        layout_scanSizeBox.addWidget(qtw.QLabel('×', alignment=Qt.AlignCenter))
+        self.spinbox_scanSize_y = qtw.QSpinBox()
+        self.spinbox_scanSize_y.setFixedWidth(spin_w_size)
+        self.spinbox_scanSize_y.setRange(1, 99999)
+        layout_scanSizeBox.addWidget(self.spinbox_scanSize_y)
+        layout_exp_groups.addWidget(self.groupbox_scanSize, 0, 1)
+        self.activate_lineEdit_scanSize()
+        self.checkbox_scanSize.stateChanged.connect(self.activate_lineEdit_scanSize)
+
+        #### Metadata (comment.txt) auto-fill - Load/Browse/View on row 0,
+        # Block # on row 1 (keeps this box narrow, matching Navigator/
+        # Tab_ROI_on_4D).
+        self.groupbox_metadata = qtw.QGroupBox('Metadata')
+        layout_metadata = qtw.QGridLayout(self.groupbox_metadata)
+        self.button_loadMetadata = qtw.QPushButton('Load')
+        self.button_loadMetadata.setToolTip(
+            'Fill scan size/dwell time from comment.txt (tpx3 only)')
+        layout_metadata.addWidget(self.button_loadMetadata, 0, 0)
+        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
+
+        self.button_browseMetadata = qtw.QPushButton('...')
+        self.button_browseMetadata.setFixedWidth(30)
+        self.button_browseMetadata.setToolTip('Browse for the metadata file')
+        layout_metadata.addWidget(self.button_browseMetadata, 0, 1)
+        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
+
+        self.button_viewMetadata = qtw.QPushButton('View...')
+        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
+        layout_metadata.addWidget(self.button_viewMetadata, 0, 2)
+        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
 
         label_metadataCount = qtw.QLabel('Block #')
         label_metadataCount.setToolTip(
             'Which metadata block to read (enabled if comment.txt logs more than one)')
-        layout_scanSize_row2.addWidget(label_metadataCount)
+        layout_metadata.addWidget(label_metadataCount, 1, 0)
         self.spinbox_metadataCount = qtw.QSpinBox()
         self.spinbox_metadataCount.setFixedWidth(50)
         self.spinbox_metadataCount.setRange(0, 99999)
@@ -319,25 +326,8 @@ class Tab_Tracking_CV2(TabBase):
         # file itself) for the newly-selected block as soon as the value
         # changes, instead of requiring an extra "Load" click every time.
         self.spinbox_metadataCount.valueChanged.connect(lambda: self.load_metadata(silent=True))
-        layout_scanSize_row2.addWidget(self.spinbox_metadataCount)
-
-        self.button_loadMetadata = qtw.QPushButton('Load')
-        self.button_loadMetadata.setToolTip(
-            'Fill scan size/dwell time from comment.txt (tpx3 only)')
-        layout_scanSize_row2.addWidget(self.button_loadMetadata)
-        self.button_loadMetadata.clicked.connect(lambda: self.load_metadata(silent=False))
-
-        self.button_browseMetadata = qtw.QPushButton('...')
-        self.button_browseMetadata.setFixedWidth(30)
-        self.button_browseMetadata.setToolTip('Browse for the metadata file')
-        layout_scanSize_row2.addWidget(self.button_browseMetadata)
-        self.button_browseMetadata.clicked.connect(self.browse_metadata_file)
-
-        self.button_viewMetadata = qtw.QPushButton('View...')
-        self.button_viewMetadata.setToolTip('View the full raw comment.txt content')
-        self.button_viewMetadata.clicked.connect(self.show_metadata_dialog)
-        layout_scanSize_row2.addWidget(self.button_viewMetadata)
-        layout_scanSize_row2.addStretch(1)
+        layout_metadata.addWidget(self.spinbox_metadataCount, 1, 1)
+        layout_exp_groups.addWidget(self.groupbox_metadata, 1, 0)
 
         self.metadata_path_override = None  # set by browse_metadata_file(); cleared on new 4D folder
 
@@ -348,144 +338,60 @@ class Tab_Tracking_CV2(TabBase):
         self._nav_4d_files = None
         self._nav_4d_directory = None
 
-        # Scale bars - Real | Recip. share one row, below everything else in
-        # this column, matching Tab_ROI_on_4D/Navigator's merge.
-        layout_scale_row = qtw.QHBoxLayout()
-        layout_scale_row.addWidget(qtw.QLabel('Real Space Scale (nm)'))
+        #### Scales - Real (row 0), then Recip. + "Center" (row 1) - moved
+        # into a groupbox, matching Tab_ROI_on_4D/Navigator.
+        self.groupbox_scales = qtw.QGroupBox('Scales')
+        layout_scales = qtw.QGridLayout(self.groupbox_scales)
+        layout_scales.addWidget(qtw.QLabel('Real (nm)'), 0, 0)
         self.lineEdit_scale_real = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_real)
         self.lineEdit_scale_real.setValidator(self.double_validator)
-        self._ribbon_inline_separator(layout_scale_row)
-        layout_scale_row.addWidget(qtw.QLabel('Reciprocal Space Scale (Å<sup>-1</sup>)'))
+        self.lineEdit_scale_real.setMaximumWidth(70)
+        layout_scales.addWidget(self.lineEdit_scale_real, 0, 1)
+
+        layout_scales.addWidget(qtw.QLabel('Recip. (Å<sup>-1</sup>)'), 1, 0)
         self.lineEdit_scale_recip = qtw.QLineEdit(self)
-        layout_scale_row.addWidget(self.lineEdit_scale_recip)
         self.lineEdit_scale_recip.setValidator(self.double_validator)
+        self.lineEdit_scale_recip.setMaximumWidth(70)
+        layout_scales.addWidget(self.lineEdit_scale_recip, 1, 1)
+
         self.button_centerRecip = qtw.QPushButton('Center')
         self.button_centerRecip.setToolTip(
             'Find the beam center now, or Ctrl+Click the DP plot to set it manually')
         self.button_centerRecip.clicked.connect(self.find_and_center_recip)
-        layout_scale_row.addWidget(self.button_centerRecip)
-        layout_box_scanSize.addLayout(layout_scale_row)
+        layout_scales.addWidget(self.button_centerRecip, 1, 2)
+        layout_exp_groups.addWidget(self.groupbox_scales, 1, 1)
         self.lineEdit_scale_recip.textChanged.connect(lambda: self.update_scalebar('reciprocal'))
         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
-        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters')
 
-        #%% Display Contrast (ribbon column) - ContrastScalingBox is a
-        # shared QGroupBox-based widget (used here and on Tab_SAM2) with
-        # its own caption/border already, so it's added directly to the
-        # ribbon (with a stretch weight and trailing separator, like every
-        # other column) instead of going through _ribbon_group_start/_end -
-        # wrapping a bordered box in a borderless ribbon column would just
-        # double the framing for no benefit.
-        self.box_contrast = ContrastScalingBox()
-        layout_ribbon.addWidget(self.box_contrast, 1)
-        self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
-        sep_contrast = qtw.QFrame()
-        sep_contrast.setFrameShape(qtw.QFrame.VLine)
-        sep_contrast.setFrameShadow(qtw.QFrame.Sunken)
-        layout_ribbon.addWidget(sep_contrast)
+        layout_box_scanSize.addLayout(layout_exp_groups)
+        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=False)
 
-        #%% Feature Handling (ribbon column) - tree_objects is height-capped
-        # to fit the ribbon (same treatment as Navigator's file list).
-        self.box_buttons, layout_userInput_2 = self._ribbon_group_start(layout_ribbon, stretch=1)
+        # Load Signal / Load Saved Analysis - moved here from Files, at the
+        # bottom of this column (per user request).
+        layout_loadSignal = qtw.QHBoxLayout()
+        layout_box_scanSize.addLayout(layout_loadSignal)
+        self.button_loadNavigation = qtw.QPushButton('Load Signal')
+        self.button_loadNavigation.setFixedSize(button_w, button_h_lrg*2)
+        layout_loadSignal.addWidget(self.button_loadNavigation)
+        self.button_loadNavigation.clicked.connect(self.load_navSignal)
 
-        # top
-        layout_featureTop = qtw.QHBoxLayout()
-        layout_userInput_2.addLayout(layout_featureTop)
-        self.button_autoDetection = qtw.QPushButton('Auto Detector')
-        layout_featureTop.addWidget(self.button_autoDetection)
-        self.button_autoDetection.clicked.connect(self.launch_auto_detector)
-        
-        self.button_reset_rois = qtw.QPushButton('Reset ROIs')
-        layout_featureTop.addWidget(self.button_reset_rois)
-        self.button_reset_rois.clicked.connect(self.reset_rois)
-        
-        # tree
-        self.tree_objects = qtw.QTreeWidget()
-        layout_userInput_2.addWidget(self.tree_objects)
-        self.tree_objects.setMinimumWidth(200)
-        # Height-capped (rather than the generous min-height=280 this had
-        # in the old left panel) to fit the ribbon's height budget - see
-        # Navigator's file_list_widget for the identical treatment.
-        self.tree_objects.setMaximumHeight(110)
-        self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "dup", "del"]
-        self.tree_objects.setHeaderLabels(["Use", "Idx", "Start", "End", "Ref", "Tracked", "Extracted", "Duplicate", "Delete"])
-        self.tree_objects.setColumnCount(len(self.cols_tree))
-        # Wide enough for their content: dup/del hold a 30px button, end
-        # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
-        col_widths = {'use': 35, 'idx': 30, 'init': 50, 'end': 60, 'ref': 45,
-                      'trk': 60, 'ext': 65, 'dup': 60, 'del': 45}
-        for i, col in enumerate(self.cols_tree):
-            self.tree_objects.setColumnWidth(i, col_widths[col])
-        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
-        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
-        
-        self.patches_axNav = []
-        self.patches_axTrack = []
-        self.empty_main_dataframe()
-        
-        # bottom - blur/tracker selection on its own row, action buttons on
-        # another, rather than all 6 widgets crammed into one (too wide for
-        # the panel) row.
-        layout_featureBottom = qtw.QHBoxLayout()
-        layout_userInput_2.addLayout(layout_featureBottom)
+        self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
+        self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg*2)
+        layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
+        self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
-        # self.checkbox_roiInRoi = qtw.QCheckBox('Select ROIinROI')
-        # layout_featureBottom.addWidget(self.checkbox_roiInRoi)
-        # self.checkbox_roiInRoi.setDisabled(True)
 
-        label_blur_track = qtw.QLabel('Image Blur')
-        layout_featureBottom.addWidget(label_blur_track)
-        self.combo_blur_track = qtw.QComboBox()
-        layout_featureBottom.addWidget(self.combo_blur_track)
-        self.combo_blur_track.addItems([str(i) for i in range(1,23,2)])
-        self.combo_blur_track.currentIndexChanged.connect(self.blur_navImages)
+        # Display Contrast and Feature Handling have moved out of the
+        # ribbon, into one stacked column beside the canvas (same position
+        # as the Navigator tab's file list) - see the #%% canvas section
+        # below, where self.box_contrast/self.tree_objects etc. are built.
 
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
-        # layout_featureBottom.addItem(spacer)
-
-        label_track = qtw.QLabel('Tracker')
-        layout_featureBottom.addWidget(label_track)
-        self.combo_trackMethod = qtw.QComboBox()
-        # Closed-state width tracks a fixed character count instead of the
-        # longest item ('xcorr-template') - the popup itself still shows
-        # full item text, only the always-visible closed box is capped.
-        self.combo_trackMethod.setSizeAdjustPolicy(qtw.QComboBox.AdjustToMinimumContentsLength)
-        self.combo_trackMethod.setMinimumContentsLength(8)
-        layout_featureBottom.addWidget(self.combo_trackMethod)
-        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
-        layout_featureBottom.addStretch(1)
-
-        layout_featureButtons = qtw.QHBoxLayout()
-        layout_userInput_2.addLayout(layout_featureButtons)
-        layout_featureButtons.addStretch(1)
-
-        self.button_track = qtw.QPushButton('Track!')
-        layout_featureButtons.addWidget(self.button_track, alignment=Qt.AlignCenter)
-        self.button_track.clicked.connect(self.track_rois)
-        self.button_track.setDisabled(True)
-
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
-        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
-        layout_featureButtons.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
-        layout_featureButtons.addStretch(1)
-        self._ribbon_group_end(layout_ribbon, layout_userInput_2, 'Feature Handling')
-
-        #%% Threshold / Edge Detection (combined ribbon column, stacked
-        # like Tab_ROI_on_4D's Edge Detection/SAM2/Summed DP column) -
-        # Edge Detection was already visually nested inside "Extract 3DED"
-        # in the original left-panel design, so stacking it as a
-        # sub-section here (rather than its own full column) keeps that
-        # same relationship.
+        #%% Threshold / Edge Detection
         self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=1)
-
+        #### threshold
         layout_thresh_method = qtw.QHBoxLayout()
-        label_thresh_method = qtw.QLabel('Threshold')
-        label_thresh_method.setToolTip('Threshold method')
+        label_thresh_method = qtw.QLabel('Threshold Method')
         layout_thresh_method.addWidget(label_thresh_method)
-        
         
         self.combo_thresh_method = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_thresh_method)
@@ -521,38 +427,40 @@ class Tab_Tracking_CV2(TabBase):
         sep_3ded.setFrameShadow(qtw.QFrame.Sunken)
         layout_box_3ded.addWidget(sep_3ded)
 
+        
+        #### Edge detection
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row1)
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
+        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
         self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
         layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
         self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
-        label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection_row1.addWidget(label_edgeKernel)
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection_row1.addWidget(self.spinbox_edgeKernel)
-        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge facing one direction (angle below)')
+        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
         self.checkbox_revertMask.setToolTip(
             'With Edge Detection: keep the interior, cut the edge band (inverse)')
         layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
         self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
-        layout_edgeDetection_row1.addStretch(1)
 
         layout_edgeDetection_row2 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row2)
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge facing one direction (angle below)')
-        layout_edgeDetection_row2.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        label_edgeKernel = qtw.QLabel('Kernel')
+        layout_edgeDetection_row2.addWidget(label_edgeKernel)
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
+        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
+        self._ribbon_inline_separator(layout_edgeDetection_row2)
         label_edgeDirection = qtw.QLabel('Angle (°)')
         layout_edgeDetection_row2.addWidget(label_edgeDirection)
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(0, 359.9)
+        self.spinbox_edgeDirection.setRange(-360, 360)
         self.spinbox_edgeDirection.setDecimals(1)
         self.spinbox_edgeDirection.setSingleStep(5)
         self.spinbox_edgeDirection.setValue(0)
@@ -561,12 +469,15 @@ class Tab_Tracking_CV2(TabBase):
             '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
         layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
         self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
-        layout_edgeDetection_row2.addStretch(1)
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', separator=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', separator=False, stretch=True)
 
-        #%% Extract (ribbon column) - CPU Cores/Clip FPS/Autosave, Make
-        # *.pts2, then the 3 extraction buttons + Cancel.
-        self.box_extract, layout_box_extract = self._ribbon_group_start(layout_ribbon, stretch=1)
+        sep_extract = qtw.QFrame()
+        sep_extract.setFrameShape(qtw.QFrame.HLine)
+        sep_extract.setFrameShadow(qtw.QFrame.Sunken)
+        layout_box_3ded.addWidget(sep_extract)
+
+        #%% Extract 
+        layout_box_extract = layout_box_3ded
 
         layout_threadNo = qtw.QHBoxLayout()
         label_threadNo = qtw.QLabel('CPU Cores')
@@ -575,7 +486,7 @@ class Tab_Tracking_CV2(TabBase):
         self.spinbox_threadNo.setMaximumWidth(80)
         layout_threadNo.addWidget(self.spinbox_threadNo)
         self.spinbox_threadNo.setRange(1, os.cpu_count() or 1)
-        self.spinbox_threadNo.setValue(max(1, (os.cpu_count() or 2) - 2))
+        self.spinbox_threadNo.setValue(2)
         self.spinbox_threadNo.valueChanged.connect(self.set_threadNo)
         
         
@@ -613,42 +524,118 @@ class Tab_Tracking_CV2(TabBase):
         self.button_3ded.setFixedHeight(button_h_lrg)
         self.button_3ded.clicked.connect(self.extract_3ded)
 
-        self.button_extractCurrentFrame = qtw.QPushButton('Extract DP\n(Current Frame)')
+        self.button_extractCurrentFrame = qtw.QPushButton('Extract Frame')
         layout_extract.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         self.button_extractCurrentFrame.setToolTip(
             'Compute the DP for the current frame only (not saved)')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
 
+        for btn in (self.button_3ded, self.button_extractCurrentFrame):
+            btn.setFixedHeight(button_h_lrg)
+
+        #### Cancel
+        layout_extract_2 = qtw.QVBoxLayout()
+        layout_ribbon.addLayout(layout_extract_2)
+        
         self.button_save_results = qtw.QPushButton('Save Results')
-        layout_extract.addWidget(self.button_save_results)
-        self.button_save_results.setFixedHeight(button_h_lrg)
+        layout_extract_2.addWidget(self.button_save_results)
+        self.button_save_results.setFixedSize(button_w, button_h_lrg*3)
         self.button_save_results.clicked.connect(self.save_results)
-        layout_extract.addStretch(1)
 
-        # Same width for all three - sized to fit the widest label
-        # ("Extract DP\n(Current Frame)") rather than a hardcoded guess.
-        extract_btn_width = self.button_extractCurrentFrame.sizeHint().width()
-        for btn in (self.button_3ded, self.button_extractCurrentFrame, self.button_save_results):
-            btn.setFixedWidth(extract_btn_width)
-
-        # Cancel needs to stay clickable regardless of tracking/extraction
-        # state (unlike the rest of this column, whose widgets are enabled/
-        # disabled together elsewhere) - that's handled by its own enabled
-        # state below, not by DOM position, so it can live in this column
-        # like Tab_ROI_on_4D's Cancel does. Built before disable_3ded_widgets()
-        # runs, since that sweep now checks `wid is self.button_cancel`.
         self.button_cancel = qtw.QPushButton('Cancel')
-        self.button_cancel.setFixedHeight(button_h_lrg)
+        self.button_cancel.setFixedSize(button_w, button_h_lrg*3)
         self.button_cancel.setStyleSheet("background-color: red; color: white;")
         self.button_cancel.setDisabled(True)
         self.button_cancel.setToolTip('Stop the running tracking/extraction')
         self.button_cancel.clicked.connect(self.cancel_running_work)
-        layout_box_extract.addWidget(self.button_cancel)
+        layout_extract_2.addWidget(self.button_cancel)
 
         self.disable_3ded_widgets(True)
         self._ribbon_group_end(layout_ribbon, layout_box_extract, 'Extract', separator=False)
         layout_ribbon.addStretch(1)
+        #%% Display Contrast (top) + Feature Handling
+        widget_featurePanel = qtw.QWidget()
+        layout_featurePanel = qtw.QVBoxLayout(widget_featurePanel)
+        layout_featurePanel.setContentsMargins(2, 2, 2, 2)
+
+        self.box_contrast = ContrastScalingBox()
+        self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        layout_featurePanel.addWidget(self.box_contrast)
+
+        # top
+        layout_featureTop = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(layout_featureTop)
+        self.button_autoDetection = qtw.QPushButton('Auto Detector')
+        layout_featureTop.addWidget(self.button_autoDetection)
+        self.button_autoDetection.clicked.connect(self.launch_auto_detector)
+
+        self.button_reset_rois = qtw.QPushButton('Reset ROIs')
+        layout_featureTop.addWidget(self.button_reset_rois)
+        self.button_reset_rois.clicked.connect(self.reset_rois)
+
+        # tree - stretches to fill the rest of this column's height now that
+        # it sits beside the (tall) canvas, rather than being capped to fit
+        # inside a short ribbon column.
+        self.tree_objects = qtw.QTreeWidget()
+        layout_featurePanel.addWidget(self.tree_objects, 1)
+        self.tree_objects.setMinimumWidth(200)
+        self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "dup", "del"]
+        self.tree_objects.setHeaderLabels(["Use", "Idx", "Start", "End", "Ref", "Tracked", "Extracted", "Duplicate", "Delete"])
+        self.tree_objects.setColumnCount(len(self.cols_tree))
+        # Wide enough for their content: dup/del hold a 30px button, end
+        # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
+        col_widths = {'use': 35, 'idx': 30, 'init': 50, 'end': 60, 'ref': 45,
+                      'trk': 60, 'ext': 65, 'dup': 60, 'del': 45}
+        for i, col in enumerate(self.cols_tree):
+            self.tree_objects.setColumnWidth(i, col_widths[col])
+        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
+        self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
+
+        self.patches_axNav = []
+        self.patches_axTrack = []
+        self.empty_main_dataframe()
+
+        # bottom - blur/tracker selection on its own row, action buttons on
+        # another, rather than all 6 widgets crammed into one (too wide for
+        # the panel) row.
+        layout_featureBottom = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(layout_featureBottom)
+
+        label_blur_track = qtw.QLabel('Image Blur')
+        layout_featureBottom.addWidget(label_blur_track)
+        self.combo_blur_track = qtw.QComboBox()
+        layout_featureBottom.addWidget(self.combo_blur_track)
+        self.combo_blur_track.addItems([str(i) for i in range(1,23,2)])
+        self.combo_blur_track.currentIndexChanged.connect(self.blur_navImages)
+
+        label_track = qtw.QLabel('Tracker')
+        layout_featureBottom.addWidget(label_track)
+        self.combo_trackMethod = qtw.QComboBox()
+        # Closed-state width tracks a fixed character count instead of the
+        # longest item ('xcorr-template') - the popup itself still shows
+        # full item text, only the always-visible closed box is capped.
+        self.combo_trackMethod.setSizeAdjustPolicy(qtw.QComboBox.AdjustToMinimumContentsLength)
+        self.combo_trackMethod.setMinimumContentsLength(8)
+        layout_featureBottom.addWidget(self.combo_trackMethod)
+        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
+        layout_featureBottom.addStretch(1)
+
+        layout_featureButtons = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(layout_featureButtons)
+        layout_featureButtons.addStretch(1)
+
+        self.button_track = qtw.QPushButton('Track!')
+        layout_featureButtons.addWidget(self.button_track, alignment=Qt.AlignCenter)
+        self.button_track.clicked.connect(self.track_rois)
+        self.button_track.setDisabled(True)
+
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
+        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
+        layout_featureButtons.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+        layout_featureButtons.addStretch(1)
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -656,6 +643,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_right_outer = qtw.QHBoxLayout(self._right_widget)
         layout_right_outer.setContentsMargins(0, 0, 0, 0)
         layout_right_outer.setSpacing(0)
+        layout_right_outer.addWidget(widget_featurePanel)
         self._canvas_container = qtw.QWidget()
         layout_right_outer.addWidget(self._canvas_container, 1)
         layout_canvas = qtw.QVBoxLayout(self._canvas_container)
@@ -732,7 +720,12 @@ class Tab_Tracking_CV2(TabBase):
             self.img_display['dp'], ax=self.ax_dp, fraction=0.046, pad=0.04)
 
         self.canvas.setMinimumHeight(650)
+        # Kept alive (not shown) purely for its view-stack bookkeeping
+        # (.update()/.push_current(), used to seed the ribbon's Home button)
+        # and as the target of the ribbon's own Pan/Zoom/Home actions below -
+        # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar.hide()
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
@@ -775,7 +768,6 @@ class Tab_Tracking_CV2(TabBase):
         self.clip_dp = ClippingThresholdsWidget()
         layout_canvas_row.addWidget(self.clip_dp)
         layout_canvas_stack.addLayout(layout_canvas_row)
-        layout_canvas_stack.addWidget(self.toolbar)
         # DP clip range is only reset the first time real data is shown
         # (see update_ax) - after that, the user's chosen thresholds
         # persist across frame scrubs instead of resetting every tick.
@@ -1263,6 +1255,10 @@ class Tab_Tracking_CV2(TabBase):
         self.nav_imgs = deepcopy(self.s_8bit.data)
         self.dp_center = None  # a new signal may have a different DP shape/center
         self._dp_center_cache_key = None
+        # Forces update_ax_mask()'s shape-change check to reset ax_mask's
+        # view on this signal's first ROI crop, even if it happens to match
+        # whatever the previous signal's last-shown crop size was.
+        self._ax_mask_shape_seen = None
         self.spinner.stop()
         
         shape_x, shape_y = self.nav_imgs[0].shape
@@ -1427,19 +1423,16 @@ class Tab_Tracking_CV2(TabBase):
         self.logger.info('Loaded saved analysis from %s (%d ROI(s)).', path, len(rois))
 
     def disable_3ded_widgets(self, state):
-        # box_3ded (Threshold/Edge Detection) and box_extract (CPU Cores/
-        # Clip FPS/Autosave/Make *.pts2/the 3 extract buttons) used to be
-        # one QGroupBox in the old left panel - now two separate ribbon
-        # columns, so both need sweeping. button_cancel lives in box_extract
-        # too, but (as before the ribbon split) must stay independent of
-        # this sweep - it needs to stay clickable regardless of
-        # tracking/extraction state, managed by its own enable/disable
-        # calls elsewhere.
-        for box in (self.box_3ded, self.box_extract):
-            for wid in box.findChildren(qtw.QWidget):
-                if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
-                    continue
-                wid.setDisabled(state)
+        # box_3ded now stacks Threshold/Edge Detection/Extract (CPU Cores/
+        # Clip FPS/Autosave/Make *.pts2/the 3 extract buttons) in one
+        # combined ribbon column. button_cancel lives in here too, but must
+        # stay independent of this sweep - it needs to stay clickable
+        # regardless of tracking/extraction state, managed by its own
+        # enable/disable calls elsewhere.
+        for wid in self.box_3ded.findChildren(qtw.QWidget):
+            if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
+                continue
+            wid.setDisabled(state)
     
     def disable_roiInRoi_widgets(self, state):
         for wid in self.box_roiInRoi.findChildren(qtw.QWidget):
@@ -1698,7 +1691,8 @@ class Tab_Tracking_CV2(TabBase):
 
     def update_ax_mask(self, img_roi, img_mask):
         """Update ax_mask's cropped ROI image and threshold-mask overlay,
-        resetting the view to fit the (per-ROI-varying) crop size."""
+        resetting the view to fit the crop only when its size actually
+        changed since the last call."""
         shape_x, shape_y = img_mask.shape
         self.img_display['img_mask'].set_data(img_roi)
         try:
@@ -1717,11 +1711,15 @@ class Tab_Tracking_CV2(TabBase):
         self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
         # The ROI crop's size varies between ROIs/selections, so (unlike
-        # nav/track) the view here is reset to fit it every single time,
-        # rather than only once at load — otherwise it stays at whatever
-        # size an earlier, differently-sized ROI last used.
-        self.ax_mask.set_xlim(0, shape_y)
-        self.ax_mask.set_ylim(shape_x, 0)
+        # nav/track) the view here is reset to fit it whenever that size
+        # actually changes, rather than only once at load - otherwise it
+        # would stay at whatever size an earlier, differently-sized ROI
+        # last used. But a same-size update (frame scrub, edge-detection
+        # setting tweak, ...) leaves the user's current zoom/pan alone.
+        if (shape_x, shape_y) != getattr(self, '_ax_mask_shape_seen', None):
+            self.ax_mask.set_xlim(0, shape_y)
+            self.ax_mask.set_ylim(shape_x, 0)
+            self._ax_mask_shape_seen = (shape_x, shape_y)
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
         # self.canvas.draw_idle()
