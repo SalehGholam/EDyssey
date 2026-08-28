@@ -18,6 +18,7 @@ import runpy
 WORKER_SCRIPTS = {
     'extract_frame': 'worker_extract_frame.py',
     'nav_img': 'worker_nav_img.py',
+    'nav_img_batch': 'worker_nav_img_batch.py',
     'sam': 'worker_sam.py',
 }
 

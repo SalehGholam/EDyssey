@@ -6,13 +6,15 @@ tab_sam2.py).
 
 Two independent halves live here:
 
-- Worker/driver-process side: run_pool_batch() (drives a
-  ProcessPoolExecutor over a task list, reporting per-task progress on
-  stdout and recovering from a crashed pool worker) and
-  wait_for_job_assignment() (see the Job Object note below).
-- GUI-process side: create_job_object()/assign_process_to_job()/kill_job()
-  - thin ctypes wrappers around the Windows Job Object API, used to kill a
-    batch driver AND every pool worker it ever spawned in one shot.
+- GUI-process side: write_tasks_json() (builds the one task file a batch
+  driver reads) and create_job_object()/assign_process_to_job()/kill_job()/
+  kill_pid() - thin ctypes wrappers around the Windows Job Object API (plus
+  a PID-based backstop, see kill_pid's docstring) used to kill a batch
+  driver AND every pool worker it ever spawned in one shot.
+- Worker/driver-process side: load_tasks() (reads that file back),
+  run_pool_batch() (drives a ProcessPoolExecutor over the task list,
+  reporting per-task progress on stdout and recovering from a crashed pool
+  worker), and wait_for_job_assignment() (see the Job Object note below).
 
 Both halves are kept in one module (rather than split worker-side/GUI-side)
 because they're two ends of the same protocol and because every worker_*.py
@@ -27,6 +29,41 @@ import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+
+import numpy as np
+
+
+#%% GUI-process side - task-list I/O
+
+def _json_default(obj):
+    """json.dumps(..., default=...) backstop for numpy scalars (np.int64,
+    np.bool_, ...) - not JSON-serializable by default, and with hundreds/
+    thousands of tasks in one file, a single missed field anywhere aborts
+    serialization for the *whole* batch, not just that task. Callers should
+    still coerce explicitly where practical (e.g. list(scanSize) with
+    already-plain-int elements) - this is defense in depth, not a
+    replacement for that."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
+
+
+def write_tasks_json(path, tasks):
+    """Write `tasks` (a list of plain-Python-typed dicts, one per file/
+    frame/patch) to `path` as JSON - the one file a batch driver reads
+    instead of each task's args being stringified onto a QProcess argv
+    list (which risks Windows' command-line length limit for a large
+    batch, and is exactly the per-task subprocess overhead this refactor
+    removes). Every task dict must include an 'i_index' key (the same
+    index the driver's "DONE <i_index>"/"FAIL <i_index>" stdout lines and
+    "<i_index>.npy" result files use).
+
+    Round-trip note: JSON has no tuple type, so anything that needs to be
+    a tuple on the read side (e.g. scanSize, det_shape) comes back as a
+    list from load_tasks() - callers must re-tuple() explicitly wherever
+    the rest of the code expects one."""
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(tasks, f, default=_json_default)
 
 
 #%% Worker/driver-process side
@@ -49,7 +86,6 @@ def _save_result_npy(temp_dir, i_index, result):
     Named "<i_index>.tmp.npy", not "<i_index>.npy.tmp" - np.save() appends
     ".npy" to any filename that doesn't already end with it, which would
     otherwise silently turn a ".npy.tmp" target into ".npy.tmp.npy"."""
-    import numpy as np
     tmp_path = os.path.join(temp_dir, f'{i_index}.tmp.npy')
     final_path = os.path.join(temp_dir, f'{i_index}.npy')
     np.save(tmp_path, result)

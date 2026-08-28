@@ -93,6 +93,12 @@ extra_datas = [
     ('worker_sam.py', '.'),
     ('worker_extract_frame.py', '.'),
     ('worker_nav_img.py', '.'),
+    ('worker_nav_img_batch.py', '.'),
+    # Imported (not runpy'd) by every *_batch.py worker and by ui_tabs/
+    # tab_*.py directly - a loose file regardless, same as the rest of this
+    # list, since nothing currently traced as a scripts= entry imports it,
+    # so PyInstaller's static analysis wouldn't otherwise bundle it.
+    ('worker_pool_utils.py', '.'),
 ]
 if OFFLINE_BUILD:
     torch_excludes = []

@@ -20,7 +20,7 @@ import os
 # Repo root - two levels up from this file (ui_tabs/worker_launch.py).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_WORKER_NAMES = {'extract_frame', 'nav_img', 'sam'}
+_WORKER_NAMES = {'extract_frame', 'nav_img', 'nav_img_batch', 'sam'}
 
 
 def worker_command(worker_name, args):
@@ -28,8 +28,9 @@ def worker_command(worker_name, args):
     launch worker_<worker_name>.py with `args` (each converted to str).
 
     Args:
-        worker_name: One of 'extract_frame', 'nav_img', 'sam' - see
-            worker_dispatch.WORKER_SCRIPTS for the name -> script mapping.
+        worker_name: One of 'extract_frame', 'nav_img', 'nav_img_batch',
+            'sam' - see worker_dispatch.WORKER_SCRIPTS for the name ->
+            script mapping.
         args: Positional arguments to pass to the worker script, in the same
             order its own `if __name__ == '__main__':` block expects them.
     """

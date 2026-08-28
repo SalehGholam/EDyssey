@@ -32,6 +32,64 @@ def _read_scansize_hdf5(fn):
             return tuple(int(x) for x in f['4D'].shape[:2])
 
 
+def calculate_nav_img_core(task):
+    """Compute one navigation image from an already-typed task dict - the
+    pure-computation half of calculate_nav_img_worker (below), factored out
+    so worker_nav_img_batch.py's pooled batch driver can call it directly
+    per task instead of via a fresh CLI-parsing subprocess each time.
+    calculate_nav_img_worker (the single-file CLI entry point, still used
+    directly by ROI on 4D/SAM2's one-off "Compute Virtual Image") is now a
+    thin wrapper around this.
+
+    Args:
+        task: dict with keys 'fn' (path), 'dtype' (file extension),
+            'scanSize' ((nx, ny)/[nx, ny] or None - resolved from the
+            .hdf5 file's own metadata if still None here and dtype is
+            '.hdf5'), 'dwellTime' (int, microseconds), 'detectors'
+            (optional list of {'center': [x, y] or (x, y), 'r_in',
+            'r_out'} dicts - a virtual detector mask, or None/absent for
+            none), 'fn_pattern' (optional smart-scan pattern-file path),
+            'det_shape' (optional (det_x, det_y)/[det_x, det_y], defaults
+            to (512, 512)), 'mode' ('sum' or 'variance', defaults to
+            'sum').
+
+    Returns:
+        numpy.ndarray - the computed navigation image.
+    """
+    fn = task['fn']
+    dtype = task['dtype']
+    scanSize = task.get('scanSize')
+    scanSize = tuple(scanSize) if scanSize is not None else None
+    if scanSize is None and dtype == '.hdf5':
+        scanSize = _read_scansize_hdf5(fn)
+    dwellTime = int(task['dwellTime'])
+    det_shape = task.get('det_shape')
+    det_shape = tuple(det_shape) if det_shape is not None else (512, 512)
+    fn_pattern = task.get('fn_pattern') or None
+    mode = task.get('mode') or 'sum'
+    detectors = task.get('detectors')
+
+    # n_threads=1: eventem auto-sizes its own internal thread pool to the
+    # whole machine per instance unless told otherwise - fine for a single
+    # call, but this runs as one of several concurrent ProcessPoolExecutor
+    # workers within the same batch driver (or, for calculate_nav_img_worker
+    # below, one of several concurrent subprocesses), each of which would
+    # otherwise also try to claim the whole machine's threads for itself.
+    # Pinning each worker to 1 internal thread makes total concurrency
+    # match what the user actually configured (spinbox_cpuCores).
+    if detectors:
+        detectors = [dict(d, center=tuple(d['center'])) for d in detectors]
+        result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
+                                             dwellTime=dwellTime, detectors=detectors,
+                                             n_threads=1, fn_pattern=fn_pattern,
+                                             det_shape=det_shape, mode=mode)
+    else:
+        result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
+                                      dwellTime=dwellTime, n_threads=1,
+                                      fn_pattern=fn_pattern, det_shape=det_shape, mode=mode)
+    return result
+
+
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
                              detectors_json=None, fn_pattern=None, det_shape=None, mode='sum'):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
@@ -43,10 +101,17 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
     parent (tab_create_navSignal.py) loads the array back with `np.load`
     and removes the file once it has.
 
-    Called as a subprocess by `tab_create_navSignal.py`. Reads arguments from the
-    command line (all as strings), computes the navigation image via `io.calculate_nav_img`
-    (or `io.calculate_nav_img_masked` when a virtual detector mask is given), and exits 0 on
-    success or 1 on error.
+    Single-file CLI entry point - still used directly (not via the pooled
+    batch driver, worker_nav_img_batch.py) by ROI on 4D/SAM2's one-off
+    "Compute Virtual Image", which has no benefit from pooling a single
+    task. "Calculate All" (tab_create_navSignal.py) uses the batch driver
+    instead, which calls calculate_nav_img_core directly per task.
+
+    Called as a subprocess by `tab_create_navSignal.py`/`tab_roi_4d.py`/
+    `tab_sam2.py`. Reads arguments from the command line (all as strings),
+    parses them into the same task-dict shape calculate_nav_img_core
+    expects, computes the navigation image, and exits 0 on success or 1 on
+    error.
 
     Args:
         fn: Absolute path to the 4D-STEM file.
@@ -70,44 +135,20 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
         det_shape = (tuple(map(int, det_shape.strip("()").split(",")))
                     if det_shape not in (None, '', 'None') else (512, 512))
-        if scanSize == 'None':
-            if dtype == '.hdf5':
-                scanSize = _read_scansize_hdf5(fn)
-            else:
-                scanSize = None
-        else:
-            scanSize = tuple(map(int, scanSize.strip("()").split(",")))
+        scanSize = None if scanSize == 'None' else tuple(map(int, scanSize.strip("()").split(",")))
         dwellTime = int(dwellTime)
         i_index = int(i_index)
-
-        # Same functions "Test File" calls in-thread - eventem's native
-        # progress output (tpx3 loading) lands on stderr, which QProcess
-        # already keeps separate from stdout (this script's IPC channel for
-        # the result below), so nothing special needs to happen here; the
-        # parent process reads/handles stderr on its own side.
-        #
-        # n_threads=1: eventem auto-sizes its own internal thread pool to
-        # the whole machine per instance unless told otherwise - fine for a
-        # single call, but this script runs as one of up to spinbox_cpuCores
-        # *concurrent* processes, each of which would otherwise also try to
-        # claim the whole machine's threads for itself. That oversubscription
-        # (N processes x full-core-count threads each) is what was causing
-        # per-file throughput to collapse as more workers piled up
-        # concurrently - pinning each process to 1 internal thread makes
-        # total concurrency match what the user actually configured.
         mode = 'sum' if mode in (None, '', 'None') else mode
+        detectors = None
         if detectors_json not in (None, 'None'):
             detectors = json.loads(detectors_json)
             for d in detectors:
                 d['center'] = tuple(d['center'])
-            result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
-                                                 dwellTime=dwellTime, detectors=detectors,
-                                                 n_threads=1, fn_pattern=fn_pattern,
-                                                 det_shape=det_shape, mode=mode)
-        else:
-            result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
-                                          dwellTime=dwellTime, n_threads=1,
-                                          fn_pattern=fn_pattern, det_shape=det_shape, mode=mode)
+
+        task = {'fn': fn, 'dtype': dtype, 'scanSize': scanSize, 'dwellTime': dwellTime,
+               'detectors': detectors, 'fn_pattern': fn_pattern, 'det_shape': det_shape,
+               'mode': mode}
+        result = calculate_nav_img_core(task)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')
         np.save(fn_out, result)

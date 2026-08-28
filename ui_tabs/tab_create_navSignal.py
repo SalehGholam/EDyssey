@@ -11,7 +11,6 @@ import tempfile
 import json
 import datetime
 from time import perf_counter
-from collections import deque
 from PyQt5.QtCore import Qt, QProcess, QThreadPool, QTimer
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtGui import QDoubleValidator, QKeySequence
@@ -36,6 +35,7 @@ from .threshold_dialog import ThresholdDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
+import worker_pool_utils as wpu
 #%% class
 class Tab_Create_NavSignal(TabBase):
     def __init__(self, parent=None):
@@ -1905,19 +1905,25 @@ class Tab_Create_NavSignal(TabBase):
 
     def create_navigation_signal(self, fns, dtype, scanSize, dwellTime, mask_params=None,
                                  fns_pattern=None, mode='sum'):
-        """Queue one nav-image task per file and launch the first batch of
-        worker processes (up to spinbox_cpuCores), to be drained one at a
-        time by launch_next_nav_task/handle_finished_nav."""
+        """Build one JSON task per file (see worker_pool_utils.write_tasks_json)
+        and launch a single batch-driver process (worker_nav_img_batch.py),
+        which runs its own internal process pool over every file at once -
+        replacing what used to be up to spinbox_cpuCores concurrent
+        per-file QProcess instances (each paying a full cold-interpreter
+        cost) with one process whose pool workers stay warm across the
+        whole batch. Progress streams back incrementally as DONE/FAIL
+        lines - see _read_nav_driver_stdout/_handle_nav_progress_line."""
         self.nav_imgs = [None] * len(fns)
         self.nav_counter = 0
         self.nav_counter_total = len(fns)
         self._nav_tic = perf_counter()
         self._nav_failed = False
         self._cancelling = False
-        # Each worker saves its result to a .npy file in here and prints
-        # just the path back, instead of a base64+pickle-encoded copy of
-        # the array through stdout - see launch_next_nav_task/
-        # handle_finished_nav and worker_nav_img.py's docstring for why.
+        # Each pool worker saves its result to a .npy file in here (see
+        # worker_pool_utils.run_pool_batch) - loading from disk instead of
+        # a base64+pickle blob through the stdout pipe is what avoids
+        # "Calculate All" getting progressively slower as more files'
+        # payloads compete for the same GUI-thread-driven pipe draining.
         self._navimg_temp_dir = tempfile.mkdtemp(prefix='edyssey_navimg_')
         self.logger.info('Starting navigation signal creation for %d file(s)...', len(fns))
         # Detector shape only actually varies by dtype (auto-detected per
@@ -1925,51 +1931,183 @@ class Tab_Create_NavSignal(TabBase):
         # .tpx3) - dtype itself is already uniform across this whole batch,
         # so one lookup from the first file covers the batch.
         det_shape = self.get_detector_shape(fns[0])
-        self.tasks = deque()
+        tasks = []
         for i, fn in enumerate(fns):
             fn_pattern = fns_pattern[i] if fns_pattern is not None else None
-            self.tasks.append((fn, dtype, scanSize, dwellTime, i, mask_params, fn_pattern,
-                              det_shape, mode))
-        self.running_processes = []
-        self.process_task_map = {}
-        self.process_output_buffers = {}
-        self.max_processes = self.spinbox_cpuCores.value()
+            tasks.append({
+                'i_index': i, 'fn': fn, 'dtype': dtype,
+                'scanSize': list(scanSize) if scanSize is not None else None,
+                'dwellTime': dwellTime, 'detectors': mask_params,
+                'fn_pattern': fn_pattern, 'det_shape': list(det_shape), 'mode': mode,
+            })
+        tasks_path = os.path.join(self._navimg_temp_dir, 'tasks.json')
+        wpu.write_tasks_json(tasks_path, tasks)
+        n_workers = self.spinbox_cpuCores.value()
         self.update_progress_bar(0, self.nav_counter_total)
-        for _ in range(min(self.max_processes, len(self.tasks))):
-            self.launch_next_nav_task()
+        self._launch_nav_batch_driver(tasks_path, n_workers)
 
-    def launch_next_nav_task(self):
-        """Pop the next queued task and start it as a worker_nav_img QProcess,
-        wiring up its output/finished/error signals."""
-        if not self.tasks or len(self.running_processes) >= self.max_processes:
-            return
-        fn, dtype, scanSize, dwellTime, i_index, mask_params, fn_pattern, det_shape, mode = \
-            self.tasks.popleft()
-        scanSize_str = str(scanSize) if scanSize is not None else 'None'
-        args = [fn, dtype, scanSize_str, str(dwellTime), str(i_index), self._navimg_temp_dir]
-        # detectors_json/fn_pattern/det_shape/mode are always appended
-        # together (even as 'None'/'' sentinels) so each lands in its
-        # correct positional slot in calculate_nav_img_worker's signature in
-        # worker_nav_img.py, regardless of which are actually in use.
-        args += [json.dumps(mask_params) if mask_params is not None else 'None']
-        args += [fn_pattern or '']
-        args += [str(det_shape)]
-        args += [mode]
-        program, arguments = worker_command('nav_img', args)
+    def _launch_nav_batch_driver(self, tasks_path, n_workers):
+        """Start the single worker_nav_img_batch.py driver QProcess for this
+        batch, wiring up the Job Object handshake, incremental stdout
+        progress reader, and finished/error handlers."""
+        program, arguments = worker_command(
+            'nav_img_batch', [tasks_path, self._navimg_temp_dir, n_workers])
         process = QProcess()
         process.setProgram(program)
         process.setArguments(arguments)
-        process.readyReadStandardOutput.connect(lambda: self._accumulate_output_nav(process))
+        self._nav_driver_process = process
+        self._nav_job_handle = None
+        self._nav_worker_pids = []
+        self._nav_stdout_buf = bytearray()
+        process.started.connect(lambda: self._on_nav_driver_started(process))
+        process.readyReadStandardOutput.connect(lambda: self._read_nav_driver_stdout(process))
         process.readyReadStandardError.connect(lambda: self.handle_error_nav(process))
-        process.finished.connect(lambda: self.handle_finished_nav(process))
-        process.errorOccurred.connect(lambda error: self.process_failed_nav(process, error))
-        self.running_processes.append(process)
-        self.process_task_map[process] = i_index
-        self.process_output_buffers[process] = bytearray()
+        process.finished.connect(lambda: self._handle_nav_driver_finished(process))
+        process.errorOccurred.connect(lambda error: self._nav_driver_failed_to_start(process, error))
         process.start()
 
-    def _accumulate_output_nav(self, process):
-        self.process_output_buffers[process] += process.readAllStandardOutput().data()
+    def _on_nav_driver_started(self, process):
+        """Assign the just-started driver process to a Windows Job Object
+        (so Cancel can kill it and every pool worker it spawns in one
+        shot - see worker_pool_utils.py) *before* letting it build its own
+        pool: job membership isn't retroactive, so a pool worker spawned
+        before this assignment completes would escape a later kill. The
+        driver blocks on its own stdin (wait_for_job_assignment) until this
+        write - job creation/assignment failing is treated as non-fatal
+        (falls back to killing just the driver PID), so the "GO" is sent
+        either way, just with self._nav_job_handle left None."""
+        job_handle = wpu.create_job_object()
+        if job_handle is not None and not wpu.assign_process_to_job(job_handle, int(process.processId())):
+            job_handle = None
+        self._nav_job_handle = job_handle
+        process.write(b'GO\n')
+
+    def _read_nav_driver_stdout(self, process):
+        """Incremental line-buffering reader for the batch driver's stdout -
+        unlike the old per-file worker (one line total, read once at exit),
+        this one process reports progress for every file over its whole
+        lifetime, so partial-line chunks have to be reassembled rather than
+        decoded once at the end."""
+        self._nav_stdout_buf += bytes(process.readAllStandardOutput())
+        while b'\n' in self._nav_stdout_buf:
+            line, _, rest = self._nav_stdout_buf.partition(b'\n')
+            self._nav_stdout_buf = bytearray(rest)
+            self._handle_nav_progress_line(line.decode('utf-8', errors='replace').strip())
+
+    def _handle_nav_progress_line(self, line):
+        """Dispatch one complete stdout line from the batch driver - see
+        worker_pool_utils.run_pool_batch's docstring for the DONE/FAIL/
+        WORKERPID protocol. Unrecognized lines are ignored rather than
+        raising - stray output here isn't expected, but isn't fatal either."""
+        if not line:
+            return
+        parts = line.split(' ', 2)
+        tag = parts[0]
+        if tag == 'DONE' and len(parts) >= 2:
+            self._on_nav_task_done(int(parts[1]))
+        elif tag == 'FAIL' and len(parts) >= 2:
+            self._on_nav_task_failed(int(parts[1]), parts[2] if len(parts) > 2 else '')
+        elif tag == 'WORKERPID' and len(parts) >= 2:
+            self._nav_worker_pids.append(int(parts[1]))
+
+    def _on_nav_task_done(self, i_index):
+        fn_npy = os.path.join(self._navimg_temp_dir, f'{i_index}.npy')
+        try:
+            self.nav_imgs[i_index] = np.load(fn_npy)
+            os.remove(fn_npy)
+        except Exception as e:
+            self._nav_failed = True
+            self.logger.error('Failed to load nav image for file index %s: %s', i_index, e)
+        self.nav_counter += 1
+        self.update_progress_bar(self.nav_counter, self.nav_counter_total)
+
+    def _on_nav_task_failed(self, i_index, message):
+        self._nav_failed = True
+        self.logger.error('Nav image computation failed for file index %s: %s', i_index, message)
+        self.nav_counter += 1
+        self.update_progress_bar(self.nav_counter, self.nav_counter_total)
+
+    def _handle_nav_driver_finished(self, process):
+        """Drain any remaining buffered stdout, release the Job Object, and
+        - unless this was a Cancel - finalize the batch (stack results,
+        enable Save, autosave if checked). One driver process now stands in
+        for what used to be nav_counter_total separate finished signals, so
+        this single handler covers what handle_finished_nav + the tail of
+        _advance_nav_batch used to do together."""
+        self._nav_stdout_buf += bytes(process.readAllStandardOutput())
+        while b'\n' in self._nav_stdout_buf:
+            line, _, rest = self._nav_stdout_buf.partition(b'\n')
+            self._nav_stdout_buf = bytearray(rest)
+            self._handle_nav_progress_line(line.decode('utf-8', errors='replace').strip())
+        self._stderr_buffer.append(process)
+        process.deleteLater()
+        # No-op (TerminateJobObject on a job with no live members) once the
+        # driver has exited normally - still needed to close the handle
+        # either way, so every batch doesn't leak one.
+        wpu.kill_job(self._nav_job_handle)
+        self._nav_job_handle = None
+        if self._cancelling:
+            self._stderr_buffer.discard(process)
+            return
+        # Per-file stderr attribution is gone now that one driver process
+        # (not one QProcess per file) covers the whole batch - pool
+        # workers' stderr all lands on this same shared stream, interleaved
+        # across whichever files were running concurrently. Still worth
+        # surfacing as one batch-level diagnostic dump on any failure,
+        # rather than silently discarding it (the DONE/FAIL summary above
+        # already says *how many* failed; this is the *why*, best-effort).
+        stderr_text = self._stderr_buffer.pop_text(process) if self._nav_failed else ''
+        self._stderr_buffer.discard(process)
+        duration = perf_counter() - self._nav_tic
+        shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
+        valid = [img for img in self.nav_imgs if img is not None]
+        if not valid:
+            self.logger.error(
+                'Navigation signal creation failed: no files produced output (after %s).%s',
+                io.format_duration_hms(duration),
+                f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
+            qtw.QMessageBox.critical(self, 'No Results', 'No files produced output.')
+            self.button_cancel.setDisabled(True)
+            return
+        self.nav_imgs = np.stack(valid)
+        self._set_nav_contrast_range(self.nav_imgs.min(), self.nav_imgs.max())
+        self.update_canvas(0)
+        self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
+        self.button_cancel.setDisabled(True)
+        if self._nav_failed or len(valid) < self.nav_counter_total:
+            self.logger.error(
+                'Navigation signal creation finished with errors: %d/%d file(s) '
+                'succeeded in %s.%s', len(valid), self.nav_counter_total,
+                io.format_duration_hms(duration),
+                f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
+        else:
+            self.logger.info(
+                'Navigation signal creation completed successfully for %d file(s) in %s.',
+                self.nav_counter_total, io.format_duration_hms(duration))
+        self.button_save_results.setEnabled(True)
+        if self.checkbox_autosave.isChecked():
+            self.save_results()
+
+    def _nav_driver_failed_to_start(self, process, error):
+        """Handle the batch driver itself failing to start (QProcess
+        errorOccurred(FailedToStart), which - unlike Crashed - never fires
+        a following `finished` signal, so this is the only place that runs
+        in that case). With one driver process instead of one per file,
+        "failed to start" now simply means the whole batch never ran, a
+        single simple case in place of the old per-file bookkeeping
+        (process_failed_nav) that used to be needed to keep the queue
+        moving past one bad worker slot."""
+        if self._cancelling:
+            process.deleteLater()
+            return
+        self.logger.error(
+            'Navigation-image batch driver process failed to start (error code %s).', error)
+        process.deleteLater()
+        shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
+        qtw.QMessageBox.critical(self, 'Process Error',
+            'The navigation-image batch worker failed to start.\n'
+            'Check that Python is on PATH and worker_nav_img_batch.py exists.')
+        self.button_cancel.setDisabled(True)
 
     def handle_error_nav(self, process):
         """eventem's native tpx3-loading progress lands on stderr - not an
@@ -1989,140 +2127,24 @@ class Tab_Create_NavSignal(TabBase):
         _handle_error_sam)."""
         self._stderr_buffer.append(process)
 
-    def handle_finished_nav(self, process):
-        """Collect a finished nav-image worker process's result (a .npy path
-        printed to stdout), store it, launch the next queued task, and once
-        every file is done, stack the results and finalize the batch."""
-        if process in self.running_processes:
-            self.running_processes.remove(process)
-        i_index = self.process_task_map.pop(process, None)
-        if self._cancelling:
-            # cancel_running_work() already logged/showed one summary message for
-            # the whole batch - a killed process's incomplete output would
-            # otherwise trip the decode-failure path below and pop an error
-            # dialog for every single worker that was still running.
-            self.process_output_buffers.pop(process, None)
-            self._stderr_buffer.discard(process)
-            process.deleteLater()
-            return
-        # drain any remaining bytes not yet signalled
-        self.process_output_buffers[process] += process.readAllStandardOutput().data()
-        self._stderr_buffer.append(process)
-        # worker_nav_img.py's final print(fn_out) is unconditionally the
-        # last thing it ever writes to stdout - taking only the last
-        # non-empty line (instead of the whole accumulated buffer) is
-        # immune to any earlier noise landing on stdout too (e.g. eventem
-        # writing some of its own progress there, not just to stderr).
-        raw_all = bytes(self.process_output_buffers.pop(process, b'')).decode('utf-8', errors='replace')
-        result_lines = [line.strip() for line in raw_all.splitlines() if line.strip()]
-        raw = result_lines[-1] if result_lines else ''
-        try:
-            # raw is a path to the .npy file the worker saved its result to
-            # (see worker_nav_img.py) - loading from disk instead of a
-            # base64+pickle blob through the stdout pipe is what avoids
-            # "Calculate All" getting progressively slower as more workers'
-            # payloads compete for the same GUI-thread-driven pipe draining.
-            nav_img = np.load(raw)
-            self.nav_imgs[i_index] = nav_img
-            try:
-                os.remove(raw)
-            except OSError:
-                pass
-        except Exception as e:
-            stderr_text = self._stderr_buffer.pop_text(process)
-            self.logger.error('Failed to load nav image for index %s: %s%s', i_index, e,
-                              f'\nWorker stderr:\n{stderr_text}' if stderr_text else '')
-            if stderr_text:
-                qtw.QMessageBox.warning(self, 'Worker Error', stderr_text[:500])
-        self._stderr_buffer.discard(process)
-        process.deleteLater()
-        self._advance_nav_batch()
-
-    def process_failed_nav(self, process, error):
-        """Handle a QProcess.errorOccurred signal (e.g. the worker process
-        failed to even start) for a nav-image batch run.
-
-        Previously this neither knew which process/task had failed
-        (errorOccurred was connected without capturing `process`, unlike
-        the other 3 per-process signals) nor advanced the queue at all -
-        one worker failing to start left that task's slot in
-        running_processes/process_task_map stuck forever, so
-        launch_next_nav_task() kept refusing to launch anything past
-        max_processes, nav_counter could never reach nav_counter_total,
-        and the whole batch silently stalled after however many files had
-        already finished (as few as just the first one) - the rest of the
-        queue was simply abandoned with no error surfaced beyond one modal
-        dialog. Now handled the same way a finished-but-failed worker is
-        (see handle_finished_nav): counted, logged, and the batch moves on
-        to the next queued file (or finalizes, if this was the last one)."""
-        if process in self.running_processes:
-            self.running_processes.remove(process)
-        i_index = self.process_task_map.pop(process, None)
-        self.process_output_buffers.pop(process, None)
-        self._stderr_buffer.discard(process)
-        if self._cancelling:
-            process.deleteLater()
-            return
-        self._nav_failed = True
-        self.logger.error(
-            'Worker process failed to start for file index %s (error code %s).', i_index, error)
-        process.deleteLater()
-        self._advance_nav_batch()
-
-    def _advance_nav_batch(self):
-        """Shared tail of handle_finished_nav/process_failed_nav: count this
-        task as done, update the progress bar, and either finalize the
-        whole batch (once every file has been accounted for, successfully
-        or not) or launch the next queued one - so a single failed/crashed/
-        never-started worker doesn't stall every file still queued behind it."""
-        self.nav_counter += 1
-        self.update_progress_bar(self.nav_counter, self.nav_counter_total)
-        if self.nav_counter >= self.nav_counter_total:
-            duration = perf_counter() - self._nav_tic
-            shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
-            valid = [img for img in self.nav_imgs if img is not None]
-            if not valid:
-                self.logger.error(
-                    'Navigation signal creation failed: all worker processes '
-                    'failed to produce output (after %s).', io.format_duration_hms(duration))
-                qtw.QMessageBox.critical(self, 'No Results', 'All worker processes failed to produce output.')
-                self.button_cancel.setDisabled(True)
-                return
-            self.nav_imgs = np.stack(valid)
-            self._set_nav_contrast_range(self.nav_imgs.min(), self.nav_imgs.max())
-            self.update_canvas(0)
-            self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
-            self.button_cancel.setDisabled(True)
-            if self._nav_failed or len(valid) < self.nav_counter_total:
-                self.logger.error(
-                    'Navigation signal creation finished with errors: %d/%d file(s) '
-                    'succeeded in %s.', len(valid), self.nav_counter_total, io.format_duration_hms(duration))
-            else:
-                self.logger.info(
-                    'Navigation signal creation completed successfully for %d file(s) in %s.',
-                    self.nav_counter_total, io.format_duration_hms(duration))
-            self.button_save_results.setEnabled(True)
-            if self.checkbox_autosave.isChecked():
-                self.save_results()
-        else:
-            self.launch_next_nav_task()
-
     def cancel_running_work(self):
-        """Kill all running nav-image worker processes, clear the remaining
-        task queue, and report how many files had already finished."""
-        # Killing several running processes at once each fires their own
-        # finished/errorOccurred signals - without this flag,
-        # handle_finished_nav/process_failed_nav would treat every one of
-        # them as an independent failure and pop an error dialog each,
-        # instead of the one summary message below.
+        """Kill the running nav-image batch driver process - along with
+        every pool worker it spawned, via the Job Object it was assigned
+        to on start (see _on_nav_driver_started) plus a direct force-kill
+        of each reported worker PID as a redundant backstop (kill_job()
+        alone was empirically found not fully reliable at that - see
+        worker_pool_utils.kill_pid's docstring) - and report how many
+        files had already finished."""
         self._cancelling = True
         n_done = self.nav_counter
         n_total = getattr(self, 'nav_counter_total', n_done)
-        self.tasks.clear()
-        for p in list(self.running_processes):
-            p.kill()
-        self.running_processes.clear()
-        self.process_task_map.clear()
+        process = getattr(self, '_nav_driver_process', None)
+        if process is not None and process.state() != QProcess.NotRunning:
+            wpu.kill_job(self._nav_job_handle)
+            self._nav_job_handle = None
+            for pid in self._nav_worker_pids:
+                wpu.kill_pid(pid)
+            process.kill()
         self.button_cancel.setDisabled(True)
         if hasattr(self, '_navimg_temp_dir'):
             shutil.rmtree(self._navimg_temp_dir, ignore_errors=True)
@@ -2137,9 +2159,12 @@ class Tab_Create_NavSignal(TabBase):
         """Release resources held by this tab. Called by MainWindow.closeEvent
         so repeated runs of the app in the same console/kernel don't leave
         running subprocesses and matplotlib figures alive."""
-        if hasattr(self, 'running_processes'):
-            for p in list(self.running_processes):
-                p.kill()
+        process = getattr(self, '_nav_driver_process', None)
+        if process is not None and process.state() != QProcess.NotRunning:
+            wpu.kill_job(getattr(self, '_nav_job_handle', None))
+            for pid in getattr(self, '_nav_worker_pids', []):
+                wpu.kill_pid(pid)
+            process.kill()
         self.log_console.disconnect_log()
         plt.close(self.figure)
 
