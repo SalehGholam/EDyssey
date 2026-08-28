@@ -8,6 +8,7 @@ Created on Thu Sep 19 15:55:17 2024
 import ast
 import os
 import json
+import tempfile
 from glob import glob
 from PyQt5.QtCore import Qt, QTimer
 import PyQt5.QtWidgets as qtw
@@ -28,6 +29,7 @@ import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from worker_extract_frame import load_dp
+import worker_pool_utils as wpu
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
@@ -41,8 +43,6 @@ from skimage.filters import threshold_otsu, threshold_li, threshold_mean, thresh
 import gc
 from time import perf_counter
 # from dask.distributed import Client, LocalCluster, as_completed
-import base64
-import pickle
 import threading
 from collections import deque
 from PyQt5.QtCore import QProcess
@@ -2490,8 +2490,13 @@ class Tab_Tracking_CV2(TabBase):
     def extract_3ded(self):
         """Handler for the Extract! button: build each enabled ROI's
         threshold mask stack, resolve the (smart-scan-aware) list of 4D
-        signal files, then queue and launch one extract_frame QProcess per
-        (ROI, frame) pair to build the 3DED diffraction-pattern stacks."""
+        signal files, then process one tracked object at a time - each
+        object's own frames pooled together via a single batch-driver
+        process (worker_extract_frame_batch.py, using the full configured
+        worker count), the next object's batch only starting once the
+        current one fully finishes (see _launch_next_object_batch) - per
+        explicit request, rather than interleaving every object's frames
+        into one shared queue."""
         self.load_spinner()
         
         path_4d = self.lineEdit_dir_4d.text()
@@ -2563,49 +2568,207 @@ class Tab_Tracking_CV2(TabBase):
         self.button_cancel.setEnabled(True)
 
         self.tomo_counter = 0
-        self.tasks = deque()
-        self.temp_dir = self.get_temp_dir()
         lengths = df.end - [min(df.init[idx]) for idx in df.index]
         self.tomo_counter_total = np.sum(lengths)
         self.update_progress_bar(0, self.tomo_counter_total)
         self.logger.info('Starting 3DED extraction for %d ROI(s), %d frame(s) total...',
                           len(df), self.tomo_counter_total)
+        # One task-list batch per enabled object (df.index), queued here
+        # and launched one at a time by _launch_next_object_batch - each
+        # object's own frames still parallelize across the full worker
+        # pool (self.n_workers below), only the *launch* is sequential
+        # across objects. Mask .npy files are written lazily, just before
+        # each object's own batch launches (see _launch_next_object_batch),
+        # into that batch's own fresh temp dir - not eagerly here for
+        # every object at once.
+        self._obj_queue = deque()
+        self._obj_task_specs = {}
         for idx in df.index:
-            self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x, 
+            self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x,
                                                    shape_d_y), dtype='uint32')
-            # beg = min(df.loc[idx].init)
-            # end = df.loc[idx].end
             out_rois = self.df_rois.loc[idx, 'out_rois']
+            specs = []
             for i_fr, fn in enumerate(fns_4d):
                 if out_rois[i_fr].any():
                     fn_pattern = fns_pattern_4d[i_fr] if fns_pattern_4d is not None else None
-                    self.tasks.append([fn, df.loc[idx, 'out_rois'][i_fr],
-                                       os.path.join(self.temp_dir, f"mask_r{idx}_f{i_fr}.npy"),
-                                       dtype, scanSize, (idx, i_fr), fn_pattern or '',
-                                       f'({shape_d_x},{shape_d_y})'])
-        
-        
-        # path_debug = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\other_scripts\debug'
-        # with open(os.path.join(path_debug, 'args.txt'), 'r') as f:
-        #     f.writelines(self.tasks)
-        
-        
-        self.max_processes = self.spinbox_threadNo.value()
-        self.running_processes = []
-        self.process_task_map = {}
-        self.process_output_buffers = {}
-        # self.launch_initial_tasks()
-        for _ in range(min(self.max_processes, len(self.tasks))):
-            self.launch_next_task()
+                    specs.append({
+                        'i_index': i_fr, 'fn': fn,
+                        'roi': [int(v) for v in out_rois[i_fr]],
+                        'dtype': dtype, 'scanSize': list(scanSize),
+                        'fn_pattern': fn_pattern, 'det_shape': [shape_d_x, shape_d_y],
+                    })
+            if specs:
+                self._obj_queue.append(idx)
+                self._obj_task_specs[idx] = specs
 
-    def get_temp_dir(self):
-        """Return the shared temp directory used for per-frame extraction
-        masks, creating it if it doesn't exist yet."""
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        temp_dir = os.path.join(os.path.dirname(script_dir), 'EDyssey', 'io_utils', 'temp')
-        os.makedirs(temp_dir, exist_ok=True)
-        self.logger.info('temp directory: %s', temp_dir)
-        return temp_dir
+        self.n_workers = self.spinbox_threadNo.value()
+        self._launch_next_object_batch()
+
+    def _launch_next_object_batch(self):
+        """Pop the next queued object and launch its 3DED extraction batch -
+        one JSON task-list (worker_pool_utils.write_tasks_json), one driver
+        process (worker_extract_frame_batch.py) running its own internal
+        process pool over every one of that object's tracked frames at
+        once. Only called again (by _handle_3ded_driver_finished) once the
+        current object's batch has completely finished - if the queue is
+        empty, every enabled object has been processed."""
+        if not self._obj_queue:
+            self._finalize_3ded_extraction()
+            return
+        idx = self._obj_queue.popleft()
+        self._current_obj_idx = idx
+        temp_dir = tempfile.mkdtemp(prefix='edyssey_3ded_')
+        self._current_obj_temp_dir = temp_dir
+        tasks = self._obj_task_specs.pop(idx)
+        for task in tasks:
+            mask_path = os.path.join(temp_dir, f"mask_f{task['i_index']}.npy")
+            np.save(mask_path, self.df_rois.loc[idx, 'mask'][task['i_index']])
+            task['mask_path'] = mask_path
+        tasks_path = os.path.join(temp_dir, 'tasks.json')
+        wpu.write_tasks_json(tasks_path, tasks)
+        self._launch_3ded_batch_driver(tasks_path, temp_dir)
+
+    def _launch_3ded_batch_driver(self, tasks_path, temp_dir):
+        """Start the single worker_extract_frame_batch.py driver QProcess
+        for the current object's batch, wiring up the Job Object handshake,
+        incremental stdout progress reader, and finished/error handlers -
+        same pattern as tab_create_navSignal.py's Navigator batch driver."""
+        program, arguments = worker_command(
+            'extract_frame_batch', [tasks_path, temp_dir, self.n_workers])
+        process = QProcess()
+        process.setProgram(program)
+        process.setArguments(arguments)
+        self._3ded_driver_process = process
+        self._3ded_job_handle = None
+        self._3ded_worker_pids = []
+        self._3ded_stdout_buf = bytearray()
+        process.started.connect(lambda: self._on_3ded_driver_started(process))
+        process.readyReadStandardOutput.connect(lambda: self._read_3ded_driver_stdout(process))
+        process.readyReadStandardError.connect(lambda: self.handle_error(process))
+        process.finished.connect(lambda: self._handle_3ded_driver_finished(process))
+        process.errorOccurred.connect(lambda error: self._3ded_driver_failed_to_start(process, error))
+        process.start()
+
+    def _on_3ded_driver_started(self, process):
+        """Assign the just-started driver process to a Windows Job Object
+        before letting it build its own pool - see
+        tab_create_navSignal.py's _on_nav_driver_started for the full
+        rationale (job membership isn't retroactive)."""
+        job_handle = wpu.create_job_object()
+        if job_handle is not None and not wpu.assign_process_to_job(job_handle, int(process.processId())):
+            job_handle = None
+        self._3ded_job_handle = job_handle
+        process.write(b'GO\n')
+
+    def _read_3ded_driver_stdout(self, process):
+        """Incremental line-buffering reader for the batch driver's stdout -
+        see worker_pool_utils.run_pool_batch's DONE/FAIL/WORKERPID
+        protocol."""
+        self._3ded_stdout_buf += bytes(process.readAllStandardOutput())
+        while b'\n' in self._3ded_stdout_buf:
+            line, _, rest = self._3ded_stdout_buf.partition(b'\n')
+            self._3ded_stdout_buf = bytearray(rest)
+            self._handle_3ded_progress_line(line.decode('utf-8', errors='replace').strip())
+
+    def _handle_3ded_progress_line(self, line):
+        if not line:
+            return
+        parts = line.split(' ', 2)
+        tag = parts[0]
+        if tag == 'DONE' and len(parts) >= 2:
+            self._on_3ded_task_done(int(parts[1]))
+        elif tag == 'FAIL' and len(parts) >= 2:
+            self._on_3ded_task_failed(int(parts[1]), parts[2] if len(parts) > 2 else '')
+        elif tag == 'WORKERPID' and len(parts) >= 2:
+            self._3ded_worker_pids.append(int(parts[1]))
+
+    def _on_3ded_task_done(self, i_fr):
+        idx = self._current_obj_idx
+        fn_npy = os.path.join(self._current_obj_temp_dir, f'{i_fr}.npy')
+        try:
+            self.df_rois.loc[idx, 'dp'][i_fr] = np.load(fn_npy)
+            os.remove(fn_npy)
+        except Exception as e:
+            self._3ded_failed = True
+            self.logger.error('Failed to load DP for ROI %s frame %s: %s', idx, i_fr, e)
+        self.tomo_counter += 1
+        self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+
+    def _on_3ded_task_failed(self, i_fr, message):
+        self._3ded_failed = True
+        self.logger.error('3DED extraction failed for ROI %s frame %s: %s',
+                          self._current_obj_idx, i_fr, message)
+        self.tomo_counter += 1
+        self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+
+    def _handle_3ded_driver_finished(self, process):
+        """Drain remaining stdout, release the Job Object, clean up this
+        object's own temp dir, and - unless this was a Cancel - mark it
+        extracted in the tree and move on to the next queued object (or
+        finalize the whole run if none are left)."""
+        self._3ded_stdout_buf += bytes(process.readAllStandardOutput())
+        while b'\n' in self._3ded_stdout_buf:
+            line, _, rest = self._3ded_stdout_buf.partition(b'\n')
+            self._3ded_stdout_buf = bytearray(rest)
+            self._handle_3ded_progress_line(line.decode('utf-8', errors='replace').strip())
+        process.deleteLater()
+        wpu.kill_job(self._3ded_job_handle)
+        self._3ded_job_handle = None
+        idx = self._current_obj_idx
+        temp_dir = getattr(self, '_current_obj_temp_dir', None)
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        if self._cancelling:
+            return
+        self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)
+        self._launch_next_object_batch()
+
+    def _3ded_driver_failed_to_start(self, process, error):
+        """Handle the current object's batch driver failing to start - with
+        one driver process per object instead of one per (ROI, frame) task,
+        this now simply means that one object's extraction never ran,
+        rather than needing to individually track and skip past a single
+        stuck task slot."""
+        if self._cancelling:
+            process.deleteLater()
+            return
+        self._3ded_failed = True
+        self.logger.error('3DED extraction batch driver failed to start for ROI %s (error code %s).',
+                          self._current_obj_idx, error)
+        process.deleteLater()
+        temp_dir = getattr(self, '_current_obj_temp_dir', None)
+        if temp_dir and os.path.isdir(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        self.spinner.stop()
+        qtw.QMessageBox.critical(self, 'Process Error',
+            f'The 3DED extraction batch worker failed to start for ROI {self._current_obj_idx} '
+            f'(error code {error}).\nCheck that Python is on PATH and '
+            'worker_extract_frame_batch.py exists.')
+        self.button_cancel.setDisabled(True)
+
+    def _finalize_3ded_extraction(self):
+        """Called once every enabled object's batch has been accounted for
+        (successfully or not) - the tail end of what handle_finished used
+        to do once tomo_counter reached tomo_counter_total, now triggered
+        by the object queue emptying instead of a per-task counter."""
+        self.toc = perf_counter()
+        duration = self.toc - self.tic
+        if self._3ded_failed:
+            self.logger.error(
+                '3DED extraction finished with errors after %s '
+                '(see log above for details).', io.format_duration_hms(duration))
+        else:
+            self.logger.info(
+                '3DED extraction completed successfully (%d frame(s)) in %s.',
+                self.tomo_counter_total, io.format_duration_hms(duration))
+        self.update_canvas()
+        # Freshly-extracted DPs may have a different center than whatever
+        # was last found - re-run auto-centering now if enabled.
+        self.update_scalebar('reciprocal')
+        self.spinner.stop()
+        self.button_cancel.setDisabled(True)
+        if self.checkbox_autosave.isChecked():
+            self.save_results()
 
     def extract_dp_current_frame(self):
         """Compute the diffraction pattern for just the selected ROI at the
@@ -2704,142 +2867,18 @@ class Tab_Tracking_CV2(TabBase):
         qtw.QMessageBox.warning(self, 'Extraction Failed',
             f'Could not extract the diffraction pattern:\n{traceback_text[-500:]}')
 
-# =============================================================================
-#     def launch_initial_tasks(self):
-#         for _ in range(min(self.max_processes, len(self.tasks))):
-#             self.launch_next_task()
-# =============================================================================
-
-    def launch_next_task(self):
-        """Pop the next queued extract_frame task (if any, and if under
-        max_processes) and launch it as a QProcess, saving its ROI mask to
-        disk first so it can be passed to the subprocess by path."""
-        if not self.tasks or len(self.running_processes) >= self.max_processes:
-            return
-    
-        args = self.tasks.popleft()
-        mask_path = args[2]
-        # args = [fn, roi, mask_path, dtype, scanSize, (idx, i_fr), fn_pattern,
-        # det_shape] - (idx, i_fr) is third-to-last (fn_pattern/det_shape,
-        # always present since extract_3ded() appends them unconditionally,
-        # must stay last two to land in extract_3ded_mask_single_frame's
-        # matching positional slots).
-        idx, i_fr = args[-3]
-        np.save(mask_path, self.df_rois.loc[idx, 'mask'][i_fr])
-        program, arguments = worker_command('extract_frame', args)
-        process = QProcess()
-        process.setProgram(program)
-        process.setArguments(arguments)
-        process.readyReadStandardOutput.connect(lambda: self._accumulate_output(process))
-        process.readyReadStandardError.connect(lambda: self.handle_error(process))
-        process.finished.connect(lambda: self.handle_finished(process))
-        process.errorOccurred.connect(self.process_failed)
-
-
-        self.running_processes.append(process)
-        self.process_task_map[process] = args
-        self.process_output_buffers[process] = bytearray()
-        process.start()
-        
-    def process_failed(self, error):
-        """Handler for QProcess.errorOccurred: abort extraction and report
-        the failure to the user."""
-        if self._cancelling:
-            return
-        self._3ded_failed = True
-        self.logger.error("QProcess error occurred: %s", error)
-        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
-        self.spinner.stop()
-        qtw.QMessageBox.critical(self, 'Process Error',
-            f'A worker process failed to start (error code {error}).\n'
-            'Check that Python is on PATH and worker_extract_frame.py exists.')
-
     def handle_error(self, process):
         """Handler for QProcess.readyReadStandardError."""
         # worker_extract_frame.py loads tpx3 via eventem, whose progress bar
         # (and any other routine diagnostics) writes straight to stderr on
         # every run, success or failure - this is not itself an error (see
         # ProcessStderrBuffer). A worker that genuinely fails to produce
-        # output is instead caught in handle_output/handle_finished below.
+        # output is instead caught via a FAIL line - see
+        # _handle_3ded_progress_line/_on_3ded_task_failed.
         if self._cancelling:
             return
         self._stderr_buffer.log_info(process, self.logger, 'Worker')
 
-    def _accumulate_output(self, process):
-        """QProcess.readyReadStandardOutput handler: append this chunk to
-        the process's buffer instead of decoding it directly - the
-        base64+pickle payload for anything but the smallest diffraction
-        pattern routinely spans more than one OS pipe delivery, so decoding
-        straight out of a single readyReadStandardOutput signal (as this
-        used to) intermittently truncated it and failed to unpickle (e.g.
-        "invalid load key"). Actual decoding happens once, in
-        handle_finished, from the complete accumulated buffer."""
-        self.process_output_buffers[process] += process.readAllStandardOutput().data()
-
-    def handle_finished(self, process):
-        """Handler for QProcess.finished: decode the complete accumulated
-        stdout (a base64-pickled (frame, mask coords) result - see
-        _accumulate_output), store it into df_rois' dp array at the right
-        (idx, frame) slot, update extraction progress, and once every
-        queued (ROI, frame) task has finished, clean up the temp mask
-        directory, mark extracted ROIs in the tree, and autosave if enabled
-        - otherwise launch the next queued task."""
-        if process in self.running_processes:
-            self.running_processes.remove(process)
-        task_info = self.process_task_map.pop(process, None)
-        if self._cancelling:
-            self.process_output_buffers.pop(process, None)
-            process.deleteLater()
-            return
-        # drain any remaining bytes not yet signalled
-        self.process_output_buffers[process] += process.readAllStandardOutput().data()
-        raw_output = bytes(self.process_output_buffers.pop(process, b'')).decode(
-            'utf-8', errors='replace').strip()
-        process.deleteLater()
-
-        try:
-            result_array = pickle.loads(base64.b64decode(raw_output))
-        except Exception:
-            self.logger.exception('Failed to decode tracking extraction subprocess output.')
-        else:
-            if task_info is None:
-                self.logger.warning("Unknown process")
-            else:
-                img, i_c = result_array
-                idx, i_fr = ast.literal_eval(i_c)
-                self.df_rois.loc[idx, 'dp'][i_fr] = img
-
-        self.tomo_counter += 1
-        self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
-        
-        if self.tomo_counter >= self.tomo_counter_total:
-            self.toc = perf_counter()
-            if os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir)
-            duration = self.toc - self.tic
-            if self._3ded_failed:
-                self.logger.error(
-                    '3DED extraction finished with errors after %s '
-                    '(see log above for details).', io.format_duration_hms(duration))
-            else:
-                self.logger.info(
-                    '3DED extraction completed successfully (%d frame(s)) in %s.',
-                    self.tomo_counter_total, io.format_duration_hms(duration))
-            self.update_canvas()
-            # Freshly-extracted DPs may have a different center than whatever
-            # was last found - re-run auto-centering now if enabled.
-            self.update_scalebar('reciprocal')
-            self.spinner.stop()
-            self.button_cancel.setDisabled(True)
-            for idx in self.df_rois[self.df_rois.use == 1].index:
-                self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)
-
-            if self.checkbox_autosave.isChecked():
-                self.save_results()
-        else:
-            self.launch_next_task()  # trigger next task if any left
-        
     def update_progress_bar(self, value, total):
         self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(value)
@@ -2988,18 +3027,22 @@ class Tab_Tracking_CV2(TabBase):
                 fps=self.spinbox_fps.value(), logger=self.logger)
             self.threadpool.start(worker_clip_tr_ref)
             
-    def kill_running_process(self):
-        """Forcefully kill and clear any still-running 3DED extraction
-        subprocesses."""
-        # self.running_processes is only created once extract_3ded() has
-        # run at least once, so this must tolerate being called (e.g. from
-        # cleanup() on window close) before that ever happened.
-        if not hasattr(self, 'running_processes'):
-            return
-        for process in self.running_processes:
-            process.kill()  # Forcefully terminates the subprocess
-            process.deleteLater()
-        self.running_processes.clear()
+    def kill_3ded_driver(self):
+        """Forcefully kill the currently-running 3DED batch driver process
+        for whichever object is in flight (if any) - along with every pool
+        worker it spawned, via the Job Object it was assigned to on start
+        plus a direct force-kill of each reported worker PID as a
+        redundant backstop (kill_job() alone was empirically found not
+        fully reliable at that - see worker_pool_utils.kill_pid's
+        docstring). Must tolerate being called (e.g. from cleanup() on
+        window close) before any extraction ever ran."""
+        process = getattr(self, '_3ded_driver_process', None)
+        if process is not None and process.state() != QProcess.NotRunning:
+            wpu.kill_job(getattr(self, '_3ded_job_handle', None))
+            self._3ded_job_handle = None
+            for pid in getattr(self, '_3ded_worker_pids', []):
+                wpu.kill_pid(pid)
+            process.kill()
 
     def cancel_running_work(self):
         """Stop tracking or 3DED extraction and suppress the error popups
@@ -3009,36 +3052,35 @@ class Tab_Tracking_CV2(TabBase):
         already started (only queued-but-not-started ones can be dropped),
         so an in-flight tracking job for a single ROI will still finish in
         the background - its result is applied harmlessly since it's still
-        valid data, just not launched further. The 3DED extraction
-        subprocesses are real OS processes though, so those are actually
-        killed outright."""
+        valid data, just not launched further. The current object's 3DED
+        batch driver is a real OS process tree though (see
+        kill_3ded_driver), so that's actually killed outright, and no
+        further queued objects are launched."""
         self._cancelling = True
         self.threadpool.clear()
-        n_killed = len(getattr(self, 'running_processes', []))
-        self.kill_running_process()
-        if hasattr(self, 'tasks'):
-            self.tasks.clear()
-        if hasattr(self, 'process_task_map'):
-            self.process_task_map.clear()
-        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir, ignore_errors=True)
+        process = getattr(self, '_3ded_driver_process', None)
+        n_killed = 1 if (process is not None and process.state() != QProcess.NotRunning) else 0
+        self.kill_3ded_driver()
+        if hasattr(self, '_obj_queue'):
+            self._obj_queue.clear()
         if hasattr(self, 'spinner'):
             self.spinner.stop()
         self.button_cancel.setDisabled(True)
         self.logger.warning(
-            'Cancelled by user (%d running 3DED worker process(es) killed).', n_killed)
+            'Cancelled by user (%d/%d frame(s) already processed, %d running batch process killed).',
+            getattr(self, 'tomo_counter', 0), getattr(self, 'tomo_counter_total', 0), n_killed)
         qtw.QMessageBox.information(self, 'Cancelled',
             'Tracking/3DED extraction was cancelled.\n\n'
             'Any tracking job already running for a single ROI will still '
             'finish in the background (its result is kept) - only queued '
-            'work and the 3DED extraction processes were stopped.')
+            'work and the running 3DED extraction batch were stopped.')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
         so repeated runs of the app in the same console/kernel don't leave
         threadpools, running subprocesses, and matplotlib figures alive."""
         self.threadpool.clear()
-        self.kill_running_process()
+        self.kill_3ded_driver()
         self.log_console.disconnect_log()
         plt.close(self.figure)
 

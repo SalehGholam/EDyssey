@@ -92,6 +92,7 @@ scripts = ['EDyssey_MainWindow.py']
 extra_datas = [
     ('worker_sam.py', '.'),
     ('worker_extract_frame.py', '.'),
+    ('worker_extract_frame_batch.py', '.'),
     ('worker_nav_img.py', '.'),
     ('worker_nav_img_batch.py', '.'),
     # Imported (not runpy'd) by every *_batch.py worker and by ui_tabs/

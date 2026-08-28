@@ -28,13 +28,55 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="distributed")
 #%%
 #TODO add cupy if possible
+def extract_3ded_mask_core(task):
+    """Extract a single 3DED diffraction pattern from one 4D-STEM frame
+    using a binary mask - the pure-computation half of
+    extract_3ded_mask_single_frame (below), factored out so
+    worker_extract_frame_batch.py's pooled batch driver can call it
+    directly per (ROI, frame) task instead of via a fresh CLI-parsing
+    subprocess each time. extract_3ded_mask_single_frame is now a thin
+    wrapper around this.
+
+    Args:
+        task: dict with keys 'fn' (path to the 4D-STEM file), 'roi'
+            ([x, y, w, h]/(x, y, w, h) scan-space crop), 'mask_path' (path
+            to a .npy file containing the binary 2-D mask), 'dtype' (file
+            extension, e.g. '.tpx3'/'.hdf5'), 'scanSize' ([nx, ny]/(nx, ny)
+            or None), 'fn_pattern' (optional smart-scan pattern-file path
+            for this frame), 'det_shape' (optional [det_x, det_y]/
+            (det_x, det_y) - .tpx3 only, see load_tpx3's docstring; None
+            falls back to (512, 512)).
+
+    Returns:
+        numpy.ndarray - the masked/summed diffraction pattern.
+    """
+    fn = task['fn']
+    roi = tuple(int(v) for v in task['roi'])
+    mask = np.load(task['mask_path'])
+    dtype = task['dtype']
+    scanSize = task.get('scanSize')
+    scanSize = tuple(scanSize) if scanSize is not None else None
+    fn_pattern = task.get('fn_pattern') or None
+    det_shape = task.get('det_shape')
+    det_shape = tuple(det_shape) if det_shape is not None else None
+    return load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize,
+                   fn_pattern=fn_pattern, det_shape=det_shape)
+
+
 def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_pattern=None,
                                    det_shape=None):
     """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
 
-    Subprocess entry point called by `tab_sam2.py`. Deserialises CLI arguments, loads the
-    per-frame mask from `mask_path`, sums diffraction patterns at mask-True pixels, and
-    prints the result as a base64+pickle-encoded `(dp, i_c)` tuple.
+    Single-task CLI entry point - no longer used by ROI Tracker/SAM2's own
+    3DED extraction, which now goes through the pooled batch driver
+    (worker_extract_frame_batch.py, one driver process per tracked object,
+    running extract_3ded_mask_core directly for every one of that object's
+    frames via its own internal process pool) instead of one QProcess per
+    (ROI, frame) task. Kept as a standalone single-task entry point.
+
+    Deserialises CLI arguments, loads the per-frame mask from `mask_path`,
+    sums diffraction patterns at mask-True pixels via extract_3ded_mask_core,
+    and prints the result as a base64+pickle-encoded `(dp, i_c)` tuple.
 
     Args:
         fn: Path to the 4D-STEM file.
@@ -49,31 +91,27 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
             `load_tpx3`'s docstring (None/'None' falls back to (512, 512)).
     """
     try:
-        # Parse input args
-        scanSize = tuple(map(int, scanSize.strip("()").split(",")))
-        # roi = tuple(map(int, roi.strip("()").split(",")))
-        roi = [int(a) for a in str(roi)[1:-1].split()] # read as str of numpy array
-        # roi = eval(roi) # read as str of list
-        mask = np.load(mask_path)
-        # mask = mask_path
+        scanSize_t = tuple(map(int, scanSize.strip("()").split(",")))
+        roi_t = [int(a) for a in str(roi)[1:-1].split()]  # read as str of numpy array
         fn_pattern = fn_pattern or None
-        det_shape = (tuple(map(int, det_shape.strip("()").split(",")))
-                    if det_shape not in (None, '', 'None') else None)
+        det_shape_t = (tuple(map(int, det_shape.strip("()").split(",")))
+                      if det_shape not in (None, '', 'None') else None)
 
-        dp = load_dp(fn, roi=roi, mask=mask, scanSize=scanSize, fn_pattern=fn_pattern,
-                    det_shape=det_shape)
+        task = {'fn': fn, 'roi': roi_t, 'mask_path': mask_path, 'dtype': dtype,
+               'scanSize': scanSize_t, 'fn_pattern': fn_pattern, 'det_shape': det_shape_t}
+        dp = extract_3ded_mask_core(task)
         # Serialize result to base64 string and print it to stdout
         serialized = base64.b64encode(pickle.dumps((dp, i_c))).decode('utf-8')
         print(serialized)  # <- this goes to QProcess output
-        
+
         sys.stdout.flush()  # Ensure it's pushed
         sys.exit(0)
-        
+
     except Exception:
         import traceback
         traceback.print_exc()
         sys.exit(1)  # fail code
-        
+
 def load_dp(fn, **kwargs):
     """Dispatch diffraction pattern loading to the format-specific function.
 
