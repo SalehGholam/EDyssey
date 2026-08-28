@@ -51,8 +51,9 @@ plt.style.use('dark_background')
 # Help > About always reflects how current the running build actually is.
 # A plain source constant (not computed at build/run time) so it's visible
 # directly in the repo on GitHub, not just at runtime. Shown only in the
-# About dialog (Help > About EDyssey) - not duplicated elsewhere in the UI.
-APP_VERSION = '2026.08.24.1230'
+# About dialog (Help >
+#  About EDyssey).
+APP_VERSION = '2026.08.28.1600'
 
 #%% window
 class MainWindow(qtw.QMainWindow):

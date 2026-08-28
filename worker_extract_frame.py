@@ -13,6 +13,7 @@ import os
 from dask import config
 import numpy as np
 from dask.diagnostics import ProgressBar
+from scipy import ndimage
 import base64
 import pickle
 file_path = os.path.abspath(__file__)
@@ -78,7 +79,13 @@ def load_dp(fn, **kwargs):
 
     Args:
         fn: Path to the 4D-STEM file.
-        **kwargs: Passed through to the format-specific loader (roi, mask, scanSize, etc.).
+        **kwargs: Passed through to the format-specific loader (roi, mask,
+            scanSize, etc.). `patch_mode=True` (.tpx3 only - see
+            load_tpx3_patches) is for a mask with no single small bounding
+            box of its own (e.g. "Summed DP from Threshold"); leave it False
+            (the default) wherever `roi` is already a small tracked/
+            segmented box (ROI Tracker, SAM2 - both the per-frame tracking
+            extraction and SAM2 segmentation-DP on ROI on 4D).
 
     Returns:
         numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
@@ -86,11 +93,16 @@ def load_dp(fn, **kwargs):
     dtype = kwargs.get('dtype')
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
-    
+    patch_mode = kwargs.pop('patch_mode', False)
+
     if dtype == '.tpx3':
-        result = load_tpx3(fn, **kwargs)        
+        if patch_mode:
+            kwargs.pop('roi', None)  # patches derive their own ROI per component
+            result = load_tpx3_patches(fn, **kwargs)
+        else:
+            result = load_tpx3(fn, **kwargs)
     elif dtype == '.hdf5':
-        result = load_hdf5(fn, **kwargs)        
+        result = load_hdf5(fn, **kwargs)
     elif dtype in ['.zspy', '.hspy']:
         result = load_hs(fn, **kwargs)
     elif dtype == '.mib':
@@ -104,7 +116,10 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
         fn: Path to the .tpx3 file.
         mask: 2-D boolean array matching the scan dimensions.
         scanSize: (nx, ny) scan dimensions.
-        roi: (x, y, w, h) scan-space crop or None for the full scan.
+        roi: (x, y, w, h) scan-space crop - should be a small box (a tracked
+            ROI, a SAM2 segmentation's own bounding box, or one connected
+            patch from load_tpx3_patches below) rather than the whole scan -
+            see the workaround note below for why.
         dwellTime: Dwell time in microseconds.
         fn_pattern: Optional path to a smart-scan pattern file for `fn` -
             reshapes/selects scan positions correctly for a smart-scanned
@@ -124,65 +139,93 @@ def load_tpx3(fn, mask, scanSize, roi, dwellTime=1, fn_pattern=None, det_shape=N
     if det_shape is None:
         det_shape = (512, 512)
     repetitions = 1
-    bitDepth=16
-# =============================================================================
-#     if roi is None:
-#         x=0
-#         y=0 
-#         w=scanSize[0]
-#         h=scanSize[1]
-#     else:
-#         # y, x, h, w = roi
-#         x, y, w, h = roi
-# =============================================================================
-        
-# =============================================================================
-#     s_roi = eventem.Roi(repetitions=repetitions, extract_4D=True)
-#     s_roi.set_bitdepth(bitDepth)
-#     s_roi.nx = scanSize[0]
-#     s_roi.ny = scanSize[1]
-#     s_roi.set_file(fn)
-#     s_roi.set_roi(x=x, y=y, width=w, height=h)
-#     s_roi.set_dwell_time(dwellTime*1000)
-#     s_roi.run()
-#     # ROI_scan_image = np.asarray(roi.Roi_scan_image)
-#     # ROI_diffp = np.asarray(roi.Roi_diffraction_pattern).reshape(512, 512)
-#     s = np.asarray(s_roi.get_4D())
-# 
-#     mask_crop = mask[y:y+h, x:x+w]
-#     s = s.reshape(-1, *s.shape[-2:])
-#     dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
-# =============================================================================
-    
-    roi = eventem.Roi(repetitions=repetitions, extract_4D=False)
+    bitDepth = 16
+    x, y, w, h = roi
+
+    # TEMPORARY WORKAROUND: eventem.Roi.set_roi_mask() is not actually
+    # implemented on the eventem side yet for .tpx3 (silently produces a
+    # wrong/unmasked result instead of erroring). Until eventem implements
+    # it for real, extract the ROI as a full 4D block instead
+    # (extract_4D=True) and apply the mask ourselves in Python below. This
+    # materializes the whole ROI's frames at once, so `roi` must stay a
+    # small box - callers with no natural small ROI (a scattered/large
+    # threshold mask) must split it into patches first, see
+    # load_tpx3_patches, rather than passing its full bounding box here
+    # (that was tried and crashed/OOM'd on smart-scanned data). Swap this
+    # back to set_roi_mask() once that's genuinely supported upstream.
+    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=True)
     # eventem auto-sizes its own internal thread pool to the whole machine
     # per instance unless told otherwise - this script always runs as one
     # of several concurrent per-ROI/per-frame worker subprocesses, so
     # leaving that unset would oversubscribe the machine (N processes x
     # full-core-count threads each) exactly like the same bug in
     # worker_nav_img.py's use of io_utils_ui.py's eventem call sites.
-    roi.n_threads = 1
-    # roi.b_cumulative = True
-    roi.set_file(fn)
-    roi.set_dwell_time(dwellTime * 1000)
-    roi.set_bitdepth(bitDepth)
-    roi.nx = scanSize[0]
-    roi.ny = scanSize[1]
+    roi_obj.n_threads = 1
+    roi_obj.set_file(fn)
+    roi_obj.set_dwell_time(dwellTime * 1000)
+    roi_obj.set_bitdepth(bitDepth)
+    roi_obj.nx = scanSize[0]
+    roi_obj.ny = scanSize[1]
     # Only actually applied when it differs from what eventem itself already
     # reports (reflecting the real file's own hardware layout) - a genuine
     # mismatch segfaults .run() instead of gracefully reshaping/cropping.
-    if det_shape != (roi.detector_size_x, roi.detector_size_y):
-        roi.detector_size_x, roi.detector_size_y = det_shape
+    if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
+        roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
     if fn_pattern:
-        roi.set_pattern_file(fn_pattern)
-    # roi.set_roi_mask([np.where(mask.flatten())[0]])
-    # roi.set_roi_mask([np.where(mask.flatten())[0]])
-    roi.set_roi_mask([mask.flatten()])
-    roi.run()
-    dp = roi.Roi_diffraction_pattern
-    dp = np.array(dp).reshape(det_shape[1], det_shape[0])
-    roi.close_socket()
+        roi_obj.set_pattern_file(fn_pattern)
+    roi_obj.set_roi(x=x, y=y, width=w, height=h)
+    roi_obj.run()
+    s = np.asarray(roi_obj.get_4D())
+    roi_obj.close_socket()
+
+    mask_crop = mask[y:y+h, x:x+w]
+    s = s.reshape(-1, *s.shape[-2:])
+    dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
     return dp
+
+def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
+    """Sum diffraction patterns over an arbitrary (possibly large/scattered)
+    .tpx3 mask, for callers with no small ROI of their own to begin with -
+    "Summed DP from Threshold" is the only one today, since a real-space
+    threshold can select scan positions anywhere in the scan, unlike a
+    tracked ROI or a SAM2 segmentation (both already a single small box,
+    loaded directly via load_tpx3 instead - see load_dp's patch_mode note).
+
+    Splits `mask` into its connected components (8-connectivity, so
+    diagonally-touching pixels count as one patch) and calls load_tpx3 once
+    per component with that component's own small bounding box, accumulating
+    the result - the multi-patch equivalent of load_tpx3's own
+    extract_4D=True workaround, needed because a *single* extraction
+    spanning the mask's full bounding box would materialize the whole
+    (potentially near-whole-scan) block at once and crash/OOM, especially on
+    smart-scanned data. Temporary, like load_tpx3's own workaround: swap
+    both back to a single set_roi_mask() call once eventem implements it.
+
+    Args:
+        fn: Path to the .tpx3 file.
+        mask: 2-D boolean array matching the scan dimensions.
+        scanSize: (nx, ny) scan dimensions.
+        dwellTime: Dwell time in microseconds.
+        fn_pattern: Optional path to a smart-scan pattern file for `fn`.
+        det_shape: (det_x, det_y) detector pixel dimensions - see load_tpx3.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
+    if det_shape is None:
+        det_shape = (512, 512)
+    dp_total = np.zeros((det_shape[1], det_shape[0]), dtype='float64')
+    labeled, n_patches = ndimage.label(mask, structure=np.ones((3, 3)))
+    for patch_id, sl in enumerate(ndimage.find_objects(labeled), start=1):
+        if sl is None:
+            continue
+        y_sl, x_sl = sl
+        patch_roi = (int(x_sl.start), int(y_sl.start),
+                    int(x_sl.stop - x_sl.start), int(y_sl.stop - y_sl.start))
+        patch_mask = labeled == patch_id
+        dp_total += load_tpx3(fn, mask=patch_mask, scanSize=scanSize, roi=patch_roi,
+                              dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape)
+    return dp_total
 
 def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
     """Load an .hdf5 file and sum diffraction patterns at mask-True scan pixels.

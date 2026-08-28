@@ -1987,7 +1987,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setEnabled(True)
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
                                          self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn))
+                                         self.get_detector_shape(self.fn), patch_mode=True)
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -2128,9 +2128,17 @@ class Worker_CalculateDP_Mask(QRunnable):
     """Sum diffraction patterns at the scan positions where an arbitrary
     (e.g. SAM2-segmented) mask is True, restricted to `roi` (the mask's
     bounding box) for efficiency. Reuses the same per-format masked loaders
-    already used by the CV2/SAM2 tabs' 3DED extraction."""
+    already used by the CV2/SAM2 tabs' 3DED extraction.
+
+    `patch_mode` (.tpx3 only): the SAM2 segmentation-DP caller passes a
+    naturally small `roi` (the segmentation's own bounding box) and leaves
+    this False; the "Summed DP from Threshold" caller has no such small
+    ROI (a threshold can select scan positions anywhere), so it passes
+    True to split the mask into small per-patch extractions instead of one
+    covering its full (potentially huge/scattered) bounding box - see
+    load_dp/load_tpx3_patches in worker_extract_frame.py."""
     def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
-                det_shape=(512, 512)):
+                det_shape=(512, 512), patch_mode=False):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -2143,13 +2151,15 @@ class Worker_CalculateDP_Mask(QRunnable):
         self.dwellTime = dwellTime
         self.fn_pattern = fn_pattern
         self.det_shape = det_shape
+        self.patch_mode = patch_mode
         self.signals = WorkerSignals()
 
     def run(self):
         try:
             dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
                         scanSize=self.scanSize, dwellTime=self.dwellTime,
-                        fn_pattern=self.fn_pattern, det_shape=self.det_shape)
+                        fn_pattern=self.fn_pattern, det_shape=self.det_shape,
+                        patch_mode=self.patch_mode)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:
