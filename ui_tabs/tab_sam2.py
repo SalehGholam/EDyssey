@@ -13,6 +13,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QProcess, QTimer
 from PyQt5.QtGui import QDoubleValidator, QIntValidator, QKeySequence
@@ -22,6 +23,7 @@ import os
 import re
 from PIL import Image
 import gc
+import pickle
 from copy import deepcopy
 import datetime
 from time import perf_counter
@@ -37,6 +39,7 @@ from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
+from .sam2_auto_detector_widget import SAM2AutoDetectorWidget
 from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
 import worker_pool_utils as wpu
@@ -96,7 +99,7 @@ class Tab_SAM2(TabBase):
         self.layout.addWidget(ribbon_page)
 
         #%% Files (ribbon column)
-        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=0)
 
         # nav signal dir
         layout_dir_entry = qtw.QHBoxLayout()
@@ -110,6 +113,7 @@ class Tab_SAM2(TabBase):
         layout_dir_entry.addWidget(self.lineEdit_dir_navSignal)
         
         self.button_dir_navSignal = qtw.QPushButton('...')
+        self.button_dir_navSignal.setFixedWidth(30)
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
@@ -125,6 +129,7 @@ class Tab_SAM2(TabBase):
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
         
         self.button_dir_4dSignals = qtw.QPushButton('...')
+        self.button_dir_4dSignals.setFixedWidth(30)
         layout_dir_4dSignals.addWidget(self.button_dir_4dSignals)
         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
 
@@ -237,7 +242,7 @@ class Tab_SAM2(TabBase):
         # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
         # column, including QSpinBox for Scan Size too - was a QLineEdit)
         # so their labels/X/Y cells line up row-to-row.
-        self.box_scanSize, layout_box_experiment = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_scanSize, layout_box_experiment = self._ribbon_group_start(layout_ribbon, stretch=0)
 
         self.dp_center = None  # (x, y) - auto-found or last manually-clicked center
         # id(dp_array) at the time dp_center was last auto-found - lets
@@ -392,7 +397,7 @@ class Tab_SAM2(TabBase):
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
         
         #%% Edge Detection / Extract 
-        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0)
         #### edge detection
         layout_edgeDetection_row1 = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_edgeDetection_row1)
@@ -558,6 +563,14 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
         self.button_runSeg_img.setDisabled(True)
 
+        self.button_autoDetector = qtw.QPushButton('Auto Detector', self)
+        self.button_autoDetector.setToolTip(
+            "Run SAM2's automatic mask generator on the current frame to find "
+            'candidate objects, then pick which ones to add to the object list')
+        layout_sam_buttons_1.addWidget(self.button_autoDetector)
+        self.button_autoDetector.clicked.connect(self.launch_auto_detector)
+        self.button_autoDetector.setDisabled(True)
+
         # num
         layout_stack = qtw.QVBoxLayout()
         layout_sam_buttons_2.addLayout(layout_stack)
@@ -683,12 +696,17 @@ class Tab_SAM2(TabBase):
         self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
                               fontsize=10)
         self.canvas.mpl_connect("button_press_event", self.on_click)
+        self.canvas.mpl_connect("motion_notify_event", self.on_motion)
+        self.canvas.mpl_connect("button_release_event", self.on_release)
         self.canvas.mpl_connect("scroll_event", self.on_scroll)
         # self.masks_plotted = []
         self.create_main_dataframe()
         self.imgs = deepcopy([self.img_zero])
         self.imgs_8bit = deepcopy([self.img_zero])
         self.scatter_plots = []
+        self.press = None            # Mouse press coords, for the ribbon's "Remove points" box-select
+        self._remove_points_rect = None
+        self._remove_points_bg = None
         #%% slider
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
@@ -760,6 +778,9 @@ class Tab_SAM2(TabBase):
                       'to the selected object - same as Ctrl+click', 'tool'),
             RibbonTool('remove_point', 'remove_point', 'Remove last point (same as middle-click)',
                       'action', self.delete_last_point),
+            RibbonTool('remove_points_roi', 'select_roi', 'Remove points: click+drag a box on '
+                      'the Nav. Image to delete every point (any object) it contains on this frame',
+                      'tool'),
             RibbonTool('sep1', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode',
                       'action', self.toolbar.pan),
@@ -1255,6 +1276,7 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_clip.setEnabled(True)
         self.button_runSeg_img.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
+        self.button_autoDetector.setEnabled(True)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
         # Scale fields may already hold a value from a previous session/load -
@@ -1658,16 +1680,20 @@ class Tab_SAM2(TabBase):
         wraps every canvas.draw() call and restores its own internally-
         tracked cursor afterward, which would otherwise silently undo this
         on the very next on_click/etc. redraw."""
-        cursor = {'add_point': Qt.PointingHandCursor}.get(self.ribbon.active_tool)
+        cursor = {'add_point': Qt.PointingHandCursor,
+                  'remove_points_roi': Qt.CrossCursor}.get(self.ribbon.active_tool)
         self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_click(self, event):
-        """Canvas mouse-click handler: middle-click deletes the last added
+        """Canvas mouse-press handler: middle-click deletes the last added
         point; Ctrl+click on the DP plot (only while auto-centering is off)
         sets a manual diffraction-pattern center; Ctrl+click on the nav
         image (or a plain click while the ribbon's "Add point" tool is
         active) adds a positive (left) or negative (right) point to the
-        selected object, starting a new object unless Shift is held."""
+        selected object, starting a new object unless Shift is held; a
+        click+drag while the ribbon's "Remove points" tool is active starts
+        a box-select instead (finished in on_release) that deletes every
+        point it contains."""
         if event.button == 2: # middle click:
             self.delete_last_point()
             return
@@ -1678,6 +1704,21 @@ class Tab_SAM2(TabBase):
             self.add_scalebar()
             return
         if (event.inaxes != self.ax_nav) or (event.button not in [1,3]):
+            return
+        if self.ribbon.active_tool == 'remove_points_roi' and event.button == 1:
+            self.press = (event.xdata, event.ydata)
+            if self._remove_points_rect is not None:
+                self._remove_points_rect.remove()
+            self._remove_points_rect = patches.Rectangle(
+                self.press, 0, 0, linewidth=1, edgecolor='r', facecolor='none', linestyle='--')
+            self.ax_nav.add_patch(self._remove_points_rect)
+            # One full draw() "bakes in" the current state (nav image, the
+            # just-added zero-size rect) into a cached background snapshot,
+            # so on_motion can cheaply blit just the growing rectangle on
+            # top of it instead of redrawing the whole figure on every
+            # mouse-move (same pattern as Tab_ROI_on_4D's on_press/on_motion).
+            self.canvas.draw()
+            self._remove_points_bg = self.canvas.copy_from_bbox(self.ax_nav.bbox)
             return
         if self.ribbon.active_tool != 'add_point' and 'ctrl' not in event.modifiers:
             # Plain click/drag is reserved for the navigation toolbar's
@@ -1721,6 +1762,76 @@ class Tab_SAM2(TabBase):
         i_ap = 1 if pd.isna(i_ap) else i_ap+1
         self.df_added_points.loc[i_ap] = added_point
         self.update_canvas(imgNo) # TODO fix
+
+    def on_motion(self, event):
+        """Resize the in-progress "Remove points" box as the mouse moves,
+        blitting just the rectangle onto the cached background for speed
+        (see on_click/on_release)."""
+        if self.press is None or self._remove_points_rect is None or event.inaxes is None:
+            return
+        x0, y0 = self.press
+        width = event.xdata - x0
+        height = event.ydata - y0
+        self._remove_points_rect.set_width(width)
+        self._remove_points_rect.set_height(height)
+        self._remove_points_rect.set_xy((x0, y0))
+        self.canvas.restore_region(self._remove_points_bg)
+        self.ax_nav.draw_artist(self._remove_points_rect)
+        self.canvas.blit(self.ax_nav.bbox)
+
+    def on_release(self, event):
+        """Finalize the "Remove points" box on mouse-up (see on_click) and
+        delete every point (any object) on the currently-displayed frame
+        that falls inside it."""
+        if self.press is None or self._remove_points_rect is None:
+            return
+        x0, y0 = self.press
+        self.press = None
+        self._remove_points_rect.remove()
+        self._remove_points_rect = None
+        if event.xdata is None or event.ydata is None:
+            self.canvas.draw_idle()
+            return
+        xlo, xhi = sorted((x0, event.xdata))
+        ylo, yhi = sorted((y0, event.ydata))
+        imgNo = self.slider_imgNo.value()
+        n_removed = self._remove_points_in_box(xlo, xhi, ylo, yhi, imgNo)
+        self.update_canvas(imgNo)
+        if n_removed:
+            self.logger.info('Removed %d point(s) within the drawn box on frame %d.',
+                              n_removed, imgNo)
+
+    def _remove_points_in_box(self, xlo, xhi, ylo, yhi, imgNo):
+        """Delete every point of every object on frame `imgNo` whose (x, y)
+        falls within [xlo, xhi] x [ylo, yhi] - used by the ribbon's "Remove
+        points" box-select tool (on_click/on_motion/on_release). Drops an
+        object entirely if this removes its last remaining point anywhere.
+        Returns the number of points removed."""
+        n_removed = 0
+        for idx in list(self.df_obj.index):
+            frame_idx = self.df_obj.at[idx, 'frame_idx']
+            points = self.df_obj.at[idx, 'points']
+            labels = self.df_obj.at[idx, 'labels']
+            keep = [i for i, (fr, p) in enumerate(zip(frame_idx, points))
+                    if not (fr == imgNo and xlo <= p[0] <= xhi and ylo <= p[1] <= yhi)]
+            if len(keep) == len(frame_idx):
+                continue
+            n_removed += len(frame_idx) - len(keep)
+            if not keep:
+                self.delete_tree_item(str(idx))
+                self.df_obj = self.df_obj.drop(idx)
+                continue
+            self.df_obj.at[idx, 'frame_idx'] = [frame_idx[i] for i in keep]
+            self.df_obj.at[idx, 'points'] = [points[i] for i in keep]
+            self.df_obj.at[idx, 'labels'] = [labels[i] for i in keep]
+            # Keep the tree row's frame-list text in sync (mirrors on_click's
+            # own update after appending a point).
+            for i in range(self.tree_objects.topLevelItemCount()):
+                item = self.tree_objects.topLevelItem(i)
+                if item.text(1) == str(idx):
+                    item.setText(2, str(self.df_obj.at[idx, 'frame_idx']))
+                    break
+        return n_removed
 
     def on_scroll(self, event):
         """Zoom the axes under the cursor in/out on Ctrl+scroll wheel,
@@ -1986,13 +2097,30 @@ class Tab_SAM2(TabBase):
         except Exception:
             self.label_stack.setText('')
 
+    def _group_objects_by_frame_range(self, df):
+        """Group `df`'s object ids by their exact (start, end) frame range -
+        SAM2's video predictor natively seeds any number of object ids
+        against one encoded video, so objects sharing a range don't need a
+        separate SAM2 run each (see initiate_video_segmentation). Returns an
+        ordered {(start, end): [obj_id, ...]} dict."""
+        groups = {}
+        for idx in df.index:
+            st = min(df.loc[idx, 'frame_idx'])
+            end = df.loc[idx, 'end']
+            groups.setdefault((st, end), []).append(idx)
+        return groups
+
     def initiate_video_segmentation(self):
-        """Kick off SAM2 tracking for every "used" object: split each
-        object's frame range into stack_num-sized chunks, export each
-        chunk's frames as JPGs in the background, and record the per-chunk
-        points/labels needed to seed segmentation (df_toSegment).
-        run_video_segmentation() launches the actual SAM2 subprocesses once
-        JPG export finishes."""
+        """Kick off SAM2 tracking for every "used" object: objects sharing
+        the exact same start/end frame range are batched into ONE SAM2
+        video-predictor run (different object ids seeded against the same
+        encoded video) instead of a separate run each - see
+        _group_objects_by_frame_range(). Each group's frame range is split
+        into stack_num-sized chunks, each chunk's frames exported as JPGs
+        ONCE PER GROUP (not once per object) in the background, with every
+        member object's points/labels needed to seed segmentation recorded
+        in that chunk's seg_input.pkl (df_toSegment). run_video_segmentation()
+        launches the actual SAM2 subprocesses once JPG export finishes."""
         # self.button_runSeg_img.setDisabled(True)
         self.button_runSeg_clip.setDisabled(True)
         self._track_tic = perf_counter()
@@ -2008,41 +2136,35 @@ class Tab_SAM2(TabBase):
             shutil.rmtree(self.path_jpg)
             # os.rmdir(self.path_jpg)
         os.mkdir(self.path_jpg)
-        
+
         df = self.df_obj[self.df_obj.use == 1]
         self.stack_num = self.spinbox_stackNum.value()
         if self.stack_num == 0:
             self.stack_num = len(self.imgs)
             self.spinbox_stackNum.setValue(self.stack_num)
 
-        self.logger.info('Starting SAM2 tracking for %d object(s) (stack size %d frames)...',
-                          len(df), self.stack_num)
+        groups = self._group_objects_by_frame_range(df)
+        self.logger.info(
+            'Starting SAM2 tracking for %d object(s) in %d batch(es) '
+            '(stack size %d frames)...', len(df), len(groups), self.stack_num)
 
         self.total_threads_jpg = 0
-        for idx in df.index:
-            st = min(df.loc[idx, 'frame_idx'])
-            end = df.loc[idx, 'end']
+        for (st, end), obj_ids in groups.items():
             imgs = self.imgs_8bit[st:end]
             arr_stack = np.arange(0, len(imgs), self.stack_num)
             self.total_threads_jpg += len(arr_stack)
-        
+
         self.df_toSegment = pd.DataFrame(data=[], columns=[
-            'path_jpg', 'idx_ref', 'stack_num', 'frame_idx', 'points', 
-            'labels', 'mask'])
+            'path_jpg', 'obj_ids', 'stack_num', 'mask'])
         self.df_toSegment = self.df_toSegment.astype({
             'path_jpg': str,
-            'idx_ref': int,
+            'obj_ids': object,
             'stack_num': int,
-            'frame_idx': object, 
-            'points': object, 
-            'labels': object,
             'mask': object})
-        
+
         self.worker_count_jpg = 0
         i_c = 0
-        for idx in df.index:
-            st = min(df.loc[idx, 'frame_idx'])
-            end = df.loc[idx, 'end']
+        for g_i, ((st, end), obj_ids) in enumerate(groups.items()):
             imgs = self.imgs_8bit[st:end]
             arr_stack = np.arange(0, len(imgs), self.stack_num)
             arr_stack = np.append(arr_stack, len(imgs))
@@ -2052,34 +2174,40 @@ class Tab_SAM2(TabBase):
             # with_mask, ...) lines up correctly, instead of needing a local/
             # global offset conversion that was easy to get wrong in one place
             # and miss in another.
-            self.df_obj.at[idx, 'mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
-            path_obj = os.path.join(self.path_jpg, f'{idx}')
-            if os.path.isdir(path_obj):
-                shutil.rmtree(path_obj)
-            os.mkdir(path_obj)
-            
+            for obj_id in obj_ids:
+                self.df_obj.at[obj_id, 'mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
+            path_group = os.path.join(self.path_jpg, f'group_{g_i}')
+            if os.path.isdir(path_group):
+                shutil.rmtree(path_group)
+            os.mkdir(path_group)
+
             for i_fld, _ in enumerate(arr_stack[:-1]):
-                path_stack = os.path.join(path_obj, f'{i_fld}')
+                path_stack = os.path.join(path_group, f'{i_fld}')
                 if os.path.isdir(path_stack):
                     shutil.rmtree(path_stack)
                 os.mkdir(path_stack)
-                
+
                 st_2 = arr_stack[i_fld]
                 end_2 = arr_stack[i_fld+1]
                 imgs_stack = imgs[st_2:end_2]
-                frame_idx, points, labels = df.loc[idx, 
-                   ['frame_idx', 'points', 'labels']]
-                frame_idx = np.array(frame_idx) - st - st_2
-                cond = np.where((frame_idx>=0) & (frame_idx<self.stack_num))
-                frame_idx = frame_idx[cond]
-                points = np.array(points)[cond]
-                labels = np.array(labels)[cond]
-                self.df_toSegment.loc[i_c] = [path_stack, idx, i_fld, frame_idx,
-                                                points, labels, None]
+
+                objects = {}
+                for obj_id in obj_ids:
+                    frame_idx, points, labels = df.loc[obj_id,
+                       ['frame_idx', 'points', 'labels']]
+                    frame_idx = np.array(frame_idx) - st - st_2
+                    cond = np.where((frame_idx>=0) & (frame_idx<self.stack_num))
+                    objects[int(obj_id)] = {
+                        'frame_idx': frame_idx[cond],
+                        'points': np.array(points)[cond],
+                        'labels': np.array(labels)[cond]}
+
+                self.df_toSegment.loc[i_c] = [path_stack, list(obj_ids), i_fld, None]
                 fn = os.path.join(path_stack, 'seg_input.pkl')
-                self.df_toSegment.loc[i_c][:-1].to_pickle(fn)
+                with open(fn, 'wb') as f:
+                    pickle.dump({'path_jpg': path_stack, 'objects': objects}, f)
                 i_c += 1
-                worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0, 
+                worker_make_jpg = WorkerThread_General(self.make_jpg_imgs, 0,
                                            path_stack, imgs_stack)
                 self.threadpool.start(worker_make_jpg)
                 worker_make_jpg.signals.finished.connect(self.check_jpg_completion)
@@ -2210,8 +2338,11 @@ class Tab_SAM2(TabBase):
             idx = int(result["idx"])
 
             with np.load(fn_output) as f:
-                mask_stack = f['masks']
-            self.df_toSegment.at[idx, 'mask'] = mask_stack
+                # One key per batched object in this chunk (see
+                # _group_objects_by_frame_range/initiate_video_segmentation) -
+                # f'obj_{obj_id}' for every id in this row's obj_ids.
+                mask_by_obj = {int(k.split('_', 1)[1]): f[k] for k in f.files}
+            self.df_toSegment.at[idx, 'mask'] = mask_by_obj
             # launch next segmentation
             if len(self.running_processes_sam) != self.running_processes_sam_total:
                 for idx in self.df_toSegment.index.sort_values():
@@ -2221,11 +2352,14 @@ class Tab_SAM2(TabBase):
                         self.launch_next_video_seg(path, idx)
                         break
             else: # finished
-                for i_ref in np.unique(self.df_toSegment.idx_ref):
-                    df = self.df_toSegment[self.df_toSegment.idx_ref==i_ref]
-                    for idx in df.index:
-                        i_c = df.loc[idx, 'stack_num']
-                        beg = min(self.df_obj.loc[i_ref, 'frame_idx'])
+                all_obj_ids = set()
+                for idx in self.df_toSegment.index:
+                    i_c = self.df_toSegment.loc[idx, 'stack_num']
+                    mask_by_obj = self.df_toSegment.loc[idx, 'mask']
+                    for obj_id in self.df_toSegment.loc[idx, 'obj_ids']:
+                        all_obj_ids.add(obj_id)
+                        beg = min(self.df_obj.loc[obj_id, 'frame_idx'])
+                        obj_mask = mask_by_obj[int(obj_id)]
 
                         # 'mask' is now allocated at full dataset length (global
                         # frame numbers), so each per-stack chunk is placed at
@@ -2234,7 +2368,7 @@ class Tab_SAM2(TabBase):
                         # full self.stack_num) makes this correct even for the
                         # last chunk of an object, which is often shorter than
                         # a full stack.
-                        frame_num = len(df.loc[idx, 'mask'])
+                        frame_num = len(obj_mask)
                         start = beg + i_c * self.stack_num
                         # Kept raw (un-eroded) here - "Edge Only" is applied
                         # as a view at display time (update_canvas) and at
@@ -2242,17 +2376,18 @@ class Tab_SAM2(TabBase):
                         # doesn't require re-tracking to see the effect, and
                         # can be turned back off without losing the original
                         # SAM2 result. See apply_edge_mask()/apply_edge_mask_stack().
-                        self.df_obj.at[i_ref, 'mask'][
-                            start : start + frame_num] = df.loc[idx, 'mask']
+                        self.df_obj.at[obj_id, 'mask'][
+                            start : start + frame_num] = obj_mask
+                for obj_id in all_obj_ids:
                     # Snapshot the freshly-tracked (still un-eroded, un-edited)
                     # result as this object's permanent "Reset to Tracking"
                     # target for MaskEditDialog - taken here, before any
                     # fine-tune-dialog edits can ever touch 'mask'.
-                    self.df_obj.at[i_ref, 'mask_default'] = self.df_obj.at[i_ref, 'mask'].copy()
-                    row_index = self.df_obj.index.get_loc(i_ref)
+                    self.df_obj.at[obj_id, 'mask_default'] = self.df_obj.at[obj_id, 'mask'].copy()
+                    row_index = self.df_obj.index.get_loc(obj_id)
                     self.toggle_tree_icon(row_index, 'trk', True)
 
-                n_objects = len(np.unique(self.df_toSegment.idx_ref))
+                n_objects = len(all_obj_ids)
                 _ = gc.collect()
                 del self.df_toSegment
                 self.activate_3ded_widgets(True)
@@ -2282,38 +2417,71 @@ class Tab_SAM2(TabBase):
             while len(self.running_processes_sam) > 0:
                 idx, pr = self.running_processes_sam.popitem()
                 pr.kill()
+#%% auto detector
+    def launch_auto_detector(self):
+        """Launch the SAM2 Auto Detector popup (see
+        ui_tabs/sam2_auto_detector_widget.py) on the currently-displayed
+        frame - mirrors ROI Tracker's launch_auto_detector."""
+        imgNo = self.slider_imgNo.value()
+        pathSave = self.lineEdit_dir_save.text()
+        self.auto_detector = SAM2AutoDetectorWidget(
+            self.imgs_8bit[imgNo], imgNo, pathSave, self._ensure_sam2_ready, self.logger)
+        self.auto_detector.final_objects.connect(self.receive_auto_detected_objects)
+        self.auto_detector.show()
+
+    def receive_auto_detected_objects(self, objects):
+        """Signal handler for SAM2AutoDetectorWidget.final_objects: add each
+        accepted candidate as a new object, seeded with the points/labels
+        the widget computed (center of mass + optional background points)
+        on the frame it was run on - same df_obj row shape as a manually
+        Ctrl+clicked new object (see on_click)."""
+        if not objects:
+            return
+        for obj in objects:
+            idx = 1
+            while idx in self.df_obj.index:
+                idx += 1
+            fr_idx = [obj['frame_idx']] * len(obj['points'])
+            self.df_obj.loc[idx] = [1, idx, fr_idx, obj['points'], obj['labels'],
+                                    len(self.imgs), None, None, None, None, None]
+            self.add_item_tree(idx, fr_idx)
+        self.update_canvas()
+        self.canvas.draw()
+        self.logger.info('Auto Detector added %d object(s) on frame %d.',
+                          len(objects), objects[0]['frame_idx'])
 #%% image segmentation
     def initiate_image_segmentation(self):
-        """Segment the currently-selected object on the current frame only,
-        using SAM2's single-image predictor (no cross-frame propagation) —
-        unlike Track, which runs SAM2's video predictor across every frame."""
-        try:
-            item_selected = self.tree_objects.currentItem()
-            obj_id = int(item_selected.text(1))
-        except Exception:
-            self.logger.warning('Single-image segmentation requested but no object is selected.')
-            qtw.QMessageBox.critical(self, 'No Object Selected',
-                'Select an object in the list before running single-image segmentation.')
-            return
-
+        """Segment every "used" object that has at least one point on the
+        current frame, using SAM2's single-image predictor (no cross-frame
+        propagation) — unlike Track, which runs SAM2's video predictor
+        across every frame. Objects applicable to this frame are batched
+        into ONE SAM2 run (the image is only embedded once - see
+        worker_sam.py's 'image' branch) instead of a separate run each."""
         imgNo = self.slider_imgNo.value()
-        frames = np.array(self.df_obj.loc[obj_id, 'frame_idx'])
-        toPlot = np.where(frames == imgNo)
-        points = np.array(self.df_obj.loc[obj_id, 'points'])[toPlot]
-        labels = np.array(self.df_obj.loc[obj_id, 'labels'])[toPlot]
-        if len(points) == 0:
+        df = self.df_obj[self.df_obj.use == 1]
+        objects = {}
+        for obj_id in df.index:
+            frames = np.array(df.loc[obj_id, 'frame_idx'])
+            toPlot = np.where(frames == imgNo)
+            points = np.array(df.loc[obj_id, 'points'])[toPlot]
+            if len(points) == 0:
+                continue
+            labels = np.array(df.loc[obj_id, 'labels'])[toPlot]
+            objects[int(obj_id)] = {'points': points, 'labels': labels}
+
+        if not objects:
             self.logger.warning(
-                'Single-image segmentation requested for object %s but it has '
-                'no points on frame %d.', obj_id, imgNo)
+                'Single-image segmentation requested but no "used" object has '
+                'points on frame %d.', imgNo)
             qtw.QMessageBox.critical(self, 'No Points on This Frame',
-                f'Object {obj_id} has no annotated points on frame {imgNo}.\n'
+                f'No object has annotated points on frame {imgNo}.\n'
                 'Hold Ctrl and click on the image to add at least one point '
                 'on this frame first.')
             return
 
         self.logger.info(
-            'Starting SAM2 single-image segmentation for object %s on frame '
-            '%d (%d point(s))...', obj_id, imgNo, len(points))
+            'Starting SAM2 single-image segmentation for %d object(s) on '
+            'frame %d...', len(objects), imgNo)
         self.button_runSeg_img.setDisabled(True)
 
         def _on_checkpoint_failed(error_msg):
@@ -2323,13 +2491,14 @@ class Tab_SAM2(TabBase):
                 'internet connection and see the log console for details.')
 
         self._ensure_sam2_ready(
-            lambda: self._launch_image_segmentation(obj_id, imgNo, points, labels),
+            lambda: self._launch_image_segmentation(objects, imgNo),
             _on_checkpoint_failed)
 
-    def _launch_image_segmentation(self, obj_id, imgNo, points, labels):
-        """Build the single-image seg_input.pkl and launch worker_sam.py -
-        split out from initiate_image_segmentation() so it can run only
-        after _ensure_sam2_ready() confirms the checkpoint is present."""
+    def _launch_image_segmentation(self, objects, imgNo):
+        """Build the single-image seg_input.pkl (every batched object's
+        points/labels) and launch worker_sam.py - split out from
+        initiate_image_segmentation() so it can run only after
+        _ensure_sam2_ready() confirms the checkpoint is present."""
         pathSave = self.lineEdit_dir_save.text()
         if not os.path.isdir(pathSave):
             os.mkdir(pathSave)
@@ -2338,42 +2507,44 @@ class Tab_SAM2(TabBase):
             shutil.rmtree(path_seg)
         os.makedirs(path_seg)
 
-        seg_input = pd.Series({'image': self.imgs_8bit[imgNo], 'points': points, 'labels': labels})
-        seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
+        seg_input = {'image': self.imgs_8bit[imgNo], 'objects': objects}
+        with open(os.path.join(path_seg, 'seg_input.pkl'), 'wb') as f:
+            pickle.dump(seg_input, f)
 
-        program, arguments = worker_command('sam', ['image', path_seg, str(obj_id)])
+        key = f'img_batch_{imgNo}'
+        program, arguments = worker_command('sam', ['image', path_seg, str(imgNo)])
         process_sam = QProcess(self)
         process_sam.setProgram(program)
         process_sam.setArguments(arguments)
         process_sam.readyReadStandardError.connect(lambda:
-                            self.handle_error_sam(process_sam, obj_id))
+                            self.handle_error_sam(process_sam, key))
         process_sam.finished.connect(lambda exit_code, exit_status:
                      self.handle_finished_image_sam(
-                     process_sam, obj_id, imgNo, exit_code, exit_status))
+                     process_sam, key, imgNo, exit_code, exit_status))
         process_sam.errorOccurred.connect(lambda error:
-                     self.process_failed_image_sam(error, obj_id, imgNo))
+                     self.process_failed_image_sam(error, key, imgNo))
 
         if not hasattr(self, 'running_processes_sam'):
             self.running_processes_sam = {}
-        key = f'img_{obj_id}_{imgNo}'
         self.running_processes_sam[key] = process_sam
         process_sam.start()
 
-    def process_failed_image_sam(self, error, obj_id, imgNo):
-        self.running_processes_sam.pop(f'img_{obj_id}_{imgNo}', None)
+    def process_failed_image_sam(self, error, key, imgNo):
+        self.running_processes_sam.pop(key, None)
         self.button_runSeg_img.setEnabled(True)
         self.logger.error("[%s] Single-image segmentation QProcess error occurred: %s",
-                           obj_id, error)
+                           key, error)
 
-    def handle_finished_image_sam(self, process, obj_id, imgNo, exit_code, exit_status):
+    def handle_finished_image_sam(self, process, key, imgNo, exit_code, exit_status):
         """SAM2 single-image subprocess completion handler: load the
-        resulting mask into `single_mask` at `imgNo` for `obj_id` and
-        refresh the canvas."""
-        self.running_processes_sam.pop(f'img_{obj_id}_{imgNo}', None)
+        resulting masks (one per batched object - see
+        initiate_image_segmentation) into each object's `single_mask` at
+        `imgNo`, and refresh the canvas."""
+        self.running_processes_sam.pop(key, None)
         self.button_runSeg_img.setEnabled(True)
         self.logger.info(
             "[%s] Single-image segmentation process finished with exit code %s, status %s",
-            obj_id, exit_code, exit_status)
+            key, exit_code, exit_status)
 
         data = process.readAllStandardOutput()
         text = bytes(data).decode("utf-8")
@@ -2384,15 +2555,17 @@ class Tab_SAM2(TabBase):
                 self._show_missing_dependency_dialog(result['message'])
                 return
             fn_output = result["path"]
+            obj_ids = result["obj_ids"]
             with np.load(fn_output) as f:
-                mask = f['mask']
-            # Kept raw (un-eroded) - see apply_edge_mask()/update_canvas().
-            if not isinstance(self.df_obj.at[obj_id, 'single_mask'], np.ndarray):
-                self.df_obj.at[obj_id, 'single_mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
-            self.df_obj.loc[obj_id, 'single_mask'][imgNo] = mask
+                for obj_id in obj_ids:
+                    mask = f[f'obj_{obj_id}']
+                    # Kept raw (un-eroded) - see apply_edge_mask()/update_canvas().
+                    if not isinstance(self.df_obj.at[obj_id, 'single_mask'], np.ndarray):
+                        self.df_obj.at[obj_id, 'single_mask'] = np.zeros(self.imgs_8bit.shape, dtype=bool)
+                    self.df_obj.loc[obj_id, 'single_mask'][imgNo] = mask
             self.logger.info(
                 'SAM2 single-image segmentation completed successfully for '
-                'object %s, frame %d.', obj_id, imgNo)
+                '%d object(s), frame %d.', len(obj_ids), imgNo)
             self.update_canvas(imgNo)
         except json.JSONDecodeError:
             self.logger.error("Could not decode SAM2 single-image segmentation result: %s", text)

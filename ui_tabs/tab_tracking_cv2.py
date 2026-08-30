@@ -96,7 +96,7 @@ class Tab_Tracking_CV2(TabBase):
         self.layout.addWidget(ribbon_page)
 
         #%% Files (ribbon column)
-        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=0)
 
         # nav signal dir
         layout_dir_entry = qtw.QHBoxLayout()
@@ -111,6 +111,7 @@ class Tab_Tracking_CV2(TabBase):
         
         
         self.button_dir_navSignal = qtw.QPushButton('...')
+        self.button_dir_navSignal.setFixedWidth(30)
         layout_dir_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(lambda: self.show_dialog('file'))
         
@@ -126,6 +127,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_dir_4dSignals.addWidget(self.lineEdit_dir_4d)
         
         self.button_dir_4dSignals = qtw.QPushButton('...')
+        self.button_dir_4dSignals.setFixedWidth(30)
         layout_dir_4dSignals.addWidget(self.button_dir_4dSignals)
         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
 
@@ -236,7 +238,7 @@ class Tab_Tracking_CV2(TabBase):
         # QGridLayout (mirrors Tab_ROI_on_4D/Navigator's Input Parameters
         # column, including QSpinBox for Scan Size too - was a QLineEdit)
         # so their labels/X/Y cells line up row-to-row.
-        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_scanSize, layout_box_scanSize = self._ribbon_group_start(layout_ribbon, stretch=0)
 
         # Detector Size/Scan Size/Metadata/Scales each get their own
         # QGroupBox, arranged 2x2 (mirrors Tab_ROI_on_4D/Navigator's Input
@@ -387,7 +389,7 @@ class Tab_Tracking_CV2(TabBase):
         # below, where self.box_contrast/self.tree_objects etc. are built.
 
         #%% Threshold / Edge Detection
-        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=1)
+        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0)
         #### threshold
         layout_thresh_method = qtw.QHBoxLayout()
         label_thresh_method = qtw.QLabel('Threshold Method')

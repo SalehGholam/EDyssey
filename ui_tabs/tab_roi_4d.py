@@ -9,6 +9,7 @@ Created on Wed Oct  2 15:34:09 2024
 
 import os
 import json
+import pickle
 import tempfile
 import shutil
 from time import perf_counter
@@ -20,7 +21,6 @@ from matplotlib.colors import SymLogNorm
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import EDyssey.io_utils as io
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -1959,11 +1959,15 @@ class Tab_ROI_on_4D(TabBase):
 
         path_seg = self._get_seg_temp_dir()
         img_8bit = io.convert_img_to_8bit(self.navImg)
-        seg_input_dict = {'image': img_8bit,
-                          'points': np.array(self.seg_points),
-                          'labels': np.array(self.seg_labels)}
-        seg_input = pd.Series(seg_input_dict)
-        seg_input.to_pickle(os.path.join(path_seg, 'seg_input.pkl'))
+        # worker_sam.py's 'image' branch takes a {obj_id: {points,labels}}
+        # map (batches multiple objects against one image encoding - see
+        # Tab_SAM2.initiate_image_segmentation) - this tab only ever
+        # segments one object at a time, so obj_id 0 is just a placeholder.
+        seg_input = {'image': img_8bit,
+                    'objects': {0: {'points': np.array(self.seg_points),
+                                     'labels': np.array(self.seg_labels)}}}
+        with open(os.path.join(path_seg, 'seg_input.pkl'), 'wb') as f:
+            pickle.dump(seg_input, f)
 
         program, arguments = worker_command('sam', ['image', path_seg, '0'])
         self._process_sam = QProcess(self)
@@ -2004,7 +2008,7 @@ class Tab_ROI_on_4D(TabBase):
         try:
             result = json.loads(text.strip())
             with np.load(result['path']) as f:
-                mask = f['mask']
+                mask = f['obj_0']
         except json.JSONDecodeError:
             self.logger.error('Could not decode SAM2 segmentation result: %s', text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',

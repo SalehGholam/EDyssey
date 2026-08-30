@@ -19,15 +19,14 @@ try:
     import torch
     from sam2.build_sam import build_sam2, build_sam2_video_predictor
     from sam2.sam2_image_predictor import SAM2ImagePredictor
+    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 except ImportError as _exc:
     print(json.dumps({'error': 'missing_dependency',
                        'message': f'torch/sam2 not installed: {_exc}'}))
     sys.exit(0)
 from time import strftime
-import pandas as pd
 from glob import glob
 import pickle
-import matplotlib.pyplot as plt
 # from sam2.sam2_video_predictor import SAM2VideoPredictor
 #%% funcs
 def check_torch_device():
@@ -103,109 +102,140 @@ if __name__ == "__main__":
     device = check_torch_device()
     if typ == 'image':
         # Single-frame segmentation (no cross-frame propagation): the GUI
-        # writes the frame + its point prompts for this tab.SAM2 tab's
-        # currently-selected object/frame to seg_input.pkl, mirroring the
-        # 'video' branch's input convention below.
-        df = pd.read_pickle(os.path.join(path_seg_input, 'seg_input.pkl'))
-        image = df['image']
+        # writes the frame + a {obj_id: {points, labels}} map to
+        # seg_input.pkl - every batched object shares this ONE image, so
+        # set_image() (the expensive step - image encoding) runs once and
+        # predict() is called per object, instead of one full subprocess
+        # (with its own image encoding) per object. Callers batch objects
+        # that are all applicable to the same frame (see Tab_SAM2's
+        # initiate_image_segmentation) - Tab_ROI_on_4D's segment_image()
+        # always sends just one object (id 0), since it doesn't track
+        # multiple named objects the way the SAM2 tab does.
+        with open(os.path.join(path_seg_input, 'seg_input.pkl'), 'rb') as f:
+            seg_input = pickle.load(f)
+        image = seg_input['image']
         if image.ndim == 2:
             # SAM2ImagePredictor expects an RGB image; the 'video' branch
             # gets this for free since SAM2 loads JPEG frames as RGB, but a
             # single grayscale nav-image frame needs converting explicitly.
             image = np.stack([image] * 3, axis=-1)
-        points = df['points']
-        labels = df['labels']
-        # Points and box are both optional prompts - SAM2 accepts either
-        # alone or combined (a box narrows the search region, points refine
-        # it further); pass None rather than an empty array when unused, to
-        # avoid tripping SAM2's own prompt-shape assertions.
-        point_coords = np.array(points, dtype=np.float32) if len(points) else None
-        point_labels = np.array(labels, dtype=np.int32) if len(labels) else None
-        box = df.get('box')
-        if box is not None:
-            box = np.array(box, dtype=np.float32)
 
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         predictor = SAM2ImagePredictor(sam2_model)
         predictor.set_image(image)
-        # All points/labels (and the box, if any) are passed together in a
-        # single predict() call (they jointly resolve one mask), not one
-        # call per point - multimask_output=False returns SAM2's single
-        # best-guess mask instead of the 3 ambiguity-resolving candidates.
-        masks, scores, logits = predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            box=box,
-            multimask_output=False,
-        )
-        mask = masks[0].astype(bool)
+
+        save_kwargs = {}
+        for obj_id, obj_data in seg_input['objects'].items():
+            points = obj_data['points']
+            labels = obj_data['labels']
+            # Points are an optional prompt - pass None rather than an
+            # empty array when unused, to avoid tripping SAM2's own
+            # prompt-shape assertions.
+            point_coords = np.array(points, dtype=np.float32) if len(points) else None
+            point_labels = np.array(labels, dtype=np.int32) if len(labels) else None
+            # All of one object's points/labels are passed together in a
+            # single predict() call (they jointly resolve one mask), not one
+            # call per point - multimask_output=False returns SAM2's single
+            # best-guess mask instead of the 3 ambiguity-resolving candidates.
+            masks, scores, logits = predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=False,
+            )
+            save_kwargs[f'obj_{obj_id}'] = masks[0].astype(bool)
+            save_kwargs[f'obj_{obj_id}_score'] = np.array(float(scores[0]))
 
         fn_save = os.path.join(path_seg_input, 'mask_single')
-        np.savez_compressed(fn_save, mask=mask, score=float(scores[0]))
+        np.savez_compressed(fn_save, **save_kwargs)
 
-        result = {'path': fn_save + '.npz', 'idx': idx}
+        result = {'path': fn_save + '.npz', 'idx': idx,
+                  'obj_ids': [int(o) for o in seg_input['objects'].keys()]}
         print(json.dumps(result))
 
     elif typ == 'video':
-        df = pd.read_pickle(os.path.join(path_seg_input, 'seg_input.pkl'))
+        with open(os.path.join(path_seg_input, 'seg_input.pkl'), 'rb') as f:
+            seg_input = pickle.load(f)
         predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device)
-        inference_state = predictor.init_state(df['path_jpg'])
-        # add points
-        for _, fr_no in enumerate(np.unique(df.frame_idx)): # only one object is inside df
-            points = df.points[np.where(df.frame_idx == fr_no)]
-            labels = df.labels[np.where(df.frame_idx == fr_no)]
-            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                inference_state=inference_state,
-                frame_idx=fr_no,
-                obj_id=0,
-                points=points,
-                labels=labels)
+        inference_state = predictor.init_state(seg_input['path_jpg'])
+        # Seed every batched object's points against this one encoded video
+        # chunk - objects sharing a start/end frame range (and therefore
+        # this same JPG export) are batched into one run instead of a
+        # separate SAM2 run each (see Tab_SAM2's
+        # _group_objects_by_frame_range/initiate_video_segmentation).
+        # propagate_in_video() below naturally tracks every seeded obj_id
+        # together in one pass.
+        for obj_id, obj_data in seg_input['objects'].items():
+            frame_idx_arr = obj_data['frame_idx']
+            points_arr = obj_data['points']
+            labels_arr = obj_data['labels']
+            for fr_no in np.unique(frame_idx_arr):
+                cond = np.where(frame_idx_arr == fr_no)
+                predictor.add_new_points_or_box(
+                    inference_state=inference_state,
+                    frame_idx=int(fr_no),
+                    obj_id=int(obj_id),
+                    points=points_arr[cond],
+                    labels=labels_arr[cond])
 
-# several objects
-# =============================================================================
-#         for obj_id in df.index:
-#             for i, fr_no in enumerate(df.loc[obj_id, 'frame_idx']):
-#                 _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-#                     inference_state=inference_state,
-#                     frame_idx=fr_no,
-#                     obj_id=obj_id,
-#                     points=df.loc[obj_id, 'points'][i],
-#                     labels=df.loc[obj_id, 'labels'][i])
-# =============================================================================
-        
-        # propagate in video 
+        # propagate in video
         video_segments = {}
-        
         for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
             for i, out_obj_id in enumerate(out_obj_ids):
                 mask = (out_mask_logits[i] > 0.0).cpu().numpy()
-                fig, ax = plt.subplots()
-                ax.imshow(mask[0])
-                if out_obj_id not in video_segments:
-                    video_segments[out_obj_id] = {}  # Temporary: frame-to-mask map
-        
-                video_segments[out_obj_id][out_frame_idx] = mask
-        
-# =============================================================================
-#         # debugging
-#         p_d = r'C:\My Files\OneDrive - Universiteit Antwerpen\GitHub\EDyssey\other_scripts\test_data\EDyssey Analysis'
-#         f_d = os.path.join(p_d, "video_segments.pkl")
-#         with open(f_d, "wb") as f:
-#             pickle.dump(video_segments, f)
-# =============================================================================
-        
-        # convert dicts to arrays
-        w, h = video_segments[out_obj_ids[0]][0].shape[1:]
-        masks = np.zeros((len(video_segments[out_obj_ids[0]]), w, h), dtype=np.uint8)
-        
-        frames = sorted(video_segments[0].items())
-        masks[:] = np.array([m for _, m in frames])[:,0,:,:]
-        
+                video_segments.setdefault(out_obj_id, {})[out_frame_idx] = mask
+
+        # convert each object's {frame: mask} dict to one stacked array
+        save_kwargs = {}
+        for obj_id, frames_dict in video_segments.items():
+            frames = sorted(frames_dict.items())
+            w, h = frames[0][1].shape[1:]
+            masks = np.zeros((len(frames), w, h), dtype=np.uint8)
+            masks[:] = np.array([m for _, m in frames])[:, 0, :, :]
+            save_kwargs[f'obj_{obj_id}'] = masks
+
         fn_save = os.path.join(path_seg_input, 'masks')
-        np.savez_compressed(fn_save, masks=masks)
-        
+        np.savez_compressed(fn_save, **save_kwargs)
+
         result = {'path': fn_save+'.npz',
                   'idx': idx}
         # delete_model([predictor, build_sam2, build_sam2_video_predictor, SAM2ImagePredictor,
         #              out_mask_logits, video_segments, torch])
+        print(json.dumps(result))
+
+    elif typ == 'auto':
+        # SAM2's automatic mask generator - finds every candidate object on
+        # one frame with no point/box prompts at all (a grid of points
+        # sampled over the whole image instead), for Tab_SAM2's Auto
+        # Detector widget (ui_tabs/sam2_auto_detector_widget.py). Unlike
+        # 'image'/'video', this isn't seeded per-object - candidates are
+        # found first, then the widget lets the user pick which ones become
+        # tracked objects.
+        with open(os.path.join(path_seg_input, 'seg_input.pkl'), 'rb') as f:
+            seg_input = pickle.load(f)
+        image = seg_input['image']
+        if image.ndim == 2:
+            image = np.stack([image] * 3, axis=-1)
+        params = seg_input.get('params', {})
+
+        sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
+        generator = SAM2AutomaticMaskGenerator(sam2_model, **params)
+        candidates = generator.generate(image)
+
+        if candidates:
+            masks = np.stack([c['segmentation'].astype(bool) for c in candidates])
+        else:
+            masks = np.zeros((0,) + image.shape[:2], dtype=bool)
+        fn_masks = os.path.join(path_seg_input, 'auto_masks')
+        np.savez_compressed(fn_masks, masks=masks)
+
+        # Metadata (everything but the mask itself, already in the npz
+        # above) as a plain JSON list, index-aligned with `masks`.
+        meta = [{'area': int(c['area']), 'bbox': [float(v) for v in c['bbox']],
+                 'predicted_iou': float(c['predicted_iou']),
+                 'stability_score': float(c['stability_score'])} for c in candidates]
+        fn_meta = os.path.join(path_seg_input, 'auto_meta.json')
+        with open(fn_meta, 'w') as f:
+            json.dump(meta, f)
+
+        result = {'path': fn_masks + '.npz', 'meta_path': fn_meta, 'idx': idx}
         print(json.dumps(result))
