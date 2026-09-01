@@ -167,7 +167,7 @@ def create_clip_dp(fn, s, scale=None, center=None, dpi=150, fps=5, vmin=None, vm
     plt.ion()
     _log_or_print(logger, 'DP clip is created!')
 
-def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=150,
+def create_clip_tracking(fn, imgs, rois=None, ref_rois=None, scale=None, dpi=150,
                          fps=5, duration=None, cmap='viridis', logger=None):
     """Save an animated video of navigation images with an optional tracking ROI overlay.
 
@@ -178,6 +178,14 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=150,
         fn: Output file path without extension (`.mp4` appended, `.gif` as fallback).
         imgs: numpy.ndarray of shape (N, H, W) with navigation image frames.
         rois: Optional array/list of shape (N, 4) with (x, y, w, h) ROI per frame.
+        ref_rois: Optional array/list of shape (N, 4) with (x, y, w, h) per
+            frame for a second, reference ROI - drawn in a distinct dashed
+            yellow box alongside `rois`' own red one. For a ROI-in-ROI
+            object's own clip specifically (see Tab_Tracking_CV2's
+            _save_results_impl), this is its parent/reference ROI's tracked
+            box, so the clip still shows where the inner ROI sits relative
+            to the outer one it was tracked against, not just the inner box
+            in isolation. None (default) draws no second box.
         scale: Real-space pixel size in nm. If None, no scale bar is drawn.
         dpi: Dots per inch for the matplotlib figure (controls output resolution).
         fps: Frames per second. Auto-set from `duration` or max(1, N // 20) when None.
@@ -195,10 +203,16 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=150,
                             location='lower left', box_alpha=0, color='w')
         ax.add_artist(scalebar)
     active_rect = [None]
+    ref_rect = [None]
     if rois is not None:
         x, y, w, h = rois[0]
         active_rect[0] = patches.Rectangle((x, y), w, h, linewidth=1, edgecolor='r', facecolor='none')
         ax.add_patch(active_rect[0])
+    if ref_rois is not None:
+        x, y, w, h = ref_rois[0]
+        ref_rect[0] = patches.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='yellow',
+                                        linestyle='--', facecolor='none')
+        ax.add_patch(ref_rect[0])
     fig.tight_layout()
     if fps is None:
         denom = duration if duration else 20
@@ -214,6 +228,13 @@ def create_clip_tracking(fn, imgs, rois=None, scale=None, dpi=150,
             active_rect[0] = patches.Rectangle((x, y), w, h, linewidth=1,
                                                edgecolor='r', facecolor='none')
             ax.add_patch(active_rect[0])
+        if ref_rois is not None:
+            if ref_rect[0] is not None:
+                ref_rect[0].remove()
+            x, y, w, h = ref_rois[fr_no]
+            ref_rect[0] = patches.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='yellow',
+                                            linestyle='--', facecolor='none')
+            ax.add_patch(ref_rect[0])
 
     path_ffmpeg = shutil.which('ffmpeg')
     if path_ffmpeg:

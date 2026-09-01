@@ -151,24 +151,35 @@ class ClippingThresholdsWidget(qtw.QWidget):
     button."""
     valueChanged = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title='Clipping\nThresholds'):
+        """
+        Args:
+            title: Label shown above the spinboxes - defaults to the
+                generic "Clipping Thresholds", but callers placing this
+                beside a specific kind of image should pass something more
+                specific (e.g. "Image Clipping\nThresh." beside a
+                navigation image, "DP Clipping\nThresh." beside a
+                diffraction pattern) so it's clear which image a given
+                instance clips - a tab with both a nav-image and a DP clip
+                widget side by side otherwise shows two identical, unlabeled
+                "Clipping Thresholds" boxes.
+        """
         super().__init__(parent)
         self.setFixedWidth(58)
         layout = qtw.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
 
-        title = qtw.QLabel('Clipping\nThresholds')
-        title.setAlignment(Qt.AlignHCenter)
-        title.setStyleSheet('color: #999999; font-size: 8pt;')
-        title.setWordWrap(True)
-        layout.addWidget(title)
+        title_label = qtw.QLabel(title)
+        title_label.setAlignment(Qt.AlignHCenter)
+        title_label.setStyleSheet('color: #999999; font-size: 8pt;')
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
 
         self.spinbox_vmax = qtw.QSpinBox()
         self.spinbox_vmax.setRange(0, 0)
-        self.spinbox_vmax.setSingleStep(1)  # rescaled in set_range() to ~8% of the data max
+        self.spinbox_vmax.setSingleStep(1)  # rescaled in set_range() to 5% of the data max
         self.spinbox_vmax.setAlignment(Qt.AlignCenter)
-        self.spinbox_vmax.setButtonSymbols(qtw.QAbstractSpinBox.NoButtons)
         self.spinbox_vmax.setStyleSheet('font-size: 8pt;')
         self.spinbox_vmax.setToolTip('Upper threshold')
         layout.addWidget(self.spinbox_vmax)
@@ -180,7 +191,6 @@ class ClippingThresholdsWidget(qtw.QWidget):
         self.spinbox_vmin.setRange(0, 0)
         self.spinbox_vmin.setSingleStep(1)
         self.spinbox_vmin.setAlignment(Qt.AlignCenter)
-        self.spinbox_vmin.setButtonSymbols(qtw.QAbstractSpinBox.NoButtons)
         self.spinbox_vmin.setStyleSheet('font-size: 8pt;')
         self.spinbox_vmin.setToolTip('Lower threshold')
         layout.addWidget(self.spinbox_vmin)
@@ -206,10 +216,10 @@ class ClippingThresholdsWidget(qtw.QWidget):
         "no clipping" (floor..vmax) unless reset=False (e.g. a same-image
         redraw where the user's current thresholds should be kept).
 
-        spinbox_vmax's step (wheel-scroll/arrow-key increment) is rescaled
-        to ~8% of this new vmax each time - a step of 1 (spinbox_vmin's,
-        unchanged) is next to useless for scrubbing through a range that
-        can run into the thousands/millions."""
+        spinbox_vmax's step (wheel-scroll/arrow-key increment/button click)
+        is rescaled to 5% of this new vmax each time - a step of 1
+        (spinbox_vmin's, unchanged) is next to useless for scrubbing
+        through a range that can run into the thousands/millions."""
         vmin, vmax = int(vmin), int(vmax)
         floor = 0 if vmin >= 0 else vmin
         if vmax <= floor:
@@ -222,7 +232,7 @@ class ClippingThresholdsWidget(qtw.QWidget):
         self.spinbox_vmax.blockSignals(True)
         self.spinbox_vmin.setRange(floor, vmax)
         self.spinbox_vmax.setRange(floor, vmax)
-        self.spinbox_vmax.setSingleStep(max(1, round(vmax * 0.08)))
+        self.spinbox_vmax.setSingleStep(max(1, round(vmax * 0.05)))
         self.spinbox_vmin.setValue(self.range_slider.low())
         self.spinbox_vmax.setValue(self.range_slider.high())
         self.spinbox_vmin.blockSignals(False)
@@ -252,6 +262,32 @@ class ClippingThresholdsWidget(qtw.QWidget):
         if vmin >= vmax:
             vmin = vmax - 1
         return vmin, vmax
+
+    def get_state(self):
+        """Full slider state (bounds AND the user's current low/high
+        thresholds within them) - unlike values()/set_range(), this is
+        enough to restore this widget to an identical state elsewhere (e.g.
+        Duplicate Current Tab, see EDyssey_MainWindow.duplicate_current_tab),
+        rather than just re-anchoring to a new image's range."""
+        return {'minimum': self.range_slider.minimum(), 'maximum': self.range_slider.maximum(),
+                'low': self.range_slider.low(), 'high': self.range_slider.high()}
+
+    def set_state(self, state):
+        """Restore a dict from get_state() - see its docstring. No-op on
+        None/empty (e.g. duplicating a tab whose clip widget was never
+        anchored to real data yet)."""
+        if not state:
+            return
+        self.range_slider.setRange(state['minimum'], state['maximum'])
+        self.range_slider.setLow(state['low'], emit=False)
+        self.range_slider.setHigh(state['high'], emit=False)
+        self.spinbox_vmin.blockSignals(True)
+        self.spinbox_vmax.blockSignals(True)
+        self.spinbox_vmin.setRange(state['minimum'], state['maximum'])
+        self.spinbox_vmax.setRange(state['minimum'], state['maximum'])
+        self.spinbox_vmax.setSingleStep(max(1, round(state['maximum'] * 0.05)))
+        self._sync_spinboxes_from_slider()
+        self.valueChanged.emit()
 
     def _sync_spinboxes_from_slider(self):
         self.spinbox_vmin.blockSignals(True)

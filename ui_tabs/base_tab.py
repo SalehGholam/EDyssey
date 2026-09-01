@@ -78,6 +78,57 @@ def build_left_panel(splitter, width_userInput):
     return qtw.QVBoxLayout(left_widget)
 
 
+# The "Data Type" combo's own display label for the eventem-format hdf5
+# entry (see resolve_hdf5_dtype/glob_ext_for_dtype below) - one shared
+# constant so every combo (all 4 tabs) and every place that reads a
+# combo's current selection back stays in sync. Deliberately NOT the same
+# string as '.hdf5_eventem', the internal dtype identifier this resolves
+# to (used throughout EDyssey.io_utils - loaders.py, nav_image.py, the
+# worker_*.py subprocess scripts, etc.) - that identifier is never shown
+# to the user and is unaffected by this label; only what the combo box
+# itself displays/stores as its current text is this constant.
+HDF5_EVENTEM_LABEL = '.hdf5 (eventem)'
+
+
+def resolve_hdf5_dtype(fn, combo_selection=None):
+    """Return the dtype string to actually load `fn` with - its own file
+    extension, except for an ambiguous '.hdf5' file.
+
+    eventem's own export layout (a raw `f['4D']` dataset, internal dtype
+    identifier '.hdf5_eventem') and a conventional/third-party HDF5
+    4D-STEM file loadable via HyperSpy ('.hdf5') both commonly live on
+    disk as a plain '.hdf5' file - nothing in the file's name or extension
+    distinguishes them (see EDyssey.io_utils.loaders' module docstring),
+    so a '.hdf5' file can only be resolved by asking the user:
+    `combo_selection` is the tab's own "Data Type" combo's currently
+    selected text - if it explicitly reads HDF5_EVENTEM_LABEL or '.hdf5',
+    that selection wins. Any other selection (e.g. 'All files'/'All
+    Files', or a mismatched one) falls back to eventem, matching this
+    app's original (pre-standard-hdf5-support) behaviour so existing
+    eventem exports keep loading unchanged unless the user deliberately
+    picks '.hdf5' (standard) instead.
+
+    Every other extension (.tpx3/.hspy/.zspy/.mib/.blo/...) is returned
+    as-is - no ambiguity, so `combo_selection` is irrelevant.
+    """
+    ext = os.path.splitext(fn)[-1]
+    if ext != '.hdf5':
+        return ext
+    if combo_selection == '.hdf5':
+        return '.hdf5'
+    return '.hdf5_eventem'
+
+
+def glob_ext_for_dtype(dtype):
+    """The real on-disk extension to glob/filter for, given a "Data Type"
+    combo selection - identity for every entry except HDF5_EVENTEM_LABEL,
+    which (see resolve_hdf5_dtype) is not a real extension: eventem's own
+    export layout physically lives in a plain '.hdf5' file, same as a
+    conventional/HyperSpy-loadable one, so both combo entries must glob the
+    same '*.hdf5' pattern."""
+    return '.hdf5' if dtype == HDF5_EVENTEM_LABEL else dtype
+
+
 def get_existing_directory(parent, caption, start_dir=''):
     """Folder picker that actually shows files while browsing, so the user
     can visually confirm a folder holds what they're looking for (e.g.
@@ -189,6 +240,28 @@ class TabBase(qtw.QWidget):
         dlg.resize(520, 520)
         dlg.exec_()
 
+    def show_shortcuts_dialog(self, text):
+        """Show `text` (this tab's mouse/keyboard interaction hints - Ctrl+
+        drag/click modifiers, middle-click, etc.) in a read-only popup,
+        opened from the ribbon's "?" (help) tool. Centralizes what each
+        subplot's xlabel used to spell out underneath it - crowded, and on
+        a narrow window two adjacent subplots' multi-line hints could
+        visibly run into each other - into one place, on demand, instead of
+        permanently on screen. Same QDialog+QTextEdit shape as
+        show_metadata_dialog above."""
+        dlg = qtw.QDialog(self)
+        dlg.setWindowTitle('Shortcuts & Controls')
+        layout = qtw.QVBoxLayout(dlg)
+        text_edit = qtw.QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(text)
+        layout.addWidget(text_edit)
+        button_close = qtw.QPushButton('Close')
+        button_close.clicked.connect(dlg.close)
+        layout.addWidget(button_close, alignment=Qt.AlignRight)
+        dlg.resize(480, 360)
+        dlg.exec_()
+
     # -- Display settings (Edit menu's Display Size dialog) ----------------
     def apply_display_settings(self):
         """Re-apply the shared DisplaySettings (ribbon text scale, ribbon
@@ -219,7 +292,20 @@ class TabBase(qtw.QWidget):
                 ribbon_page._edyssey_base_height = base_height
             base_pt = getattr(self, '_ribbon_base_pt', 9)
             ribbon_page.setStyleSheet(f'font-size: {round(base_pt * settings.ribbon_text_scale)}pt;')
-            ribbon_page.setFixedHeight(round(base_height * settings.ribbon_height_scale))
+            new_height = round(base_height * settings.ribbon_height_scale)
+            splitter = getattr(self, '_main_splitter', None)
+            if splitter is not None:
+                # ribbon_page sits in a resizable QSplitter here (see
+                # init_widget) - a hard setFixedHeight would pin its pane and
+                # make the splitter's own drag handle a no-op, so the scale
+                # setting instead just seeds the splitter's *current* size,
+                # leaving the user free to drag it afterward.
+                ribbon_page.setMinimumHeight(0)
+                ribbon_page.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+                total = sum(splitter.sizes()) or (new_height + 2000)
+                splitter.setSizes([new_height, max(total - new_height, 0)])
+            else:
+                ribbon_page.setFixedHeight(new_height)
 
         ribbon_panel = getattr(self, 'ribbon', None)
         if ribbon_panel is not None and hasattr(ribbon_panel, 'set_icon_size'):

@@ -33,7 +33,8 @@ import worker_pool_utils as wpu
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
-from .base_tab import TabBase, get_existing_directory
+from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
+                       HDF5_EVENTEM_LABEL)
 from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .ribbon import RibbonPanel, RibbonTool
@@ -81,7 +82,6 @@ class Tab_Tracking_CV2(TabBase):
         button_h_lrg = 25
         self.layout = qtw.QVBoxLayout(self)
         self.setLayout(self.layout)
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
 
         #%% ribbon (top parameter ribbon, Word-style - see Tab_ROI_on_4D for
         # the original design, and TabBase for the shared helpers). This
@@ -93,7 +93,9 @@ class Tab_Tracking_CV2(TabBase):
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
-        self.layout.addWidget(ribbon_page)
+        self._main_splitter = qtw.QSplitter(Qt.Vertical)
+        self._main_splitter.addWidget(ribbon_page)
+        self.layout.addWidget(self._main_splitter, 1)
 
         #%% Files (ribbon column)
         self.box_dir, layout_dir = self._ribbon_group_start(layout_ribbon, stretch=0)
@@ -132,12 +134,17 @@ class Tab_Tracking_CV2(TabBase):
         self.button_dir_4dSignals.clicked.connect(lambda: self.show_dialog('folder'))
 
         self.combo_dtype_4d = qtw.QComboBox()
-        self.combo_dtype_4d.setMaximumWidth(90)
-        self.combo_dtype_4d.addItems(['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', 'All Files'])
+        self.combo_dtype_4d.setMaximumWidth(110)
+        self.combo_dtype_4d.addItems(['.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy', '.zspy',
+                                      '.mib', '.blo', 'All Files'])
         self.combo_dtype_4d.setToolTip(
             'Data type of the 4D signal files - filters out stray non-signal files '
-            '(comment.txt, pattern files, logs). Ignored if the navigator\'s own '
-            'recorded file list applies to this folder.')
+            '(comment.txt, pattern files, logs), AND (for a .hdf5 file specifically) '
+            f'selects which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" (eventem\'s '
+            'own raw export layout) or plain ".hdf5" (a conventional/third-party '
+            'HDF5 file, loaded via HyperSpy - both commonly share the same on-disk '
+            '.hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
+            'navigator\'s own recorded file list applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
         # save dir
@@ -227,6 +234,17 @@ class Tab_Tracking_CV2(TabBase):
         self.button_browseDetectionDir.setDisabled(True)
         self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
         layout_smartScan_2.addWidget(self.button_browseDetectionDir)
+
+        # Summary of the last "Check Files" review (see
+        # _set_smart_scan_summary) - was referenced throughout this file
+        # (open_smart_scan_check_dialog, get_duplicate_state, etc.) but
+        # never actually created here, unlike Tab_SAM2's identical widget -
+        # any code path setting it (e.g. accepting the SmartScanCheckDialog)
+        # crashed with AttributeError. Matches Tab_SAM2's own
+        # label_smartScanSummary exactly (hidden until there's text).
+        self.label_smartScanSummary = qtw.QLabel('')
+        self.label_smartScanSummary.setVisible(False)
+        layout_smartScan.addWidget(self.label_smartScanSummary)
 
         layout_dir.addWidget(groupbox_smartScan)
 
@@ -366,10 +384,16 @@ class Tab_Tracking_CV2(TabBase):
         self.lineEdit_scale_real.textChanged.connect(lambda: self.update_scalebar('real'))
 
         layout_box_scanSize.addLayout(layout_exp_groups)
-        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=False)
 
         # Load Signal / Load Saved Analysis - moved here from Files, at the
-        # bottom of this column (per user request).
+        # bottom of this column (per user request). Added BEFORE
+        # _ribbon_group_end() below (not after, as this used to do) - that
+        # call adds this column's "Input Parameters" caption label right
+        # where it's called, so calling it right after the Input Parameters
+        # grid but before these buttons sandwiched the caption between the
+        # grid and the buttons, reading as unwanted blank space/separation
+        # between them instead of one clean column with its caption at the
+        # very bottom, like every other ribbon column.
         layout_loadSignal = qtw.QHBoxLayout()
         layout_box_scanSize.addLayout(layout_loadSignal)
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
@@ -381,6 +405,8 @@ class Tab_Tracking_CV2(TabBase):
         self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg*2)
         layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
+
+        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=False)
 
 
         # Display Contrast and Feature Handling have moved out of the
@@ -641,14 +667,30 @@ class Tab_Tracking_CV2(TabBase):
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
-        self.layout.addWidget(self._right_widget, 1)
-        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
-        layout_right_outer.setContentsMargins(0, 0, 0, 0)
-        layout_right_outer.setSpacing(0)
+        self._main_splitter.addWidget(self._right_widget)
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        _right_widget_outer_layout = qtw.QVBoxLayout(self._right_widget)
+        _right_widget_outer_layout.setContentsMargins(0, 0, 0, 0)
+        _right_widget_outer_layout.setSpacing(0)
+        layout_right_outer = qtw.QSplitter(Qt.Horizontal)
+        _right_widget_outer_layout.addWidget(layout_right_outer)
         layout_right_outer.addWidget(widget_featurePanel)
         self._canvas_container = qtw.QWidget()
-        layout_right_outer.addWidget(self._canvas_container, 1)
-        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
+        layout_right_outer.addWidget(self._canvas_container)
+        _canvas_container_outer_layout = qtw.QVBoxLayout(self._canvas_container)
+        _canvas_container_outer_layout.setContentsMargins(0, 0, 0, 0)
+        _canvas_container_outer_layout.setSpacing(0)
+        layout_canvas_splitter = qtw.QSplitter(Qt.Vertical)
+        _canvas_container_outer_layout.addWidget(layout_canvas_splitter)
+
+        # Canvas scroll area + slider + progress bar share one pane of the
+        # vertical splitter above (the log console is the other pane, see
+        # below).
+        _canvas_pane = qtw.QWidget()
+        layout_canvas = qtw.QVBoxLayout(_canvas_pane)
+        layout_canvas.setContentsMargins(0, 0, 0, 0)
+        layout_canvas_splitter.addWidget(_canvas_pane)
         
         # All 4 subplots in one figure, one row (plt.subplots(1, 4)'s
         # arrangement) - Figure()+add_subplot() rather than pyplot's own
@@ -684,14 +726,6 @@ class Tab_Tracking_CV2(TabBase):
                 spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
 
-        self.ax_track.set_xlabel(
-            'Select the reference ROI and Hold "ctrl" + Drag to draw ROIinROI', fontsize=10)
-        self.ax_nav.set_xlabel(
-            'Hold "ctrl" + Left Click+Drag => New ROI\n'
-            'Hold "ctrl" + Right Click => Add init to existing ROI', fontsize=10)
-        self.ax_nav.xaxis.label.set_visible(True)
-        self.ax_track.xaxis.label.set_visible(True)
-        self.ax_dp.xaxis.label.set_visible(True)
 
         # The Ctrl+Scroll zoom hint applies to every axis on the canvas, so
         # it's one figure-wide supxlabel rather than repeated per-axis text.
@@ -749,6 +783,9 @@ class Tab_Tracking_CV2(TabBase):
                       'action', self.toolbar.zoom),
             RibbonTool('home', 'home', 'Reset the canvas view',
                       'action', self.toolbar.home),
+            RibbonTool('sep2', kind='separator'),
+            RibbonTool('help', 'help', 'Shortcuts & mouse controls for this tab',
+                      'action', self.show_help_dialog),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         # Deferred (see _apply_ribbon_cursor's docstring) - reapplies the
@@ -767,7 +804,7 @@ class Tab_Tracking_CV2(TabBase):
         # which had no equivalent).
         layout_canvas_row = qtw.QHBoxLayout()
         layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
-        self.clip_dp = ClippingThresholdsWidget()
+        self.clip_dp = ClippingThresholdsWidget(title='DP Clipping\nThresh.')
         layout_canvas_row.addWidget(self.clip_dp)
         layout_canvas_stack.addLayout(layout_canvas_row)
         # DP clip range is only reset the first time real data is shown
@@ -855,7 +892,51 @@ class Tab_Tracking_CV2(TabBase):
         # column) rather than under the whole window, so the left parameter
         # panel (a separate splitter pane) can span the full window height.
         self.log_console = LogConsole(self)
-        layout_canvas.addWidget(self.log_console)
+        layout_canvas_splitter.addWidget(self.log_console)
+        layout_canvas_splitter.setStretchFactor(0, 1)
+        layout_canvas_splitter.setStretchFactor(1, 0)
+
+        # Only the canvas column claims extra horizontal space by default;
+        # the left panel opens at a fixed default width shared across all 4
+        # tabs (tab_roi_4d.py, tab_create_navSignal.py, tab_tracking_cv2.py,
+        # tab_sam2.py).
+        for _i in range(layout_right_outer.count()):
+            layout_right_outer.setStretchFactor(_i, 0)
+        layout_right_outer.setStretchFactor(1, 1)
+
+        def _apply_initial_splitter_sizes():
+            """(Re-)apply every splitter's default pane sizes, and disable
+            collapsing on all of them. The ribbon icon strip (last pane,
+            fixed-width) is really just "as small as it's allowed to be"
+            below - but a QSplitter.setSizes() call made before the window
+            has ever actually been shown (i.e. still has no real geometry,
+            as here - this runs during __init__, well before
+            MainWindow.show()) only stores those sizes proportionally
+            against whatever placeholder width Qt reports at that moment,
+            not real pixels - so calling it only once, here, left the
+            ribbon pane rendered collapsed to nothing until the user
+            manually dragged it open. Re-running the exact same calls once
+            more via QTimer.singleShot(0, ...) - after the event loop has
+            actually processed the window's first show/resize, so every
+            widget's real minimum size is now known - fixes that.
+            setCollapsible(False) on every pane is kept too, as a static
+            safety net against the same collapse happening later from a
+            user drag."""
+            layout_canvas_splitter.setSizes([2000, 150])
+            layout_right_outer.setSizes([220, 3000, 0])
+            for _i in range(layout_canvas_splitter.count()):
+                layout_canvas_splitter.setCollapsible(_i, False)
+            for _i in range(layout_right_outer.count()):
+                layout_right_outer.setCollapsible(_i, False)
+            for _i in range(self._main_splitter.count()):
+                self._main_splitter.setCollapsible(_i, False)
+            # Sizes _main_splitter's ribbon pane too, respecting the current
+            # Ribbon Height display setting (rather than hardcoding its
+            # natural sizeHint here) - see apply_display_settings.
+            self.apply_display_settings()
+
+        _apply_initial_splitter_sizes()
+        QTimer.singleShot(0, _apply_initial_splitter_sizes)
 
         # tooltips
         self.button_loadNavigation.setToolTip('Load navigation signal (Ctrl+O)')
@@ -956,12 +1037,12 @@ class Tab_Tracking_CV2(TabBase):
         would mean fully parsing the file - eventem has no cheaper
         metadata-only query - just to learn its shape; "Auto" here keeps
         the previous default of 512x512)."""
-        dtype = os.path.splitext(fn)[-1]
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
         if dtype == '.tpx3':
             if self.checkbox_detectorSizeAuto.isChecked():
                 return 512, 512
             return self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()
-        return io.get_det_size(fn)
+        return io.get_det_size(fn, dtype)
 
     def browse_metadata_file(self):
         start_dir = self.lineEdit_dir_4d.text()
@@ -1022,6 +1103,19 @@ class Tab_Tracking_CV2(TabBase):
             applied.append('4D signals directory')
         dtype = metadata.get('dtype')
         if dtype:
+            if dtype in ('.hdf5', '.hdf5_eventem'):
+                # metadata.json stores the internal dtype identifier (see
+                # resolve_hdf5_dtype), not this combo's own display text,
+                # which for the eventem entry is now HDF5_EVENTEM_LABEL
+                # rather than the identifier itself - so both a legacy
+                # '.hdf5' value (written before the format split into
+                # eventem/conventional; back then a bare '.hdf5' always
+                # meant eventem, the only one that existed) and a current
+                # '.hdf5_eventem' value need remapping here for findText()
+                # below to find the right combo item, instead of silently
+                # matching nothing (old projects) or the wrong, unrelated
+                # "conventional HDF5" combo entry (current ones).
+                dtype = HDF5_EVENTEM_LABEL
             idx = self.combo_dtype_4d.findText(dtype)
             if idx >= 0:
                 self.combo_dtype_4d.setCurrentIndex(idx)
@@ -1409,7 +1503,7 @@ class Tab_Tracking_CV2(TabBase):
         for roi in rois:
             idx = roi['idx']
             self.df_rois.loc[idx] = [roi['use'], roi['init'], roi['in_rois'], roi['end'],
-                                      roi['ref'], roi['out_rois'], roi['mask'], roi['dp']]
+                                      roi['ref'], roi['out_rois'], roi['mask'], roi['dp'], None]
             self.add_item_tree(idx, roi['init'], roi['end'], roi['ref'], roi['use'])
             row_index = self.df_rois.index.get_loc(idx)
             if roi['out_rois'] is not None:
@@ -1448,10 +1542,11 @@ class Tab_Tracking_CV2(TabBase):
         """(Re)create df_rois as an empty dataframe with the expected
         columns/dtypes, and clear the cached ROI patch lists."""
         self.cols_df = ['use', 'init', 'in_rois', 'end',
-                        'ref', 'out_rois', 'mask', 'dp']
+                        'ref', 'out_rois', 'mask', 'dp', 'mesh']
         self.df_rois = pd.DataFrame([], columns=self.cols_df)
-        self.df_rois = self.df_rois.astype({'use': int, 'init': object, 'in_rois': object, 'end': int, 
-                                            'out_rois': object, 'dp': object, 'ref':str, 'mask':object})
+        self.df_rois = self.df_rois.astype({'use': int, 'init': object, 'in_rois': object, 'end': int,
+                                            'out_rois': object, 'dp': object, 'ref':str, 'mask':object,
+                                            'mesh': object})
         
         self.patches_axTrack.clear()
         self.patches_axNav.clear()
@@ -1514,9 +1609,9 @@ class Tab_Tracking_CV2(TabBase):
                 roi = self.df_rois.loc[idx, 'out_rois'][imgNo]
                 if roi.any():
                     img_mask, img_roi = self.threshold_img(
-                        img, self.df_rois.loc[idx, 'out_rois'][imgNo], 
+                        img, self.df_rois.loc[idx, 'out_rois'][imgNo],
                         self.combo_thresh_method.currentText(),
-                        self.slider_thresh.value()) #TODO add thresholding mode to the GUI and function here
+                        self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
                     self.update_ax_mask(img_roi, img_mask)
                 else:
                     self.update_ax(self.img_zero, 'track', self.ax_track)
@@ -1660,34 +1755,69 @@ class Tab_Tracking_CV2(TabBase):
 
     def draw_rois_out(self, imgNo):
         """Draw the tracked (output) ROI rectangles (+ id labels) for frame
-        `imgNo` onto ax_track, replacing whatever was drawn there before."""
+        `imgNo` onto ax_track, replacing whatever was drawn there before.
+
+        A ROI-in-ROI object's own reference/parent ROI is drawn too (a
+        distinct dashed yellow box), even if the parent isn't itself
+        enabled ('use' unchecked) or otherwise wouldn't independently pass
+        the `use == 1` filter below - the child's box only makes sense
+        relative to its parent, so the parent should stay visible on the
+        tracking canvas for as long as the child is. Skipped when the
+        parent is already being drawn anyway (a normal solid orange box,
+        from being independently enabled/tracked itself) to avoid drawing
+        it twice."""
         if len(self.patches_axTrack) > 0:
             for p in self.patches_axTrack:
                 p.remove()
             self.patches_axTrack.clear()
         df = self.df_rois[self.df_rois.use == 1]
         df = df.loc[df.out_rois.dropna().index]
+        plotted_ids = set(df.index)
+        drawn_refs = set()
         if len(df) > 0:
             for i in df.index:
                 try:
                     roi = self.df_rois.loc[i, 'out_rois'][imgNo]
                     x,y,w,h = roi
                     if (w>0) and (h>0):
-                        rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange', 
+                        rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange',
                                                  facecolor='none')
                         self.ax_track.add_patch(rect)
                         self.patches_axTrack.append(rect)
-                        
+
                         # id
                         # pos = (x+w+15, y+h+15)
                         font_size = 8
                         pos = (x+w/2, y-15)
                         # font_size = 12
-                        t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center', 
+                        t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center',
                                                verticalalignment='center', color='tab:orange', fontsize=font_size)
                         self.patches_axTrack.append(t)
                 except Exception:
                     self.logger.debug('Skipped drawing ROI %s at frame %d.', i, imgNo, exc_info=True)
+
+                ref = self.df_rois.loc[i, 'ref']
+                if pd.isna(ref) or ref in drawn_refs:
+                    continue
+                drawn_refs.add(ref)
+                ref_idx = int(ref)
+                if ref_idx in plotted_ids or ref_idx not in self.df_rois.index:
+                    continue
+                try:
+                    ref_roi = self.df_rois.loc[ref_idx, 'out_rois'][imgNo]
+                    rx, ry, rw, rh = ref_roi
+                    if (rw > 0) and (rh > 0):
+                        ref_rect = patches.Rectangle((rx, ry), rw, rh, linewidth=1.5,
+                                                     edgecolor='yellow', linestyle='--',
+                                                     facecolor='none')
+                        self.ax_track.add_patch(ref_rect)
+                        self.patches_axTrack.append(ref_rect)
+                        t = self.ax_track.text(rx+rw/2, ry-15, str(ref_idx), horizontalalignment='center',
+                                               verticalalignment='center', color='yellow', fontsize=8)
+                        self.patches_axTrack.append(t)
+                except Exception:
+                    self.logger.debug('Skipped drawing reference ROI %s at frame %d.',
+                                      ref_idx, imgNo, exc_info=True)
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
 
@@ -1767,12 +1897,32 @@ class Tab_Tracking_CV2(TabBase):
             self._dp_recip_circles = io.draw_reciprocal_scale_circles(
                 self.ax_dp, self.lineEdit_scale_recip.text(), shape,
                 center=self.dp_center, old_artists=getattr(self, '_dp_recip_circles', None))
-            self.ax_dp.set_xlabel(
-                'Circle center: click "Center" (Input Parameters) to find it, or '
-                'hold Ctrl and click the DP plot to set it manually', fontsize=9)
             # The circles are static across frames like the scale bars above.
             self._bg = None
             self.canvas.draw_idle()
+
+    def show_help_dialog(self):
+        """Ribbon "?" tool: shortcuts/mouse controls for this tab, moved
+        here from each subplot's own xlabel (see the canvas-setup history) -
+        crowded, and on a narrow window two adjacent subplots' multi-line
+        hints could visibly run into each other."""
+        self.show_shortcuts_dialog(
+            'Nav. Image:\n'
+            '  Hold "Ctrl" + Left Click+Drag  ->  New ROI\n'
+            '  Hold "Ctrl" + Right Click  ->  Add init to existing ROI\n'
+            '\n'
+            'Track Image:\n'
+            '  Select the reference ROI, then Hold "Ctrl" + Drag  ->  Draw ROI-in-ROI\n'
+            '\n'
+            'Diffraction Pattern:\n'
+            '  Click "Center" (Input Parameters)  ->  Find the beam center\n'
+            '  Hold "Ctrl" + Click  ->  Set the beam center manually\n'
+            '\n'
+            'Every axis:\n'
+            '  Hold "Ctrl" + Scroll wheel  ->  Zoom the axis under the cursor\n'
+            '\n'
+            'The ribbon (right of the canvas) offers the same actions as icons - '
+            'hover any icon for its own tooltip.')
 
     def find_and_center_recip(self):
         """Find the beam center now and jump the reciprocal-space rings
@@ -1789,16 +1939,17 @@ class Tab_Tracking_CV2(TabBase):
             return
         self.update_scalebar('reciprocal')
 
-    def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full'):
+    def threshold_img(self, img, roi, thresh_method, thresh_offset, mode='full', idx=None, frame_idx=None):
         """Blur `img`, compute a threshold via `thresh_method` (over the
         whole image if mode='full', or just within `roi` if mode='roi'),
         binarize at `thresh_offset` (percent of the computed threshold),
         then crop both the mask and the raw image to `roi` and apply the
-        current edge-detection settings to the mask. Returns
-        (img_mask, img_cut)."""
+        current edge-detection settings (and, if `idx` is given, that ROI's
+        Mesh restriction for `frame_idx` - see apply_edge_mask) to the
+        mask. Returns (img_mask, img_cut)."""
         # thresh_method = self.combo_thresh_method.currentText()
         blur_kernel = int(self.combo_blur.currentText())
-        threshold_methods = {'otsu': threshold_otsu, 'li': threshold_li, 
+        threshold_methods = {'otsu': threshold_otsu, 'li': threshold_li,
                              'yen': threshold_yen, 'mean': threshold_mean}
         threshold_func = threshold_methods[thresh_method]
 
@@ -1813,18 +1964,41 @@ class Tab_Tracking_CV2(TabBase):
         thresh = thresh_offset * th
         img_mask = img_blur >= thresh
         img_mask = img_mask[x:x+w, y:y+h]
-        img_mask = self.apply_edge_mask(img_mask)
+        img_mask = self.apply_edge_mask(img_mask, idx, frame_idx)
         return img_mask, img_cut
 
-    def apply_edge_mask(self, mask):
+    def _mesh_settings_for(self, idx):
+        """This ROI's Mesh settings (see MaskEditDialog/get_mesh_settings),
+        or None if it has none set / idx is None."""
+        if idx is None:
+            return None
+        mesh = self.df_rois.at[idx, 'mesh']
+        return mesh if isinstance(mesh, dict) else None
+
+    def apply_edge_mask(self, mask, idx=None, frame_idx=None):
         """Reduce `mask` to just its edge/outline when "Edge Only" is
         checked (isotropic, or one-sided along "Directional"'s angle when
-        that's also checked) - see io.erode_mask_edge. No-op otherwise."""
+        that's also checked - see io.erode_mask_edge), then - if `idx` is
+        given and that ROI has a Mesh restriction set (see MaskEditDialog)
+        that applies to `frame_idx` (every frame, or just the one frame the
+        Mesh box's "This Frame Only" scope names) - restrict it to the
+        selected mesh cell(s), relative to the object's own position on
+        THIS frame (see io.mesh_restrict_mask/io.mask_centroid, and
+        MaskEditDialog._effective_mask's identical convention) so a tracked
+        ROI's motion across frames doesn't throw off which part of it the
+        selection actually covers. A no-op otherwise."""
+        mesh = self._mesh_settings_for(idx)
+        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells')
+                       and (mesh.get('scope', 'all') == 'all' or mesh.get('frame_idx') == frame_idx))
+        origin = io.mask_centroid(mask) if mesh_on else None
         if self.checkbox_edgeOnly.isChecked():
             direction = (self.spinbox_edgeDirection.value()
                         if self.checkbox_edgeDirectional.isChecked() else None)
-            return io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
+            mask = io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
                                        revert=self.checkbox_revertMask.isChecked())
+        if mesh_on:
+            mask = io.mesh_restrict_mask(mask, mesh.get('angle', 0), mesh.get('cell_size', 20),
+                                         [tuple(c) for c in mesh['cells']], origin=origin)
         return mask
 
     def _on_edge_directional_toggled(self):
@@ -2046,7 +2220,7 @@ class Tab_Tracking_CV2(TabBase):
             
         if new_row:
             self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
-                                                   ref, None, None, None]
+                                                   ref, None, None, None, None]
             self.add_item_tree(idx=idx, init=init, end=None, ref=ref)
 
         else:
@@ -2264,7 +2438,7 @@ class Tab_Tracking_CV2(TabBase):
             idx_max = 0
         for i, obj in enumerate(objects):
             self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
-                                           'None', None, None, None]
+                                           'None', None, None, None, None]
             # self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
             #                                        ref, None, None, None]
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
@@ -2312,18 +2486,34 @@ class Tab_Tracking_CV2(TabBase):
             # shift frame number to the start
             rois_in -= beg
             init -= beg
-            try:
-                ref = int(df.loc[ind, 'ref'])
+            # 'ref' is None for a plain (non-ROI-in-ROI) ROI - nothing to
+            # translate against, so this whole block is skipped silently
+            # rather than landing in the except below and logging a
+            # spurious "translation failed" warning for every ordinary ROI
+            # tracked (int(None) raised unconditionally here before this
+            # guard existed).
+            ref_value = df.loc[ind, 'ref']
+            if pd.notna(ref_value):
                 try:
-                    rois_ref = df[df.idx == ref].out_rois.to_numpy()
+                    ref = int(ref_value)
+                    # Looked up from self.df_rois (not the use==1-filtered
+                    # `df`), same as draw_rois_out's identical fallback - a
+                    # reference ROI can be un-checked ("Use") after being
+                    # tracked without invalidating its already-computed
+                    # out_rois. Sliced to [beg:end] to align frame-for-frame
+                    # with `imgs`/`rois_in` above, which are already shifted
+                    # to start at this ROI's own `beg` - passing the
+                    # reference's full, un-sliced out_rois here (as this
+                    # code used to, via the broken `df.idx == ref` lookup
+                    # below - `idx` was never a real column, df.index is)
+                    # misaligned every frame and effectively always failed.
+                    rois_ref = np.array(self.df_rois.loc[ref, 'out_rois'])[beg:end]
+                    imgs = tr.cut_imgs_by_roi(imgs, rois_ref)
+                    rois_in = tr.translate_roiInRoi(rois_in, rois_ref, fwd=True)
                 except Exception:
-                    raise ValueError(f'The reference roi for roi #{ind} is not available')
-                imgs = tr.cut_imgs_by_roi(imgs, rois_ref)
-                rois_in = tr.translate_roiInRoi(rois_in, rois_ref, fwd=True)
-            except Exception:
-                self.logger.warning(
-                    'ROI-in-ROI translation for ROI %s failed - tracking it with '
-                    'untranslated coordinates instead.', ind, exc_info=True)
+                    self.logger.warning(
+                        'ROI-in-ROI translation for ROI %s failed - tracking it with '
+                        'untranslated coordinates instead.', ind, exc_info=True)
             worker = WorkerThread_General(tr.track_roi_cv2, ind, imgs, rois_in,
                                           init, tracking_method)
             worker.signals.results.connect(self.get_tracking_results)  # Connect to result signal
@@ -2437,14 +2627,19 @@ class Tab_Tracking_CV2(TabBase):
             'direction': self.spinbox_edgeDirection.value()}
         thresh_settings = {
             'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_kernel}
+        mesh_settings = self._mesh_settings_for(idx)
         dialog = MaskEditDialog(self, mask_stack, bg_stack=self.nav_imgs,
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
                                 default_mask_stack=default_mask_stack, edge_settings=edge_settings,
-                                thresh_settings=thresh_settings,
+                                thresh_settings=thresh_settings, mesh_settings=mesh_settings,
                                 recompute_thresh_fn=lambda method, offset, blur:
                                     tr.create_masks(self.nav_imgs, out_rois, method, offset, blur))
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_rois.at[idx, 'mask'] = dialog.get_mask_stack()
+            # Mesh is per-ROI (unlike Edge Detection/Threshold, which live
+            # on this tab's own controls - see _apply_dialog_settings_to_ui)
+            # - it round-trips straight into this ROI's own column instead.
+            self.df_rois.at[idx, 'mesh'] = dialog.get_mesh_settings()
             self._apply_dialog_settings_to_ui(dialog)
             self.logger.info('Fine-tuned mask saved for ROI %d.', idx)
             self.update_canvas()
@@ -2484,7 +2679,7 @@ class Tab_Tracking_CV2(TabBase):
                     == os.path.normcase(os.path.normpath(path_4d))):
             return [os.path.join(path_4d, fn) for fn in self._nav_4d_files]
         ext = self.combo_dtype_4d.currentText()
-        pattern = '*' if ext == 'All Files' else '*' + ext
+        pattern = '*' if ext == 'All Files' else '*' + glob_ext_for_dtype(ext)
         return sorted(glob(os.path.join(path_4d, pattern)))
 
     def extract_3ded(self):
@@ -2540,7 +2735,7 @@ class Tab_Tracking_CV2(TabBase):
                 self.logger.info('3DED extraction cancelled by user (frame-count mismatch).')
                 return
 
-        dtype = os.path.splitext(fns_4d[0])[-1]
+        dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText())
         blur_kernel = int(self.combo_blur.currentText())
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
@@ -2549,10 +2744,11 @@ class Tab_Tracking_CV2(TabBase):
             masks = tr.create_masks(
                 self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
                 thresh_method, thresh_offset, blur_kernel)
-            if edge_only:
-                # Applied per-frame - erode_mask_edge is a single-2D-mask
-                # transform, and this stack is (N frames, H, W).
-                masks = np.stack([self.apply_edge_mask(m) for m in masks])
+            mesh = self._mesh_settings_for(ind)
+            if edge_only or (mesh and mesh.get('enabled') and mesh.get('cells')):
+                # Applied per-frame - erode_mask_edge/mesh_restrict_mask are
+                # single-2D-mask transforms, and this stack is (N frames, H, W).
+                masks = np.stack([self.apply_edge_mask(m, ind, i) for i, m in enumerate(masks)])
             self.df_rois.at[ind, 'mask'] = masks
 
         shape_d_x, shape_d_y = self.get_detector_shape(fns_4d[0])
@@ -2818,7 +3014,7 @@ class Tab_Tracking_CV2(TabBase):
                     'The current frame has no matching 4D signal file in the folder.')
                 return
             fn = fns_4d[i_fr]
-        dtype = os.path.splitext(fn)[-1]
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
 
         scanSize = self.get_scan_size()
         if scanSize is None:  # "Auto": fall back to the loaded nav signal's own shape
@@ -2829,7 +3025,7 @@ class Tab_Tracking_CV2(TabBase):
         blur_kernel = int(self.combo_blur.currentText())
         mask = tr.create_masks(self.nav_imgs[i_fr:i_fr + 1], out_rois[i_fr:i_fr + 1],
                                thresh_method, thresh_offset, blur_kernel)[0]
-        mask = self.apply_edge_mask(mask)
+        mask = self.apply_edge_mask(mask, idx, i_fr)
 
         self.logger.info('Extracting DP for ROI %d, frame %d (current-frame check)...', idx, i_fr)
         self.button_extractCurrentFrame.setDisabled(True)
@@ -2979,6 +3175,18 @@ class Tab_Tracking_CV2(TabBase):
                                     ('directional', self.checkbox_edgeDirectional.isChecked()),
                                     ('direction_deg', self.spinbox_edgeDirection.value()),
                                     ('revert', self.checkbox_revertMask.isChecked())]
+            # Per-ROI (unlike edge_detection above, which is a tab-wide
+            # setting) - see MaskEditDialog/get_mesh_settings(). Recorded
+            # here so a saved analysis remembers exactly what mesh
+            # restriction (if any) was actually used for this ROI's
+            # extraction, not just edge detection.
+            mesh = self._mesh_settings_for(idx) or {}
+            df['mesh'] = [('enabled', mesh.get('enabled', False)),
+                          ('angle_deg', mesh.get('angle', 0)),
+                          ('cell_size', mesh.get('cell_size', 20)),
+                          ('cells', mesh.get('cells', [])),
+                          ('scope', mesh.get('scope', 'all')),
+                          ('frame_idx', mesh.get('frame_idx'))]
             df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
@@ -3020,10 +3228,21 @@ class Tab_Tracking_CV2(TabBase):
             except ValueError:
                 scale_real = None
 
+            # For a ROI-in-ROI object, also draw its reference/parent ROI's
+            # own tracked box in the exported clip (see
+            # io.create_clip_tracking's ref_rois docstring) - not just this
+            # object's own inner box in isolation.
+            ref = self.df_rois.loc[idx, 'ref']
+            ref_rois = None
+            if pd.notna(ref):
+                ref_idx = int(ref)
+                if ref_idx in self.df_rois.index:
+                    ref_rois = self.df_rois.loc[ref_idx, 'out_rois']
+
             fn = os.path.join(path_save_roi, 'tracking clip')
             worker_clip_tr_ref = WorkerThread_General(
                 io.create_clip_tracking, 0, fn, self.nav_imgs,
-                self.df_rois.loc[idx, 'out_rois'], scale_real,
+                self.df_rois.loc[idx, 'out_rois'], ref_rois=ref_rois, scale=scale_real,
                 fps=self.spinbox_fps.value(), logger=self.logger)
             self.threadpool.start(worker_clip_tr_ref)
             
@@ -3074,6 +3293,206 @@ class Tab_Tracking_CV2(TabBase):
             'Any tracking job already running for a single ROI will still '
             'finish in the background (its result is kept) - only queued '
             'work and the running 3DED extraction batch were stopped.')
+
+    def get_duplicate_state(self):
+        """Snapshot of this tab's in-progress analysis, for "Duplicate
+        Current Tab" (see EDyssey_MainWindow.duplicate_current_tab) - a
+        synchronous, in-memory equivalent of Save Results/Load Saved
+        Analysis (_on_saved_analysis_loaded), just enough to make the
+        duplicate tab look and behave like this one immediately. Every
+        mutable value (arrays, the ROI dataframe, dicts) is copied, never
+        shared by reference, so the two tabs stay fully independent
+        afterward - df_rois specifically is copied column-by-column (not
+        deepcopy(DataFrame), which doesn't deep-copy object-dtype cell
+        contents - the same pandas gotcha the tree's own "Dup" button
+        already works around, see add_item_tree's duplicate_row()).
+
+        Returns None if no navigation signal has been loaded yet (checked
+        via self.nav_imgs, set only once initiate_processing() has run)."""
+        if not isinstance(getattr(self, 'nav_imgs', None), np.ndarray) or len(self.nav_imgs) == 0:
+            return None
+        df_rois_rows = []
+        for idx in self.df_rois.index:
+            row = {col: deepcopy(self.df_rois.at[idx, col]) for col in self.cols_df}
+            row['idx'] = idx
+            df_rois_rows.append(row)
+        return {
+            # File/scan parameters
+            'lineEdit_dir_navSignal': self.lineEdit_dir_navSignal.text(),
+            'lineEdit_dir_4d': self.lineEdit_dir_4d.text(),
+            'lineEdit_dir_save': self.lineEdit_dir_save.text(),
+            'combo_dtype_4d': self.combo_dtype_4d.currentText(),
+            'spinbox_dwellTime_acquisition': self.spinbox_dwellTime_acquisition.value(),
+            'checkbox_smartScan': self.checkbox_smartScan.isChecked(),
+            'lineEdit_patternDir': self.lineEdit_patternDir.text(),
+            'lineEdit_detectionDir': self.lineEdit_detectionDir.text(),
+            'smart_scan_rows': ([dict(row) for row in self._smart_scan_rows]
+                                if getattr(self, '_smart_scan_rows', None) else None),
+            'smart_scan_summary': self.label_smartScanSummary.text(),
+            'nav_4d_files': list(getattr(self, '_nav_4d_files', []) or []) or None,
+            'nav_4d_directory': getattr(self, '_nav_4d_directory', None),
+            'checkbox_detectorSizeAuto': self.checkbox_detectorSizeAuto.isChecked(),
+            'detectorSize': (self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()),
+            'checkbox_scanSize': self.checkbox_scanSize.isChecked(),
+            'scanSize_spin': (self.spinbox_scanSize_x.value(), self.spinbox_scanSize_y.value()),
+            'metadata_path_override': self.metadata_path_override,
+            'spinbox_metadataCount': self.spinbox_metadataCount.value(),
+            'scale_real': self.lineEdit_scale_real.text(),
+            'scale_recip': self.lineEdit_scale_recip.text(),
+            'dp_center': self.dp_center,
+            # Navigation signal + images
+            's': self.s.deepcopy() if hasattr(self, 's') else None,
+            's_8bit': self.s_8bit.deepcopy() if hasattr(self, 's_8bit') else None,
+            'nav_imgs_raw': (self.nav_imgs_raw.copy() if hasattr(self, 'nav_imgs_raw') else None),
+            'nav_imgs': self.nav_imgs.copy(),
+            'imgNo': self.slider_imgNo.value(),
+            # Contrast
+            'contrast': self.box_contrast.get_state(),
+            'clip_dp': self.clip_dp.get_state(),
+            # Threshold / edge detection / tracking settings
+            'combo_thresh_method': self.combo_thresh_method.currentText(),
+            'combo_blur': self.combo_blur.currentText(),
+            'slider_thresh': self.slider_thresh.value(),
+            'edgeOnly': self.checkbox_edgeOnly.isChecked(),
+            'edgeDirectional': self.checkbox_edgeDirectional.isChecked(),
+            'revertMask': self.checkbox_revertMask.isChecked(),
+            'edgeKernel': self.spinbox_edgeKernel.value(),
+            'edgeDirection': self.spinbox_edgeDirection.value(),
+            'combo_blur_track': self.combo_blur_track.currentText(),
+            'combo_trackMethod': self.combo_trackMethod.currentText(),
+            'spinbox_threadNo': self.spinbox_threadNo.value(),
+            'spinbox_fps': self.spinbox_fps.value(),
+            'checkbox_autosave': self.checkbox_autosave.isChecked(),
+            'checkbox_makePets2': self.checkbox_makePets2.isChecked(),
+            'pets2_params': deepcopy(self.pets2_params),
+            # Tracked/segmented objects
+            'df_rois_rows': df_rois_rows,
+        }
+
+    def apply_duplicate_state(self, state):
+        """Restore a dict from get_duplicate_state() into this (freshly
+        constructed, otherwise-empty) tab, and redraw everything it
+        touches so the tab looks right immediately - see that method's
+        docstring. No-op on None/empty.
+
+        Several restored widgets (checkbox_makePets2, combo_blur_track,
+        combo_thresh_method/combo_blur/slider_thresh/edge-detection
+        controls) are wired to handlers that open a dialog, re-blur
+        nav_imgs from scratch, or just redraw - all skippable here since
+        the already-computed/copied results are applied directly, so
+        those widgets are set with signals blocked."""
+        if not state:
+            return
+        self.lineEdit_dir_navSignal.setText(state['lineEdit_dir_navSignal'])
+        self.lineEdit_dir_4d.setText(state['lineEdit_dir_4d'])
+        self.lineEdit_dir_save.setText(state['lineEdit_dir_save'])
+        idx = self.combo_dtype_4d.findText(state['combo_dtype_4d'])
+        if idx >= 0:
+            self.combo_dtype_4d.setCurrentIndex(idx)
+        self.spinbox_dwellTime_acquisition.setValue(state['spinbox_dwellTime_acquisition'])
+        self.checkbox_smartScan.setChecked(state['checkbox_smartScan'])
+        self.lineEdit_patternDir.setText(state['lineEdit_patternDir'])
+        self.lineEdit_detectionDir.setText(state['lineEdit_detectionDir'])
+        self._smart_scan_rows = state['smart_scan_rows']
+        self._set_smart_scan_summary(state['smart_scan_summary'])
+        self._nav_4d_files = state['nav_4d_files']
+        self._nav_4d_directory = state['nav_4d_directory']
+        self.checkbox_detectorSizeAuto.setChecked(state['checkbox_detectorSizeAuto'])
+        self.spinbox_detectorSize_x.setValue(state['detectorSize'][0])
+        self.spinbox_detectorSize_y.setValue(state['detectorSize'][1])
+        self.checkbox_scanSize.setChecked(state['checkbox_scanSize'])
+        self.spinbox_scanSize_x.setValue(state['scanSize_spin'][0])
+        self.spinbox_scanSize_y.setValue(state['scanSize_spin'][1])
+        self.metadata_path_override = state['metadata_path_override']
+        self.spinbox_metadataCount.setValue(state['spinbox_metadataCount'])
+        self.lineEdit_scale_real.setText(state['scale_real'])
+        self.lineEdit_scale_recip.setText(state['scale_recip'])
+        self.dp_center = state['dp_center']
+
+        # Navigation signal + images (mirrors the tail of initiate_processing(),
+        # minus the parts that would recompute s_8bit/nav_imgs from scratch)
+        if state['s'] is not None:
+            self.s = state['s']
+        if state['s_8bit'] is not None:
+            self.s_8bit = state['s_8bit']
+        if state['nav_imgs_raw'] is not None:
+            self.nav_imgs_raw = state['nav_imgs_raw']
+        self.nav_imgs = state['nav_imgs']
+        self._dp_center_cache_key = None
+        self._ax_mask_shape_seen = None
+        self.box_contrast.set_state(state['contrast'])
+
+        shape_x, shape_y = self.nav_imgs[0].shape
+        self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
+        self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
+        for ax in (self.ax_nav, self.ax_track):
+            ax.set_xlim(0, shape_y)
+            ax.set_ylim(shape_x, 0)
+        self.toolbar.update()
+        self.toolbar.push_current()
+        self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
+        self.button_reset_rois.setEnabled(True)
+        self.button_track.setEnabled(True)
+        self.button_fineTuneMask.setEnabled(True)
+
+        # Threshold / edge detection / tracking settings - signals blocked
+        # so setting them doesn't trigger a redundant re-blur/dialog/redraw
+        # (see docstring); the already-copied nav_imgs/df_rois already
+        # reflect these settings' effect.
+        for wid, value, setter in (
+            (self.combo_thresh_method, state['combo_thresh_method'], 'setCurrentText'),
+            (self.combo_blur, state['combo_blur'], 'setCurrentText'),
+            (self.slider_thresh, state['slider_thresh'], 'setValue'),
+            (self.checkbox_edgeOnly, state['edgeOnly'], 'setChecked'),
+            (self.checkbox_edgeDirectional, state['edgeDirectional'], 'setChecked'),
+            (self.checkbox_revertMask, state['revertMask'], 'setChecked'),
+            (self.spinbox_edgeKernel, state['edgeKernel'], 'setValue'),
+            (self.spinbox_edgeDirection, state['edgeDirection'], 'setValue'),
+            (self.combo_blur_track, state['combo_blur_track'], 'setCurrentText'),
+            (self.combo_trackMethod, state['combo_trackMethod'], 'setCurrentText'),
+            (self.spinbox_threadNo, state['spinbox_threadNo'], 'setValue'),
+            (self.spinbox_fps, state['spinbox_fps'], 'setValue'),
+            (self.checkbox_autosave, state['checkbox_autosave'], 'setChecked'),
+            (self.checkbox_makePets2, state['checkbox_makePets2'], 'setChecked'),
+        ):
+            wid.blockSignals(True)
+            getattr(wid, setter)(value)
+            wid.blockSignals(False)
+        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
+        self.set_threadNo(state['spinbox_threadNo'])
+        self.pets2_params = deepcopy(state['pets2_params'])
+
+        # Tracked/segmented objects - reconstructs the tree the same way
+        # _on_saved_analysis_loaded() does from a loaded dataframe.
+        any_tracked = False
+        for row in state['df_rois_rows']:
+            idx = row['idx']
+            self.df_rois.loc[idx] = [row[col] for col in self.cols_df]
+            self.add_item_tree(idx, row['init'], row['end'], row['ref'], row['use'])
+            row_index = self.df_rois.index.get_loc(idx)
+            if row['out_rois'] is not None:
+                self.toggle_tree_icon(row_index, 'trk', True)
+                any_tracked = True
+            if row['dp'] is not None:
+                self.toggle_tree_icon(row_index, 'ext', True)
+        self.disable_3ded_widgets(not any_tracked)
+        if any_tracked:
+            self.slider_thresh.setEnabled(True)
+
+        self.clip_dp.set_state(state['clip_dp'])
+        self._dp_clip_initialized = True
+        self._bg = None
+        self.slider_imgNo.blockSignals(True)
+        self.slider_imgNo.setValue(state['imgNo'])
+        self.slider_imgNo.blockSignals(False)
+        self.update_canvas(state['imgNo'])
+        self.canvas.draw()
+        self.update_scalebar('real')
+        self.update_scalebar('reciprocal')
 
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent

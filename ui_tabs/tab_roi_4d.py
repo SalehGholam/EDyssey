@@ -28,7 +28,7 @@ from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
-from .base_tab import TabBase
+from .base_tab import TabBase, resolve_hdf5_dtype, glob_ext_for_dtype, HDF5_EVENTEM_LABEL
 from .threshold_dialog import ThresholdDialog
 from .worker_thread import ProcessStderrBuffer, WorkerThread_General
 from .worker_launch import worker_command
@@ -58,7 +58,9 @@ class Tab_ROI_on_4D(TabBase):
         layout_ribbon = qtw.QHBoxLayout(ribbon_page)
         layout_ribbon.setContentsMargins(4, 2, 4, 2)
         layout_ribbon.setSpacing(2)
-        self.layout.addWidget(ribbon_page)
+        self._main_splitter = qtw.QSplitter(Qt.Vertical)
+        self._main_splitter.addWidget(ribbon_page)
+        self.layout.addWidget(self._main_splitter, 1)
         #%% Experiment Info (ribbon group)
         # stretch=0 (+ Preferred override below): this column must stay at
         # its natural content width when the main window is resized, not
@@ -174,6 +176,17 @@ class Tab_ROI_on_4D(TabBase):
         # HyperSpy call) when the DP hasn't actually changed since, e.g. on
         # every tick of a contrast-slider drag. See _on_auto_center_toggled.
         self._dp_center_cache_key = None
+        # The signal file dp_center was last found/set for - image_handler
+        # uses this to tell "a genuinely new signal was loaded" (reset the
+        # center) apart from "Compute Virtual Image was re-run on the same
+        # signal" (keep whatever center the user already found/clicked).
+        self._dp_center_fn = None
+        # Whether Cancel was just clicked - checked by every background
+        # computation's result slot (get_dp, get_dp_from_mask,
+        # _on_sum_dp_from_threshold_computed, _handle_finished_vi) to
+        # discard a stale result instead of displaying it; see
+        # cancel_running_work.
+        self._cancelling = False
 
         #### Metadata (comment.txt) auto-fill - tpx3 acquisitions log scan
         # size/dwell time there, alongside the .tpx3 file itself.
@@ -571,10 +584,14 @@ class Tab_ROI_on_4D(TabBase):
         layout_ribbon.addStretch(1)
         #%% canvas layout (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
-        self.layout.addWidget(self._right_widget, 1)
-        layout_right_outer = qtw.QHBoxLayout(self._right_widget)
-        layout_right_outer.setContentsMargins(0, 0, 0, 0)
-        layout_right_outer.setSpacing(0)
+        self._main_splitter.addWidget(self._right_widget)
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        _right_widget_outer_layout = qtw.QVBoxLayout(self._right_widget)
+        _right_widget_outer_layout.setContentsMargins(0, 0, 0, 0)
+        _right_widget_outer_layout.setSpacing(0)
+        layout_right_outer = qtw.QSplitter(Qt.Horizontal)
+        _right_widget_outer_layout.addWidget(layout_right_outer)
 
         # Clipping Thresholds (vertical vmin/vmax sliders, see
         # ui_tabs/clipping_thresholds.py) sit directly beside the two edge
@@ -594,10 +611,15 @@ class Tab_ROI_on_4D(TabBase):
         layout_fileList = qtw.QVBoxLayout(widget_fileList)
         layout_fileList.setContentsMargins(2, 2, 2, 2)
         self.combo_dtype = qtw.QComboBox()
-        self.combo_dtype.addItems(['All files', '.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.tif'])
+        self.combo_dtype.addItems(['All files', '.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy',
+                                   '.zspy', '.mib', '.blo', '.tif'])
         self.combo_dtype.setToolTip(
-            'Filter the file list below to one data type - ".tif" matches both '
-            '.tif and .tiff files')
+            'Filter the file list below to one data type, AND (for a .hdf5 file '
+            f'specifically) select which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" '
+            "(eventem's own raw export layout) or plain \".hdf5\" (a conventional/"
+            'third-party HDF5 file, loaded via HyperSpy - both commonly share the '
+            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
+            '".tif" matches both .tif and .tiff files')
         self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
         layout_fileList.addWidget(self.combo_dtype)
         self.file_list_widget = qtw.QListWidget()
@@ -610,18 +632,20 @@ class Tab_ROI_on_4D(TabBase):
         layout_fileList.addWidget(self.file_list_widget, 1)
         layout_right_outer.addWidget(widget_fileList)
 
-        self.clip_nav = ClippingThresholdsWidget()
-        layout_right_outer.addWidget(self.clip_nav)
+        self.clip_nav = ClippingThresholdsWidget(title='Image Clipping\nThresh.')
 
         self._canvas_container = qtw.QWidget()
-        layout_right_outer.addWidget(self._canvas_container, 1)
-        layout_canvas = qtw.QVBoxLayout(self._canvas_container)
-        
+        layout_right_outer.addWidget(self._canvas_container)
+        _canvas_container_outer_layout = qtw.QVBoxLayout(self._canvas_container)
+        _canvas_container_outer_layout.setContentsMargins(0, 0, 0, 0)
+        _canvas_container_outer_layout.setSpacing(0)
+        layout_canvas = qtw.QSplitter(Qt.Vertical)
+        _canvas_container_outer_layout.addWidget(layout_canvas)
+
         # self.figure = Figure(figsize=(5,5))
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        layout_canvas.addWidget(self.wrap_canvas_in_scroll(self.canvas))
-        
+
         self.ax_nav = self.figure.add_subplot(131)
         self.ax_nav_roi = self.figure.add_subplot(132)
         self.ax_dp = self.figure.add_subplot(133)
@@ -667,8 +691,21 @@ class Tab_ROI_on_4D(TabBase):
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
 
-        self.clip_dp = ClippingThresholdsWidget()
-        layout_right_outer.addWidget(self.clip_dp)
+        self.clip_dp = ClippingThresholdsWidget(title='DP Clipping\nThresh.')
+        # Clipping Thresholds sit directly beside the canvas (Nav. Image is
+        # the leftmost subplot, Dif. Pattern the rightmost, so a narrow
+        # column on each side of the canvas ends up beside its matching
+        # axis) - in the same row as the canvas itself (not a sibling pane
+        # of the whole canvas+console splitter), so their height matches
+        # the canvas's own height, not canvas+console combined. Matches ROI
+        # Tracker's identical canvas-row arrangement.
+        _canvas_row_widget = qtw.QWidget()
+        layout_canvas_row = qtw.QHBoxLayout(_canvas_row_widget)
+        layout_canvas_row.setContentsMargins(0, 0, 0, 0)
+        layout_canvas_row.addWidget(self.clip_nav)
+        layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
+        layout_canvas_row.addWidget(self.clip_dp)
+        layout_canvas.addWidget(_canvas_row_widget)
         self.clip_nav.valueChanged.connect(lambda: self.update_canvas(ax='nav'))
         self.clip_dp.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
 
@@ -702,6 +739,9 @@ class Tab_ROI_on_4D(TabBase):
                       'action', self.toolbar.zoom),
             RibbonTool('home', 'home', 'Reset the view',
                       'action', self.toolbar.home),
+            RibbonTool('sep3', kind='separator'),
+            RibbonTool('help', 'help', 'Shortcuts & mouse controls for this tab',
+                      'action', self.show_help_dialog),
         ], parent=self)
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         # NavigationToolbar2's _wait_cursor_for_draw_cm() wraps every
@@ -721,6 +761,52 @@ class Tab_ROI_on_4D(TabBase):
         # panel (a separate splitter pane) can span the full window height.
         self.log_console = LogConsole(self)
         layout_canvas.addWidget(self.log_console)
+        layout_canvas.setStretchFactor(0, 1)
+        layout_canvas.setStretchFactor(1, 0)
+
+        # Only the canvas column claims extra horizontal space by default;
+        # the left file-list panel opens at a fixed default width shared
+        # across all 4 tabs (tab_roi_4d.py, tab_create_navSignal.py,
+        # tab_tracking_cv2.py, tab_sam2.py). clip_nav/clip_dp are no longer
+        # panes of this splitter - see the canvas-row widget above - so this
+        # only has 3 panes now: [left file-list panel, canvas_container, ribbon].
+        for _i in range(layout_right_outer.count()):
+            layout_right_outer.setStretchFactor(_i, 0)
+        layout_right_outer.setStretchFactor(1, 1)
+
+        def _apply_initial_splitter_sizes():
+            """(Re-)apply every splitter's default pane sizes, and disable
+            collapsing on all of them. The ribbon icon strip (last pane,
+            fixed-width) is really just "as small as it's allowed to be"
+            below - but a QSplitter.setSizes() call made before the window
+            has ever actually been shown (i.e. still has no real geometry,
+            as here - this runs during __init__, well before
+            MainWindow.show()) only stores those sizes proportionally
+            against whatever placeholder width Qt reports at that moment,
+            not real pixels - so calling it only once, here, left the
+            ribbon pane rendered collapsed to nothing until the user
+            manually dragged it open. Re-running the exact same calls once
+            more via QTimer.singleShot(0, ...) - after the event loop has
+            actually processed the window's first show/resize, so every
+            widget's real minimum size is now known - fixes that.
+            setCollapsible(False) on every pane is kept too, as a static
+            safety net against the same collapse happening later from a
+            user drag."""
+            layout_canvas.setSizes([2000, 150])
+            layout_right_outer.setSizes([220, 3000, 0])
+            for _i in range(layout_canvas.count()):
+                layout_canvas.setCollapsible(_i, False)
+            for _i in range(layout_right_outer.count()):
+                layout_right_outer.setCollapsible(_i, False)
+            for _i in range(self._main_splitter.count()):
+                self._main_splitter.setCollapsible(_i, False)
+            # Sizes _main_splitter's ribbon pane too, respecting the current
+            # Ribbon Height display setting (rather than hardcoding its
+            # natural sizeHint here) - see apply_display_settings.
+            self.apply_display_settings()
+
+        _apply_initial_splitter_sizes()
+        QTimer.singleShot(0, _apply_initial_splitter_sizes)
 
         # keyboard shortcuts (matching the equivalent actions on the other tabs)
         QShortcut(QKeySequence('Ctrl+O'), self, self.button_computeVirtualImage.click)
@@ -752,12 +838,12 @@ class Tab_ROI_on_4D(TabBase):
         would mean fully parsing the file - eventem has no cheaper
         metadata-only query - just to learn its shape; "Auto" here keeps
         the previous default of 512x512)."""
-        dtype = os.path.splitext(fn)[-1]
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype.currentText())
         if dtype == '.tpx3':
             if self.checkbox_detectorSizeAuto.isChecked():
                 return 512, 512
             return self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()
-        return io.get_det_size(fn)
+        return io.get_det_size(fn, dtype)
 
     def get_scan_size(self):
         """Return the (x, y) scan size from the manual entry fields, or
@@ -778,8 +864,16 @@ class Tab_ROI_on_4D(TabBase):
         compute_virtual_image/_handle_finished_vi) and reset the nav
         axis view/toolbar history to it."""
         self.navImg = result
-        self.dp_center = None  # a new signal may have a different DP shape/center
-        self._dp_center_cache_key = None
+        if self.fn != self._dp_center_fn:
+            # A genuinely new signal was loaded - it may have a different DP
+            # shape/center, so drop the stale one. Re-running "Compute
+            # Virtual Image" on the SAME signal (e.g. to change mode/mask)
+            # must NOT re-center - that's only ever done by clicking
+            # "Center" or Ctrl+clicking the DP (see find_and_center_recip/
+            # vi_auto_center/on_press).
+            self.dp_center = None
+            self._dp_center_cache_key = None
+            self._dp_center_fn = self.fn
         self.clip_nav.set_range(self.navImg.min(), self.navImg.max())
         # Navigation images commonly have literal 0-count background/
         # unscanned positions - start the low threshold at the lowest
@@ -801,7 +895,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setDisabled(True)
 
     def show_dialog(self):
-        file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.mib *.pmf);;All Files (*)"
+        file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.mib *.blo *.pmf);;All Files (*)"
         path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
         # if path and os.path.isdir(path[0]):
         if path:
@@ -811,14 +905,17 @@ class Tab_ROI_on_4D(TabBase):
     def _ext_filter_for_combo(self):
         """Extensions matching the current combo_dtype selection - '.tif'
         matches both '.tif' and '.tiff' (see combo_dtype's tooltip);
-        'All files' returns every supported extension. Matches the
-        Navigator tab's identical helper."""
+        'All files' returns every supported extension. HDF5_EVENTEM_LABEL
+        maps to the real on-disk ".hdf5" extension (see glob_ext_for_dtype)
+        - both it and plain ".hdf5" list the exact same files, since
+        they're only distinguished by which loader is used, not by
+        filename. Matches the Navigator tab's identical helper."""
         selected = self.combo_dtype.currentText()
         if selected == 'All files':
-            return ['.tpx3', '.hdf5', '.zspy', '.hspy', '.mib', '.pmf', '.tif', '.tiff']
+            return ['.tpx3', '.hdf5', '.zspy', '.hspy', '.mib', '.blo', '.pmf', '.tif', '.tiff']
         if selected == '.tif':
             return ['.tif', '.tiff']
-        return [selected]
+        return [glob_ext_for_dtype(selected)]
 
     def refresh_file_list(self):
         """(Re)populate the file list from the folder containing the
@@ -1119,7 +1216,9 @@ class Tab_ROI_on_4D(TabBase):
                 self.dwellTime = self.spinbox_dwellTime.value()
             except Exception:
                 self.dwellTime = None
-        worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime,
+        self._cancelling = False
+        dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
+        worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime, dtype,
                                     self.get_fn_pattern(), self.get_detector_shape(self.fn))
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
@@ -1134,6 +1233,13 @@ class Tab_ROI_on_4D(TabBase):
 #         if hasattr(self.dp, 'compute'): # lazy signals
 #             self.dp.compute()
 # =============================================================================
+        if self._cancelling:
+            # Cancel was clicked while this rectangle-ROI DP was still
+            # loading - a QThreadPool QRunnable can't be forcibly killed
+            # (see cancel_running_work), so it's still allowed to finish,
+            # but its now-stale result must be discarded rather than
+            # overwriting whatever's on screen.
+            return
         self.dp, self.navImg_cut = result
         self.logger.info('max = %s', self.dp.max())
         self.ax_nav_roi.set_title(f'ROI Image: {self.roi}')
@@ -1179,22 +1285,13 @@ class Tab_ROI_on_4D(TabBase):
         self.ax_dp.set_title('Dif. Pattern')
 
         self.ax_nav_roi.set_axis_off()
-        # ax_nav/ax_dp keep their x-axis label visible (for the interaction
-        # hints below), so their ticks/spines are hidden individually
-        # instead of via set_axis_off(), which would hide the label too.
         for spine in self.ax_nav.spines.values():
             spine.set_visible(False)
         self.ax_nav.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-        self.ax_nav.set_xlabel(
-            'Hold "ctrl" + Drag => New ROI (diffraction-pattern extraction)\n'
-            'Hold "shift" + Click => Add SAM2 point (Left=positive, Right=negative)\n'
-            'Middle Click => Remove last SAM2 point', fontsize=9)
-        self.ax_nav.xaxis.label.set_visible(True)
 
         for spine in self.ax_dp.spines.values():
             spine.set_visible(False)
         self.ax_dp.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-        self.ax_dp.xaxis.label.set_visible(True)
 
         # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
         # it's a figure-wide supxlabel rather than repeated per-axis text.
@@ -1311,11 +1408,26 @@ class Tab_ROI_on_4D(TabBase):
         self._dp_recip_circles = io.draw_reciprocal_scale_circles(
             self.ax_dp, self.lineEdit_scale_recip.text(), dp_shape,
             center=center, old_artists=getattr(self, '_dp_recip_circles', None))
-        self.ax_dp.set_xlabel(
-            'Circle center: click "Center" (Scale bars) to find it, or hold Ctrl '
-            'and click the pattern to set it manually', fontsize=9)
 
         self.canvas.draw()
+
+    def show_help_dialog(self):
+        """Ribbon "?" tool: shortcuts/mouse controls for this tab, moved
+        here from each subplot's own xlabel (see update_canvas's history) -
+        crowded, and on a narrow window two adjacent subplots' multi-line
+        hints could visibly run into each other."""
+        self.show_shortcuts_dialog(
+            'Nav. Image:\n'
+            '  Hold "Ctrl" + Drag  ->  New ROI (diffraction-pattern extraction)\n'
+            '  Hold "Shift" + Click  ->  Add SAM2 point (Left=positive, Right=negative)\n'
+            '  Middle Click  ->  Remove last SAM2 point\n'
+            '\n'
+            'Diffraction Pattern:\n'
+            '  Click "Center" (Scale bars)  ->  Find the beam center\n'
+            '  Hold "Ctrl" + Click  ->  Set the beam center manually\n'
+            '\n'
+            'The ribbon (right of the canvas) offers the same actions as icons - '
+            'hover any icon for its own tooltip.')
 
     def message_box_tpx3(self):
        msg = qtw.QMessageBox()
@@ -1518,7 +1630,7 @@ class Tab_ROI_on_4D(TabBase):
                 continue
             dcx, dcy = detector['center']
             circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
-                                    edgecolor='magenta', linewidth=1.2, linestyle='--')
+                                    edgecolor='lime', linewidth=1.2, linestyle='--')
             self.ax_dp.add_patch(circle)
             self._vi_mask_artists.append(circle)
             if detector['r_in'] > 0:
@@ -1673,7 +1785,7 @@ class Tab_ROI_on_4D(TabBase):
             return
         self.scanSize = self.get_scan_size()
         self.dwellTime = self.spinbox_dwellTime.value()
-        dtype = os.path.splitext(self.fn)[-1]
+        dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         if self._scan_size_required(dtype) and self.scanSize is None:
             self.logger.warning('Cannot load %s: scan size is required.', self.fn)
             self.message_box_scan_size_required(dtype)
@@ -1770,7 +1882,7 @@ class Tab_ROI_on_4D(TabBase):
             return
         self.scanSize = self.get_scan_size()
         self.dwellTime = self.spinbox_dwellTime.value()
-        dtype = os.path.splitext(self.fn)[-1]
+        dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         if self._scan_size_required(dtype) and self.scanSize is None:
             self.logger.warning('Cannot compute Sum DP for %s: scan size is required.', self.fn)
             self.message_box_scan_size_required(dtype)
@@ -2036,7 +2148,8 @@ class Tab_ROI_on_4D(TabBase):
         display the result on the DP axis, immediately after segmentation -
         the masked-DP equivalent of drawing a rectangle ROI."""
         self.logger.info('Computing diffraction pattern summed over SAM2 mask...')
-        dtype = os.path.splitext(self.fn)[-1]
+        dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
+        self._cancelling = False
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
                                          self.scanSize, self.dwellTime, self.get_fn_pattern(),
                                          self.get_detector_shape(self.fn))
@@ -2044,6 +2157,11 @@ class Tab_ROI_on_4D(TabBase):
         self.threadpool.start(worker)
 
     def get_dp_from_mask(self, dp):
+        if self._cancelling:
+            # See get_dp's matching check - the SAM2 mask-DP QRunnable can't
+            # be forcibly killed either, so discard its stale result instead
+            # of displaying it.
+            return
         self.dp = dp
         self.ax_dp.set_title('DP (SAM2 Mask)')
         self._reset_dp_clip_range()
@@ -2126,7 +2244,7 @@ class Tab_ROI_on_4D(TabBase):
         y0, y1 = int(y_idx[0]), int(y_idx[-1])
         x0, x1 = int(x_idx[0]), int(x_idx[-1])
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
-        dtype = os.path.splitext(self.fn)[-1]
+        dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         self.logger.info(
             'Computing summed DP from %s-thresholded scan positions...', method)
         self.button_sumDpFromThreshold.setDisabled(True)
@@ -2142,6 +2260,11 @@ class Tab_ROI_on_4D(TabBase):
     def _on_sum_dp_from_threshold_computed(self, dp):
         self.button_sumDpFromThreshold.setEnabled(True)
         self.button_cancel.setDisabled(True)
+        if self._cancelling:
+            # See get_dp's matching check - Cancel can't forcibly kill this
+            # QThreadPool QRunnable, so discard its stale result instead of
+            # displaying it.
+            return
         self.dp = dp
         self.ax_dp.set_title('Summed DP (thresholded)')
         self._reset_dp_clip_range()
@@ -2199,6 +2322,177 @@ class Tab_ROI_on_4D(TabBase):
             'still finish silently (its result is discarded) - the virtual-image '
             'and SAM2 segmentation processes were stopped outright.')
 
+    def get_duplicate_state(self):
+        """Snapshot of this tab's in-progress analysis, for "Duplicate
+        Current Tab" (see EDyssey_MainWindow.duplicate_current_tab). This
+        tab has no Save Results/Load Saved Analysis of its own - this is a
+        synchronous, in-memory equivalent, just enough to make the
+        duplicate tab look and behave like this one immediately. Every
+        mutable value (arrays, lists, dicts) is copied, never shared by
+        reference, so the two tabs stay fully independent afterward.
+
+        Returns None if no signal has been loaded yet (nothing meaningful
+        to copy) - checked via self.navImg, set only once image_handler()
+        has run at least once."""
+        if not hasattr(self, 'navImg'):
+            return None
+        return {
+            # File/scan parameters
+            'fn': getattr(self, 'fn', None),
+            'scanSize': getattr(self, 'scanSize', None),
+            'dwellTime': getattr(self, 'dwellTime', None),
+            'lineEdit_dir_signal': self.lineEdit_dir_signal.text(),
+            'combo_dtype': self.combo_dtype.currentText(),
+            'checkbox_smartScan': self.checkbox_smartScan.isChecked(),
+            'lineEdit_patternFile': self.lineEdit_patternFile.text(),
+            'checkbox_detectorSizeAuto': self.checkbox_detectorSizeAuto.isChecked(),
+            'detectorSize': (self.spinbox_detectorSize_x.value(), self.spinbox_detectorSize_y.value()),
+            'checkbox_scanSize': self.checkbox_scanSize.isChecked(),
+            'scanSize_spin': (self.spinbox_scanSize_x.value(), self.spinbox_scanSize_y.value()),
+            'spinbox_dwellTime': self.spinbox_dwellTime.value(),
+            'metadata_path_override': self.metadata_path_override,
+            'spinbox_metadataCount': self.spinbox_metadataCount.value(),
+            'scale_real': self.lineEdit_scale_real.text(),
+            'scale_recip': self.lineEdit_scale_recip.text(),
+            # Computed images
+            'navImg': self.navImg.copy(),
+            'navImg_cut': self.navImg_cut.copy() if hasattr(self, 'navImg_cut') else None,
+            'dp': self.dp.copy() if hasattr(self, 'dp') else None,
+            'dp_center': self.dp_center,
+            'roi': self.roi,
+            'dp_title': self.ax_dp.get_title(),
+            'nav_roi_title': self.ax_nav_roi.get_title(),
+            # SAM2/threshold mask + point prompts
+            'seg_points': [list(p) for p in self.seg_points],
+            'seg_labels': list(self.seg_labels),
+            'seg_mask': self.seg_mask.copy() if self.seg_mask is not None else None,
+            'mask_source': self._mask_source,
+            'threshold_method': self._threshold_method,
+            'seg_roi': getattr(self, 'seg_roi', None),
+            # Virtual detectors
+            'extra_detectors_vi': [dict(d) for d in self._extra_detectors_vi],
+            'active_detector_row_vi': self._active_detector_row_vi,
+            'checkbox_useVirtualMask': self.checkbox_useVirtualMask.isChecked(),
+            'combo_virtualMode': self.combo_virtualMode.currentText(),
+            'vi_mask_hidden': self._vi_mask_hidden,
+            # Edge detection
+            'edgeOnly': self.checkbox_edgeOnly.isChecked(),
+            'edgeDirectional': self.checkbox_edgeDirectional.isChecked(),
+            'revertMask': self.checkbox_revertMask.isChecked(),
+            'edgeKernel': self.spinbox_edgeKernel.value(),
+            'edgeDirection': self.spinbox_edgeDirection.value(),
+            # Contrast
+            'clip_nav': self.clip_nav.get_state(),
+            'clip_dp': self.clip_dp.get_state(),
+        }
+
+    def apply_duplicate_state(self, state):
+        """Restore a dict from get_duplicate_state() into this (freshly
+        constructed, otherwise-empty) tab, and redraw everything it
+        touches so the tab looks right immediately - see that method's
+        docstring. No-op on None/empty."""
+        if not state:
+            return
+        self.lineEdit_dir_signal.blockSignals(True)
+        self.lineEdit_dir_signal.setText(state['lineEdit_dir_signal'])
+        self.lineEdit_dir_signal.blockSignals(False)
+        self.metadata_path_override = state['metadata_path_override']
+        idx = self.combo_dtype.findText(state['combo_dtype'])
+        if idx >= 0:
+            self.combo_dtype.setCurrentIndex(idx)
+        self.refresh_file_list()
+        self.checkbox_smartScan.setChecked(state['checkbox_smartScan'])
+        self.lineEdit_patternFile.setText(state['lineEdit_patternFile'])
+        self.checkbox_detectorSizeAuto.setChecked(state['checkbox_detectorSizeAuto'])
+        self.spinbox_detectorSize_x.setValue(state['detectorSize'][0])
+        self.spinbox_detectorSize_y.setValue(state['detectorSize'][1])
+        self.checkbox_scanSize.setChecked(state['checkbox_scanSize'])
+        self.spinbox_scanSize_x.setValue(state['scanSize_spin'][0])
+        self.spinbox_scanSize_y.setValue(state['scanSize_spin'][1])
+        if state['spinbox_dwellTime']:
+            self.spinbox_dwellTime.setValue(state['spinbox_dwellTime'])
+        self.spinbox_metadataCount.setValue(state['spinbox_metadataCount'])
+        self.lineEdit_scale_real.setText(state['scale_real'])
+        self.lineEdit_scale_recip.setText(state['scale_recip'])
+
+        # Direct assignment (rather than relying on the line edits'
+        # textChanged signals above) - those signals would re-derive these
+        # from disk/comment.txt instead of trusting the exact values the
+        # source tab had.
+        self.fn = state['fn']
+        self.scanSize = state['scanSize']
+        self.dwellTime = state['dwellTime']
+
+        # Nav image (mirrors image_handler(), minus the parts that would
+        # reset dp_center/clip_nav to defaults instead of the copied ones)
+        self.navImg = state['navImg']
+        self.dp_center = state['dp_center']
+        self._dp_center_cache_key = None
+        self._dp_center_fn = self.fn
+        self.clip_nav.set_state(state['clip_nav'])
+        self.update_canvas('nav')
+        shape_x, shape_y = self.navImg.shape
+        self.ax_nav.set_xlim(0, shape_y)
+        self.ax_nav.set_ylim(shape_x, 0)
+        self.toolbar.update()
+        self.toolbar.push_current()
+        self.button_clear_points.setEnabled(True)
+
+        # Virtual detectors
+        self._extra_detectors_vi = [dict(d) for d in state['extra_detectors_vi']]
+        self._active_detector_row_vi = min(state['active_detector_row_vi'],
+                                            len(self._extra_detectors_vi) - 1)
+        self.list_detectors_vi.clear()
+        for d in self._extra_detectors_vi:
+            self.list_detectors_vi.addItem(self._format_detector_vi(d))
+        self.list_detectors_vi.setCurrentRow(self._active_detector_row_vi)
+        self.checkbox_useVirtualMask.setChecked(state['checkbox_useVirtualMask'])
+        idx = self.combo_virtualMode.findText(state['combo_virtualMode'])
+        if idx >= 0:
+            self.combo_virtualMode.setCurrentIndex(idx)
+        self._vi_mask_hidden = state['vi_mask_hidden']
+
+        # Edge detection
+        self.checkbox_edgeOnly.setChecked(state['edgeOnly'])
+        self.checkbox_edgeDirectional.setChecked(state['edgeDirectional'])
+        self.checkbox_revertMask.setChecked(state['revertMask'])
+        self.spinbox_edgeKernel.setValue(state['edgeKernel'])
+        self.spinbox_edgeDirection.setValue(state['edgeDirection'])
+
+        # SAM2 point prompts (re-plotted the same way add_seg_point does)
+        self.seg_points = [list(p) for p in state['seg_points']]
+        self.seg_labels = list(state['seg_labels'])
+        for label, p in zip(self.seg_labels, self.seg_points):
+            scatter_p = self.ax_nav.scatter(
+                p[0], p[1], color='green' if label else 'red',
+                marker='o', s=20, linewidth=1.25)
+            self.scatter_plots.append(scatter_p)
+        if self.seg_points:
+            self.button_segment_image.setEnabled(True)
+            self.button_clear_points.setEnabled(True)
+
+        # Mask + diffraction pattern
+        self.seg_mask = state['seg_mask']
+        self._mask_source = state['mask_source']
+        self._threshold_method = state['threshold_method']
+        self.seg_roi = state['seg_roi']
+        self.roi = state['roi']
+
+        if state['dp'] is not None:
+            self.dp = state['dp']
+            self.clip_dp.set_state(state['clip_dp'])
+            if self.seg_mask is not None:
+                mask = self.apply_edge_mask(self.seg_mask)
+                self.show_seg_mask(mask, title=state['nav_roi_title'])
+            elif state['navImg_cut'] is not None:
+                self.navImg_cut = state['navImg_cut']
+                self.img_display['seg_mask'].set_data(np.zeros((512, 512, 4)))
+                self.ax_nav_roi.set_title(state['nav_roi_title'])
+            self.update_canvas(ax='dp', roiUpdate=(state['navImg_cut'] is not None))
+            self.ax_dp.set_title(state['dp_title'])
+            self.update_virtual_mask_overlay()
+        self.canvas.draw_idle()
+
     def cleanup(self):
         """Release resources held by this tab. Called by MainWindow.closeEvent
         so repeated runs of the app in the same console/kernel don't leave
@@ -2220,7 +2514,7 @@ class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
-    def __init__(self, fn, roi, scanSize, dwellTime, fn_pattern=None, det_shape=(512, 512)):
+    def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512)):
         super().__init__()
         self.logger = get_tab_logger('Tab_ROI_on_4D')
         self._tic = perf_counter()
@@ -2229,18 +2523,19 @@ class Worker_CalculateDP(QRunnable):
         self.roi = roi
         self.scanSize = scanSize
         self.dwellTime = dwellTime
+        self.dtype = dtype
         self.fn_pattern = fn_pattern
         self.det_shape = det_shape
 
         self.signals = WorkerSignals()
 
     def run(self):
-        # load_signal/load_tpx3/load_hs/load_hdf5 no longer return HyperSpy
-        # Signal2D objects (nor a (signal, file_handle) tuple for hdf5 - the
-        # file is now closed internally): .tpx3 returns the raw eventem.Roi
-        # object itself, everything else a plain numpy/dask array already
-        # cropped to `roi`.
-        dtype = os.path.splitext(self.fn)[-1]
+        # load_signal/load_tpx3/load_hs/load_hdf5_eventem no longer return
+        # HyperSpy Signal2D objects (nor a (signal, file_handle) tuple for
+        # .hdf5_eventem - the file is now closed internally): .tpx3 returns
+        # the raw eventem.Roi object itself, everything else a plain
+        # numpy/dask array already cropped to `roi`.
+        dtype = self.dtype
         try:
             if dtype == '.tpx3':
                 x, y, w, h = self.roi
@@ -2252,7 +2547,7 @@ class Worker_CalculateDP(QRunnable):
                     self.det_shape[1], self.det_shape[0])
                 navImg_cut = np.array(roi_obj.Roi_scan_image).reshape(h, w)
             else:
-                s_cut = io.load_signal(self.fn, roi=self.roi,
+                s_cut = io.load_signal(self.fn, dtype=dtype, roi=self.roi,
                                        scanSize=self.scanSize, dwellTime=self.dwellTime,
                                        logger=self.logger, fn_pattern=self.fn_pattern)
                 navImg_cut = s_cut.sum(axis=(2,3))

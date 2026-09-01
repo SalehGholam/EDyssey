@@ -243,6 +243,51 @@ class ContrastScalingBox(qtw.QGroupBox):
             desc += f', clipped to [{kwargs["clip_low"]:d}, {kwargs["clip_high"]:d}]'
         return desc
 
+    def get_state(self):
+        """Full widget state (method/parameters + clip thresholds, plus the
+        clip sliders' own underlying data range) - restorable via
+        set_state(), e.g. for "Duplicate Current Tab" (see
+        EDyssey_MainWindow.duplicate_current_tab)."""
+        return {
+            'method': self.combo_method.currentData(),
+            'low': self.spinbox_low.value(),
+            'high': self.spinbox_high.value(),
+            'nstd': self.spinbox_nstd.value(),
+            'data_min': self._data_min,
+            'data_max': self._data_max,
+            'clip_low': self.clip_low_value,
+            'clip_high': self.clip_high_value,
+        }
+
+    def set_state(self, state):
+        """Restore a dict from get_state(). No-op on None/empty.
+        Deliberately does NOT emit settingsChanged - a caller restoring a
+        whole duplicated tab's state applies the already-rescaled images
+        itself, so an extra background rescale here would just be
+        redundant work racing that restore."""
+        if not state:
+            return
+        idx = self.combo_method.findData(state['method'])
+        if idx >= 0:
+            self.combo_method.blockSignals(True)
+            self.combo_method.setCurrentIndex(idx)
+            self.combo_method.blockSignals(False)
+        self.spinbox_low.setValue(state['low'])
+        self.spinbox_high.setValue(state['high'])
+        self.spinbox_nstd.setValue(state['nstd'])
+        self._data_min = state['data_min']
+        self._data_max = state['data_max']
+        self.slider_clip_low.blockSignals(True)
+        self.slider_clip_high.blockSignals(True)
+        self.slider_clip_low.setRange(self._data_min, self._data_max)
+        self.slider_clip_high.setRange(self._data_min, self._data_max)
+        self.slider_clip_low.setValue(state['clip_low'])
+        self.slider_clip_high.setValue(state['clip_high'])
+        self.slider_clip_low.blockSignals(False)
+        self.slider_clip_high.blockSignals(False)
+        self._update_clip_labels()
+        self._update_param_visibility()
+
     def rescale_frame(self, raw_frame):
         """Synchronously contrast-stretch a single 2-D frame with the
         current settings - cheap, for instant visual feedback while the

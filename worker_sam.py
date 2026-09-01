@@ -39,6 +39,18 @@ def check_torch_device():
         device = torch.device("cpu")
     # print(f"using device: {device}")
     
+    # Printed to stderr (not stdout, which this worker's caller parses as a
+    # tagged JSON error/result protocol - see the import guard above) so it
+    # surfaces in the app's own Log Console via ProcessStderrBuffer.log_info
+    # (ui_tabs/worker_thread.py), same as every other diagnostic this worker
+    # already writes to stderr - the user wants to see up front, per run,
+    # whether SAM2 actually ended up on the GPU or fell back to CPU.
+    if device.type == "cuda":
+        device_label = f'{device.type} ({torch.cuda.get_device_name(0)})'
+    else:
+        device_label = device.type
+    print(f'SAM2 using device: {device_label}', file=sys.stderr, flush=True)
+
     if device.type == "cuda":
         # use bfloat16 for the entire notebook
         torch.autocast("cuda", dtype=torch.bfloat16).__enter__()

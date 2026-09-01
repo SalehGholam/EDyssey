@@ -11,7 +11,8 @@ The normal workflow is:
 - Create a stack of images from navigation images (with virtual detectors) on Navigator tab
 - Track particles or regions of interest by either classical opencv trackers or MetaAI's SAM2
 - Extract 3D ED frames from the segmented regions
-The software currently supports raw ASI's tpx3, QD's mib, Hyperspy's hspy and zspy data types.
+The software currently supports raw ASI's tpx3, QD's mib, Hyperspy's hspy and
+zspy, ASTAR's blo, and both eventem's own and conventional HDF5 data types.
 
 <!-- screenshot: docs/screenshot.png -->
 
@@ -42,10 +43,10 @@ includes both, so SAM2 works immediately after install.
 ## Usage
 
 - [MANUAL.md](MANUAL.md) - full walkthrough of all four tabs (ROI on 4D,
-  Navigator, Tracking by CV2, SAM2 Seg.), saving/resuming analyses, and
+  Navigator, ROI Tracker, SAM2 Tracker), saving/resuming analyses, and
   keyboard shortcuts.
-- [CONTROLS.md](CONTROLS.md) - canvas mouse control reference for the
-  tracking tabs.
+- [CONTROLS.md](CONTROLS.md) - canvas mouse control reference for all four
+  tabs.
 
 ## Development
 

@@ -243,3 +243,75 @@ def shift_mask_edge(mask, direction, grow=True):
         return cv2.dilate(mask_u8, kernel, anchor=anchor, iterations=1).astype(bool)
     kernel, anchor = _directional_kernel(1, direction)
     return cv2.erode(mask_u8, kernel, anchor=anchor, iterations=1).astype(bool)
+
+
+def mask_centroid(mask):
+    """(x, y) center of mass of `mask` - the origin mesh_cell_ids/
+    mesh_restrict_mask anchor their rotated grid to by default, so a mesh
+    cell selection made on one frame stays aligned with the same relative
+    position *on the object* in every other frame of a tracked stack, even
+    as the object itself moves - rather than a fixed grid over the full
+    frame, which a tracked object drifts across from frame to frame. Falls
+    back to the array's own center if `mask` is empty (nothing to center on)."""
+    ys, xs = np.where(mask)
+    if len(ys) == 0:
+        h, w = mask.shape
+        return w / 2, h / 2
+    return float(xs.mean()), float(ys.mean())
+
+
+def mesh_cell_ids(shape, angle_deg, cell_size, origin):
+    """Integer mesh-cell coordinates for every pixel in `shape`, from a grid
+    rotated `angle_deg` from horizontal (0 = axis-aligned, increasing
+    clockwise - same convention as erode_mask_edge's `direction`), centered
+    on `origin`, with square `cell_size`-px cells - used by
+    mask_edit_dialog.py's "Mesh" box to let the user restrict a mask to
+    specific cell(s) for extraction (see mesh_restrict_mask).
+
+    Args:
+        shape: (height, width) of the mask/image the mesh is laid over.
+        angle_deg: Grid rotation, in degrees.
+        cell_size: Cell side length, in pixels. Must be > 0.
+        origin: (x, y) pixel coordinate the grid is centered on - normally
+            the object's own mask_centroid(), so cell (0, 0) always sits on
+            the object regardless of where it is in the frame.
+
+    Returns:
+        (cell_i, cell_j) - two int arrays, shape `shape`, each pixel's
+        column/row index in the rotated grid.
+    """
+    h, w = shape
+    y, x = np.mgrid[0:h, 0:w]
+    x = x - origin[0]
+    y = y - origin[1]
+    theta = np.deg2rad(angle_deg)
+    rot_x = x * np.cos(theta) + y * np.sin(theta)
+    rot_y = -x * np.sin(theta) + y * np.cos(theta)
+    cell_i = np.floor(rot_x / cell_size).astype(int)
+    cell_j = np.floor(rot_y / cell_size).astype(int)
+    return cell_i, cell_j
+
+
+def mesh_restrict_mask(mask, angle_deg, cell_size, cells, origin=None):
+    """`mask` AND the union of `cells` (an iterable of (cell_i, cell_j)
+    tuples from mesh_cell_ids) - restricts a mask to just the mesh cell(s)
+    the user picked in mask_edit_dialog.py's "Mesh" box. `mask` returned
+    unchanged if `cells` is empty/None (nothing picked yet, so there's
+    nothing to restrict to).
+
+    `origin` defaults to mask_centroid(mask) - i.e. the grid is anchored to
+    *this* mask's own position, so the same selected cell(s) stay aligned
+    with the same relative part of the object across every frame of a
+    tracked stack, however much the object itself has moved by then. Pass
+    an explicit `origin` instead only to match a grid anchored elsewhere
+    (e.g. mask_edit_dialog.py's live overlay, which shares one origin
+    across the whole redraw rather than recomputing it twice)."""
+    if not cells:
+        return mask
+    if origin is None:
+        origin = mask_centroid(mask)
+    cell_i, cell_j = mesh_cell_ids(mask.shape, angle_deg, cell_size, origin)
+    keep = np.zeros(mask.shape, dtype=bool)
+    for i, j in cells:
+        keep |= (cell_i == i) & (cell_j == j)
+    return mask & keep

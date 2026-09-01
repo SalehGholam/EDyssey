@@ -167,14 +167,16 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
         var_image = var_image.reshape(scanSize[1], scanSize[0])
     return var_image
 
-def calculate_nav_img_hdf5(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
-    """Return a navigation image from an .hdf5 file.
+def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
+    """Return a navigation image from an eventem-format '.hdf5_eventem' file
+    (a raw `f['4D']` dataset - NOT a conventional/HyperSpy-loadable HDF5,
+    see loaders.py's module docstring).
 
     Uses the pre-computed `dose_image` dataset if present; otherwise sums all
     diffraction patterns directly (optionally through `det_mask`).
 
     Args:
-        fn: Path to the .hdf5 file.
+        fn: Path to the .hdf5_eventem file.
         scanSize: (nx, ny) scan dimensions. Required when `dose_image` is absent and
                   the 4D array is stored flat.
         mode: 'sum' (default) - per-scan-position sum of frame intensities
@@ -240,7 +242,7 @@ def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=No
         if mode == 'sum':
             nav_img = (arr*det_mask).sum(axis=-1)
         else:
-            # See calculate_nav_img_hdf5's masked variance branch - only the
+            # See calculate_nav_img_hdf5_eventem's masked variance branch - only the
             # masked pixels themselves should enter the variance.
             nav_img = arr[:, det_mask].var(axis=-1)
 
@@ -264,7 +266,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
 
     Args:
         fn: Path to the 4D-STEM file.
-        dtype: File extension (e.g. `.hdf5`, `.tpx3`, `.hspy`). Inferred from `fn` if None.
+        dtype: File extension (e.g. `.hdf5_eventem`, `.hdf5`, `.tpx3`, `.hspy`,
+            `.blo`). Inferred from `fn` if None.
         scanSize: (nx, ny) scan dimensions. Required for formats that don't store it internally.
         dwellTime: Dwell time in microseconds; only used for `.tpx3` files.
         logger: Optional logger to report dask compute progress through.
@@ -273,7 +276,7 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             matters for concurrent callers.
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
-        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
+        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5_eventem's
             docstring. `.tpx3`'s variance path runs eventem's Var processor
             (see calculate_nav_img_variance_tpx3) over the whole detector.
             `.dm2`/`.dm3`/`.tif`/`.tiff` are already single 2D images with
@@ -290,7 +293,7 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
     if scanSize is None:
         scanSize = get_scan_size(fn, dtype)
 
-    if dtype in ['.zspy', '.hspy', '.mib']:
+    if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo']:
         nav_img = calculate_nav_img_hs(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype == '.tpx3':
         if mode == 'variance':
@@ -301,8 +304,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                              logger=logger, n_threads=n_threads,
                                              det_shape=det_shape)
-    elif dtype == '.hdf5':
-        nav_img = calculate_nav_img_hdf5(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
+    elif dtype == '.hdf5_eventem':
+        nav_img = calculate_nav_img_hdf5_eventem(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
         if mode == 'variance':
             raise ValueError(
@@ -311,7 +314,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         nav_img = hs.load(fn).data
     else:
         raise ValueError(f"Unsupported file type '{dtype}' for calculate_nav_img() - "
-                          "expected one of .zspy/.hspy/.mib/.tpx3/.hdf5/.dm2/.dm3/.tif/.tiff.")
+                          "expected one of .zspy/.hspy/.mib/.hdf5/.blo/.tpx3/.hdf5_eventem/"
+                          ".dm2/.dm3/.tif/.tiff.")
     return nav_img
 #%% virtual mask
 def create_virtual_detector(shape, center, r_out, r_in=0):
@@ -364,7 +368,8 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
 
     Args:
         fn: Path to the 4D-STEM file.
-        dtype: File extension (e.g. `.hdf5`, `.tpx3`, `.hspy`). Inferred from `fn` if None.
+        dtype: File extension (e.g. `.hdf5_eventem`, `.hdf5`, `.tpx3`, `.hspy`,
+            `.blo`). Inferred from `fn` if None.
         scanSize: (nx, ny) scan dimensions. Auto-detected from the file if None.
         dwellTime: Dwell time in microseconds; only used for `.tpx3` files.
         detectors: List of {'center': (x, y), 'r_in', 'r_out'} dicts, as
@@ -378,7 +383,7 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         fn_pattern: Optional path to a smart-scan pattern file.
         det_shape: (det_x, det_y) detector pixel dimensions - `.tpx3` only
             (every other format reads its own detector shape from the file).
-        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5's
+        mode: 'sum' (default) or 'variance' - see calculate_nav_img_hdf5_eventem's
             docstring. For `.tpx3` in variance mode, exactly one detector is
             required (see calculate_nav_img_variance_tpx3 - eventem's Var
             processor, unlike vSTEM, has no way to combine several regions
@@ -420,12 +425,12 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
                                       offset=offset, fn_pattern=fn_pattern, logger=logger,
                                       n_threads=n_threads, det_shape=det_shape)
 
-    if dtype in ['.zspy', '.hspy', '.mib', '.hdf5']:
+    if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo', '.hdf5_eventem']:
         det_x, det_y = get_det_size(fn, dtype)
         det_mask = create_virtual_detector_multi((det_y, det_x), detectors)
-        if dtype == '.hdf5':
-            return calculate_nav_img_hdf5(fn, scanSize, det_mask=det_mask,
-                                          fn_pattern=fn_pattern, logger=logger, mode=mode)
+        if dtype == '.hdf5_eventem':
+            return calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=det_mask,
+                                                   fn_pattern=fn_pattern, logger=logger, mode=mode)
         return calculate_nav_img_hs(fn, scanSize, det_mask=det_mask,
                                     fn_pattern=fn_pattern, logger=logger, mode=mode)
 

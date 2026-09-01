@@ -15,9 +15,52 @@ import EDyssey.io_utils as io
 
 _MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.45])  # translucent orange overlay
 _DIRECTIONS = [('Top', 270), ('Bottom', 90), ('Left', 180), ('Right', 0)]
-_TIP_TEXT = (
-    'Tip: Ctrl+Scroll to zoom | Ctrl+Left/Right-click (or drag) to add/remove '
-    'a pixel | Shift+Left/Right-drag to add/remove a rectangular region')
+# Full reference for the "?" help button below the canvas (see
+# _show_help_dialog) - promoted from the old always-visible label_tip
+# (easy to miss/scroll out of view) into a proper, discoverable help
+# affordance, mirroring the main tabs' own ribbon "?" -> show_help_dialog
+# pattern (see ui_tabs/base_tab.py's show_shortcuts_dialog). Kept accurate
+# to exactly what this dialog supports - update this alongside any future
+# interaction change.
+_HELP_TEXT = (
+    'Canvas:\n'
+    '  Hold "Ctrl" + Scroll wheel  ->  Zoom in/out, centered on the cursor\n'
+    '  Hold "Ctrl" + Left-Click (or drag)  ->  Paint pixels IN (add to mask)\n'
+    '  Hold "Ctrl" + Right-Click (or drag)  ->  Paint pixels OUT (remove from mask)\n'
+    '  Hold "Shift" + Left-drag  ->  Paint a rectangular region IN\n'
+    '  Hold "Shift" + Right-drag  ->  Paint a rectangular region OUT\n'
+    '  Left-Click a mesh cell (while Mesh is enabled, no modifier)  ->  Toggle that cell\n'
+    '\n'
+    'Grow / Shrink Mask:\n'
+    '  Each D-pad arrow adds/removes one row or column of pixels on that '
+    'side of the mask (arrow pointing away from center = grow, toward '
+    'center = shrink).\n'
+    '\n'
+    'Threshold (only shown when this mask is threshold-derived):\n'
+    '  Method/ROI Blur/Deviation rebuild the mask from the ROI live, for '
+    'just the frame on screen - "Apply to All Frames" propagates that to '
+    'every frame at once.\n'
+    '\n'
+    'Edge Detection:\n'
+    '  Live preview only - never changes the returned mask. Reduces the '
+    'mask to its outline (optionally one-sided via "Directional" + Angle). '
+    '"This Frame Only"/"All Frames" controls whether it previews on just '
+    'the frame named in the spinbox, or every frame.\n'
+    '\n'
+    'Mesh:\n'
+    '  Divides the mask into a rotated grid; left-click cell(s) to '
+    'restrict the mask to just those cells (live preview only). '
+    '"Center on Initial Mask" anchors the grid to where the object '
+    'started (its first tracked/segmented position) instead of wherever '
+    "it's been edited to since - useful once the mask has moved a lot. "
+    '"This Frame Only"/"All Frames" controls which frame(s) the '
+    'restriction actually applies to.\n'
+    '\n'
+    'Reset This Frame / Reset to Tracking:\n'
+    '  Discard edits to just the frame on screen, or every frame, back to '
+    'the original tracked/segmented mask.')
+_MESH_GRID_COLOR = 'cyan'
+_MESH_SELECTED_COLOR = np.array([0.0, 0.6, 1.0, 0.35])  # translucent blue
 
 
 class MaskEditDialog(qtw.QDialog):
@@ -45,7 +88,7 @@ class MaskEditDialog(qtw.QDialog):
 
     def __init__(self, parent, mask_stack, bg_stack=None, start_frame=0, logger=None,
                  default_mask_stack=None, edge_settings=None,
-                 thresh_settings=None, recompute_thresh_fn=None):
+                 thresh_settings=None, recompute_thresh_fn=None, mesh_settings=None):
         super().__init__(parent)
         self.setWindowTitle('Fine-Tune Mask')
         # Maximize button too (off by default on a QDialog) - the image
@@ -91,6 +134,16 @@ class MaskEditDialog(qtw.QDialog):
         self._roi_rect_artist = None
         self._roi_bg = None
 
+        # Mesh: per-object grid-cell restriction (see _build_mesh_box below)
+        # - unlike Edge Detection, there's no main-tab equivalent to sync
+        # against, so this dialog is the only place it's ever set/edited;
+        # the caller round-trips it via get_mesh_settings() into its own
+        # per-object dataframe column instead.
+        mesh_settings = mesh_settings or {}
+        self._mesh_cells = set(tuple(c) for c in mesh_settings.get('cells', []))
+        self._mesh_grid_artists = []   # grid-line contour artists
+        self._mesh_cell_artist = None  # selected-cells highlight overlay
+
         layout = qtw.QVBoxLayout(self)
 
         self.figure = Figure(constrained_layout=True)
@@ -122,12 +175,49 @@ class MaskEditDialog(qtw.QDialog):
         self.slider_frame.setValue(self.frame)
         self.slider_frame.valueChanged.connect(self._on_frame_changed)
         row_frame.addWidget(self.slider_frame)
+        # Discoverable help affordance (item 4) - directly under the canvas,
+        # same idea as the main tabs' own ribbon "?" button
+        # (base_tab.show_shortcuts_dialog), just scoped to this dialog's own
+        # controls instead of a whole tab's. A plain QPushButton rather than
+        # ribbon.py's build_icon: this dialog doesn't use the RibbonPanel
+        # machinery anywhere else, so pulling it in just for one icon isn't
+        # worth the coupling.
+        self.button_help = qtw.QPushButton('?')
+        self.button_help.setFixedSize(24, 24)
+        self.button_help.setToolTip('Show mouse/keyboard controls for this dialog')
+        self.button_help.clicked.connect(self._show_help_dialog)
+        row_frame.addWidget(self.button_help)
+
+        # Everything below the frame slider (D-pad, Threshold/Edge
+        # Detection, Mesh, ...) sits in an independently-scrolling area
+        # instead of the dialog's own top-level layout (see bug fix in the
+        # class docstring / item 0 of the originating request): a QDialog
+        # can't be resized smaller than the sum of its children's minimum
+        # size hints, and the canvas's own 480px minimum plus every
+        # groupbox's natural height can together exceed a smaller/laptop
+        # screen's available height, pushing row_buttons (Save && Close/
+        # Cancel) off-screen with no way to reach it. QScrollArea's own
+        # minimumSizeHint is small (frame + scrollbar allowance) regardless
+        # of how tall its contents are, so wrapping them here - instead of
+        # adding them to `layout` directly - guarantees the canvas (top) and
+        # row_buttons (bottom, added straight to `layout` below) always both
+        # fit, however many control groupboxes exist or however short the
+        # screen is; only the controls in between ever need to scroll.
+        scroll_controls = qtw.QScrollArea()
+        scroll_controls.setWidgetResizable(True)
+        scroll_controls.setFrameShape(qtw.QFrame.NoFrame)
+        scroll_controls.setMinimumHeight(160)
+        scroll_content = qtw.QWidget()
+        scroll_layout = qtw.QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_controls.setWidget(scroll_content)
+        layout.addWidget(scroll_controls)
 
         #%% D-pad grow/shrink buttons - arranged spatially (top/left/right/
         # bottom of a 3x3 grid) instead of a plain list, arrows pointing away
         # from center = grow, toward center = shrink.
         box_directional = qtw.QGroupBox('Grow / Shrink Mask (1 px per click)')
-        layout.addWidget(box_directional)
+        scroll_layout.addWidget(box_directional)
         grid = qtw.QGridLayout()
         box_directional.setLayout(grid)
 
@@ -171,11 +261,19 @@ class MaskEditDialog(qtw.QDialog):
         # deliberate, explicit "Apply to All Frames" action. Mirrors the main
         # tab's own Threshold/ROI Blur/Deviation controls, only shown when
         # the caller's masks are actually threshold-derived
-        # (recompute_thresh_fn given - see class docstring)
+        # (recompute_thresh_fn given - see class docstring). Threshold and
+        # Edge Detection share one horizontal row (item 1) instead of each
+        # being its own full-width row - saves vertical space, which also
+        # helps keep row_buttons on-screen (see the QScrollArea note above).
+        # When there's no Threshold box (SAM2's case, recompute_thresh_fn is
+        # None), Edge Detection is the row's only widget and naturally
+        # stretches to fill it instead of leaving a lopsided empty gap.
+        row_thresh_edge = qtw.QHBoxLayout()
+        scroll_layout.addLayout(row_thresh_edge)
         if self.recompute_thresh_fn is not None:
             thresh_settings = thresh_settings or {}
             box_thresh = qtw.QGroupBox('Threshold (rebuild mask from ROI)')
-            layout.addWidget(box_thresh)
+            row_thresh_edge.addWidget(box_thresh)
             layout_thresh = qtw.QVBoxLayout()
             box_thresh.setLayout(layout_thresh)
 
@@ -224,7 +322,7 @@ class MaskEditDialog(qtw.QDialog):
 
         #%% edge detection - live preview only (see class docstring)
         box_edge = qtw.QGroupBox('Edge Detection')
-        layout.addWidget(box_edge)
+        row_thresh_edge.addWidget(box_edge)
         layout_edge = qtw.QVBoxLayout()
         box_edge.setLayout(layout_edge)
 
@@ -256,6 +354,30 @@ class MaskEditDialog(qtw.QDialog):
         self.checkbox_edgeDirectional.stateChanged.connect(
             lambda: self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked()))
 
+        # Scope (item 3): mirrors the Mesh box's own "This Frame Only"/"All
+        # Frames" pattern below exactly (radio_meshFrame/radio_meshAll/
+        # spinbox_meshFrame, see _mesh_applies_to_frame) - before this,
+        # Edge Detection had no way to apply to just one frame, unlike
+        # Mesh's existing per-frame scope. "All Frames" stays the default so
+        # existing behavior (uniform edge detection across every frame)
+        # doesn't change unless the user opts into a narrower scope.
+        row3 = qtw.QHBoxLayout()
+        layout_edge.addLayout(row3)
+        self.radio_edgeFrame = qtw.QRadioButton('This Frame Only')
+        row3.addWidget(self.radio_edgeFrame)
+        self.spinbox_edgeFrame = qtw.QSpinBox()
+        self.spinbox_edgeFrame.setRange(1, self.n_frames)
+        self.spinbox_edgeFrame.setValue(self.frame + 1)
+        self.spinbox_edgeFrame.setToolTip('Which frame the Edge Detection preview applies to')
+        row3.addWidget(self.spinbox_edgeFrame)
+        self.radio_edgeAll = qtw.QRadioButton('All Frames')
+        self.radio_edgeAll.setChecked(True)
+        row3.addWidget(self.radio_edgeAll)
+        row3.addStretch(1)
+        self.radio_edgeFrame.toggled.connect(
+            lambda checked: self.spinbox_edgeFrame.setEnabled(checked))
+        self.spinbox_edgeFrame.setEnabled(False)
+
         if edge_settings:
             self.checkbox_edgeOnly.setChecked(bool(edge_settings.get('enabled', False)))
             self.spinbox_edgeKernel.setValue(int(edge_settings.get('kernel', 3)))
@@ -263,18 +385,119 @@ class MaskEditDialog(qtw.QDialog):
             self.checkbox_edgeDirectional.setChecked(bool(edge_settings.get('directional', False)))
             self.spinbox_edgeDirection.setValue(float(edge_settings.get('direction', 0)))
             self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
+            # Missing 'scope' (old edge_settings shape, saved before this
+            # option existed) defaults to 'all' - preserves old behavior
+            # exactly for any caller/saved-analysis that predates it.
+            if edge_settings.get('scope', 'all') == 'frame':
+                self.radio_edgeFrame.setChecked(True)
+                self.spinbox_edgeFrame.setValue(int(edge_settings.get('frame_idx', self.frame)) + 1)
 
         # Any change just redraws (non-destructive) - unlike the removed
         # "Apply" button, nothing is ever baked into mask_stack here.
         for signal in (self.checkbox_edgeOnly.stateChanged, self.spinbox_edgeKernel.valueChanged,
                        self.checkbox_revertMask.stateChanged, self.checkbox_edgeDirectional.stateChanged,
-                       self.spinbox_edgeDirection.valueChanged):
+                       self.spinbox_edgeDirection.valueChanged, self.radio_edgeFrame.toggled,
+                       self.spinbox_edgeFrame.valueChanged):
             signal.connect(lambda *_: self._redraw_mask())
 
-        label_tip = qtw.QLabel(_TIP_TEXT)
-        label_tip.setWordWrap(True)
-        label_tip.setStyleSheet('color: gray; font-style: italic;')
-        layout.addWidget(label_tip)
+        #%% mesh - live preview only, like Edge Detection above, but the
+        # selected cells (not just enabled/angle/cell size) are themselves
+        # part of what's previewed/returned - see class docstring and
+        # get_mesh_settings(). No main-tab equivalent to sync against (mesh
+        # only makes sense relative to one specific object's mask), so this
+        # dialog is the only place it's ever edited.
+        box_mesh = qtw.QGroupBox('Mesh (restrict extraction to selected cell(s))')
+        scroll_layout.addWidget(box_mesh)
+        layout_mesh = qtw.QVBoxLayout()
+        box_mesh.setLayout(layout_mesh)
+
+        row_m1 = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m1)
+        self.checkbox_meshEnabled = qtw.QCheckBox('Enable Mesh')
+        self.checkbox_meshEnabled.setToolTip(
+            'Divide the mask into a grid and restrict it to just the cell(s) '
+            'clicked below - left-click a cell to toggle it. Live preview '
+            "only, like Edge Detection - doesn't change the returned mask.")
+        row_m1.addWidget(self.checkbox_meshEnabled)
+        row_m1.addWidget(qtw.QLabel('Angle (°)'))
+        self.spinbox_meshAngle = qtw.QDoubleSpinBox()
+        # +-180 (item 2) - was 0-179.9 (a rotation is only unique mod 180 for
+        # an unoriented grid, but the user asked for the full +-180 range,
+        # so honor that literally rather than silently wrapping it; +-179.9
+        # instead of +-180 avoids the 180/-180 seam being an ambiguous
+        # duplicate value at the very ends of the range).
+        self.spinbox_meshAngle.setRange(-179.9, 179.9)
+        self.spinbox_meshAngle.setSingleStep(5)
+        self.spinbox_meshAngle.setToolTip('Grid rotation relative to horizontal.')
+        row_m1.addWidget(self.spinbox_meshAngle)
+        row_m1.addWidget(qtw.QLabel('Cell Size (px)'))
+        self.spinbox_meshCellSize = qtw.QSpinBox()
+        self.spinbox_meshCellSize.setRange(1, 9999)
+        self.spinbox_meshCellSize.setValue(20)
+        row_m1.addWidget(self.spinbox_meshCellSize)
+        row_m1.addStretch(1)
+
+        # Item 2: anchor the grid to where the object STARTED (its initial
+        # tracked/segmented mask) instead of the live-edited one - see
+        # _mesh_origin(). Its own row (rather than squeezing into the
+        # already-busy row_m1) since it reads as a standalone toggle, not
+        # one more grid-geometry field alongside Angle/Cell Size.
+        row_m1b = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m1b)
+        self.checkbox_meshCenterInitial = qtw.QCheckBox('Center on Initial Mask')
+        self.checkbox_meshCenterInitial.setToolTip(
+            "Anchor the grid to the object's centroid on its initial "
+            '(pre-edit) tracked/segmented mask, instead of recentering on '
+            "wherever the mask has been edited to since - useful once the "
+            "object's position has drifted a lot from where it started.")
+        row_m1b.addWidget(self.checkbox_meshCenterInitial)
+        row_m1b.addStretch(1)
+
+        row_m2 = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m2)
+        self.label_meshCells = qtw.QLabel()
+        row_m2.addWidget(self.label_meshCells)
+        row_m2.addStretch(1)
+        self.button_meshClear = qtw.QPushButton('Clear Selection')
+        self.button_meshClear.clicked.connect(self._clear_mesh_selection)
+        row_m2.addWidget(self.button_meshClear)
+
+        # Apply to just one frame, or every frame of the tracked stack - the
+        # grid itself is always anchored to *that* frame's own mask
+        # (mask_centroid), so the same selected cell(s) stay aligned with
+        # the same relative part of the object either way, however much it
+        # has moved/tracked between frames.
+        row_m3 = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m3)
+        self.radio_meshFrame = qtw.QRadioButton('This Frame Only')
+        row_m3.addWidget(self.radio_meshFrame)
+        self.spinbox_meshFrame = qtw.QSpinBox()
+        self.spinbox_meshFrame.setRange(1, self.n_frames)
+        self.spinbox_meshFrame.setValue(self.frame + 1)
+        self.spinbox_meshFrame.setToolTip('Which frame the mesh restriction applies to')
+        row_m3.addWidget(self.spinbox_meshFrame)
+        self.radio_meshAll = qtw.QRadioButton('All Frames')
+        self.radio_meshAll.setChecked(True)
+        row_m3.addWidget(self.radio_meshAll)
+        row_m3.addStretch(1)
+        self.radio_meshFrame.toggled.connect(
+            lambda checked: self.spinbox_meshFrame.setEnabled(checked))
+        self.spinbox_meshFrame.setEnabled(False)
+
+        if mesh_settings:
+            self.checkbox_meshEnabled.setChecked(bool(mesh_settings.get('enabled', False)))
+            self.spinbox_meshAngle.setValue(float(mesh_settings.get('angle', 0)))
+            self.spinbox_meshCellSize.setValue(int(mesh_settings.get('cell_size', 20)))
+            self.checkbox_meshCenterInitial.setChecked(bool(mesh_settings.get('center_on_initial', False)))
+            if mesh_settings.get('scope', 'all') == 'frame':
+                self.radio_meshFrame.setChecked(True)
+                self.spinbox_meshFrame.setValue(int(mesh_settings.get('frame_idx', self.frame)) + 1)
+        self._update_mesh_cell_label()
+
+        for signal in (self.checkbox_meshEnabled.stateChanged, self.spinbox_meshAngle.valueChanged,
+                       self.spinbox_meshCellSize.valueChanged, self.radio_meshFrame.toggled,
+                       self.spinbox_meshFrame.valueChanged, self.checkbox_meshCenterInitial.stateChanged):
+            signal.connect(lambda *_: self._redraw_mask())
 
         row_buttons = qtw.QHBoxLayout()
         layout.addLayout(row_buttons)
@@ -297,6 +520,25 @@ class MaskEditDialog(qtw.QDialog):
         self._update_frame_label()
         self._redraw_mask()
 
+    def _show_help_dialog(self):
+        """The ribbon-style "?" button's slot: show this dialog's own
+        mouse/keyboard controls reference (_HELP_TEXT). Same QDialog+
+        QTextEdit shape as the main tabs' own show_shortcuts_dialog
+        (ui_tabs/base_tab.py), just self-contained here since
+        MaskEditDialog is a plain QDialog, not a TabBase subclass."""
+        dlg = qtw.QDialog(self)
+        dlg.setWindowTitle('Shortcuts & Controls')
+        layout = qtw.QVBoxLayout(dlg)
+        text_edit = qtw.QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(_HELP_TEXT)
+        layout.addWidget(text_edit)
+        button_close = qtw.QPushButton('Close')
+        button_close.clicked.connect(dlg.close)
+        layout.addWidget(button_close, alignment=Qt.AlignRight)
+        dlg.resize(480, 360)
+        dlg.exec_()
+
     def _mask_rgba(self, mask):
         rgba = np.zeros((*mask.shape, 4))
         rgba[mask] = _MASK_COLOR
@@ -307,19 +549,169 @@ class MaskEditDialog(qtw.QDialog):
 
     def _effective_mask(self, frame):
         """The mask as currently displayed: the editable base, plus the Edge
-        Detection preview on top if its checkbox is checked - never written
-        back to mask_stack itself."""
-        mask = self.mask_stack[frame]
-        if self.checkbox_edgeOnly.isChecked():
+        Detection preview and (if enabled, and Mesh applies to `frame` - see
+        _mesh_applies_to_frame) the Mesh cell restriction on top - neither
+        is ever written back to mask_stack itself."""
+        base = self.mask_stack[frame]
+        mask = base
+        if self.checkbox_edgeOnly.isChecked() and self._edge_applies_to_frame(frame):
             direction = (self.spinbox_edgeDirection.value()
                         if self.checkbox_edgeDirectional.isChecked() else None)
             mask = io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(),
                                       direction=direction, revert=self.checkbox_revertMask.isChecked())
+        if self.checkbox_meshEnabled.isChecked() and self._mesh_applies_to_frame(frame):
+            # Origin from _mesh_origin_for_frame (RAW mask centroid, or the
+            # initial-mask centroid if "Center on Initial Mask" is checked -
+            # see item 2), never from any Edge-Detection-preview mask, so
+            # it's stable regardless of whether Edge Detection is toggled,
+            # and matches exactly what the overlay/click-toggling below
+            # used to build this same selection.
+            origin = self._mesh_origin_for_frame(frame)
+            mask = io.mesh_restrict_mask(mask, self.spinbox_meshAngle.value(),
+                                         self.spinbox_meshCellSize.value(), self._mesh_cells, origin=origin)
         return mask
 
     def _redraw_mask(self):
         self.img_mask.set_data(self._mask_rgba(self._effective_mask(self.frame)))
+        self._redraw_mesh_overlay()
         self.canvas.draw_idle()
+
+    #%% edge detection
+    def _edge_applies_to_frame(self, frame):
+        """Whether the Edge Detection preview (if enabled) actually applies
+        to `frame` - either every frame ("All Frames", the pre-existing
+        behavior) or just the one picked in "This Frame Only" (item 3 - see
+        get_edge_settings). Mirrors _mesh_applies_to_frame below exactly."""
+        if self.radio_edgeAll.isChecked():
+            return True
+        return frame == self.spinbox_edgeFrame.value() - 1
+
+    #%% mesh
+    def _mesh_applies_to_frame(self, frame):
+        """Whether the Mesh restriction (if enabled) actually applies to
+        `frame` - either every frame ("All Frames") or just the one picked
+        in "This Frame Only" (see get_mesh_settings)."""
+        if self.radio_meshAll.isChecked():
+            return True
+        return frame == self.spinbox_meshFrame.value() - 1
+
+    def _rotated_coords(self, origin):
+        """(rot_x, rot_y) continuous rotated-coordinate arrays for the
+        current mesh angle, centered on `origin` - a pure display concern
+        (grid-line contouring), so kept local here rather than in the
+        shared io.mesh_cell_ids (which only needs the floored/integer form)."""
+        h, w = self.mask_stack.shape[1:]
+        y, x = np.mgrid[0:h, 0:w]
+        x = x - origin[0]
+        y = y - origin[1]
+        theta = np.deg2rad(self.spinbox_meshAngle.value())
+        rot_x = x * np.cos(theta) + y * np.sin(theta)
+        rot_y = -x * np.sin(theta) + y * np.cos(theta)
+        return rot_x, rot_y
+
+    def _mesh_origin_for_frame(self, frame):
+        """The centroid the grid overlay/click-toggling/_effective_mask are
+        built relative to, for `frame`. By default this is the object's own
+        centroid on its currently-edited mask (self.mask_stack) - regardless
+        of the "Apply To" scope, which only controls which frame(s) the
+        selection is later restricted on (see
+        _mesh_applies_to_frame/_effective_mask).
+
+        When "Center on Initial Mask" (item 2) is checked instead, the grid
+        is anchored to the centroid of the INITIAL mask on this frame -
+        `_default_stack` (the pristine tracking/segmentation output) if the
+        caller gave one, else `_original_stack` (this session's opening
+        state) - rather than `self.mask_stack`, which reflects whatever has
+        been edited (grown/shrunk/painted) since. The point is to keep the
+        grid anchored to where the object STARTED even after its live mask
+        has drifted from that, instead of recentering on every edit."""
+        if self.checkbox_meshCenterInitial.isChecked():
+            source = self._default_stack if self._default_stack is not None else self._original_stack
+            return io.mask_centroid(source[frame])
+        return io.mask_centroid(self.mask_stack[frame])
+
+    def _mesh_origin(self):
+        """_mesh_origin_for_frame for the currently-displayed frame - used
+        by the grid overlay/click-toggling, which always work relative to
+        *this* frame regardless of the Mesh box's "Apply To" scope."""
+        return self._mesh_origin_for_frame(self.frame)
+
+    def _redraw_mesh_overlay(self):
+        """(Re)draw the grid-line + selected-cell overlay - a no-op cleanup
+        (removing any previous artists) when Mesh is off."""
+        for artist in self._mesh_grid_artists:
+            artist.remove()
+        self._mesh_grid_artists = []
+        if self._mesh_cell_artist is not None:
+            self._mesh_cell_artist.remove()
+            self._mesh_cell_artist = None
+
+        if not self.checkbox_meshEnabled.isChecked():
+            return
+        cell_size = self.spinbox_meshCellSize.value()
+        origin = self._mesh_origin()
+        rot_x, rot_y = self._rotated_coords(origin)
+        levels_x = np.arange(np.floor(rot_x.min() / cell_size),
+                             np.ceil(rot_x.max() / cell_size) + 1) * cell_size
+        levels_y = np.arange(np.floor(rot_y.min() / cell_size),
+                             np.ceil(rot_y.max() / cell_size) + 1) * cell_size
+        contour_x = self.ax.contour(rot_x, levels=levels_x, colors=_MESH_GRID_COLOR,
+                                    linestyles='dashed', linewidths=0.7)
+        contour_y = self.ax.contour(rot_y, levels=levels_y, colors=_MESH_GRID_COLOR,
+                                    linestyles='dashed', linewidths=0.7)
+        self._mesh_grid_artists = [contour_x, contour_y]
+
+        if self._mesh_cells:
+            cell_i, cell_j = io.mesh_cell_ids(self.mask_stack.shape[1:],
+                                              self.spinbox_meshAngle.value(), cell_size, origin)
+            keep = np.zeros(self.mask_stack.shape[1:], dtype=bool)
+            for i, j in self._mesh_cells:
+                keep |= (cell_i == i) & (cell_j == j)
+            rgba = np.zeros((*keep.shape, 4))
+            rgba[keep] = _MESH_SELECTED_COLOR
+            self._mesh_cell_artist = self.ax.imshow(rgba)
+
+    def _update_mesh_cell_label(self):
+        n = len(self._mesh_cells)
+        self.label_meshCells.setText(f'{n} cell{"s" if n != 1 else ""} selected')
+
+    def _clear_mesh_selection(self):
+        self._mesh_cells.clear()
+        self._update_mesh_cell_label()
+        self._redraw_mask()
+
+    def _toggle_mesh_cell(self, event):
+        """Toggle the mesh cell under the cursor - always relative to the
+        object's own position on whichever frame is currently displayed
+        (see _mesh_origin), regardless of the "Apply To" scope."""
+        cell_i, cell_j = io.mesh_cell_ids(self.mask_stack.shape[1:], self.spinbox_meshAngle.value(),
+                                          self.spinbox_meshCellSize.value(), self._mesh_origin())
+        row, col = int(round(event.ydata)), int(round(event.xdata))
+        h, w = self.mask_stack.shape[1:]
+        if not (0 <= row < h and 0 <= col < w):
+            return
+        cell = (int(cell_i[row, col]), int(cell_j[row, col]))
+        if cell in self._mesh_cells:
+            self._mesh_cells.discard(cell)
+        else:
+            self._mesh_cells.add(cell)
+        self._update_mesh_cell_label()
+        self._redraw_mask()
+
+    def get_mesh_settings(self):
+        """Current Mesh box values - the caller round-trips this into its
+        own per-object dataframe column (there's no main-tab equivalent to
+        sync against, unlike get_edge_settings()). `frame_idx` is only
+        meaningful when scope == 'frame' (0-indexed, matching mask_stack)."""
+        return {
+            'enabled': self.checkbox_meshEnabled.isChecked(),
+            'angle': self.spinbox_meshAngle.value(),
+            'cell_size': self.spinbox_meshCellSize.value(),
+            'cells': [list(c) for c in self._mesh_cells],
+            'center_on_initial': self.checkbox_meshCenterInitial.isChecked(),
+            'scope': 'frame' if self.radio_meshFrame.isChecked() else 'all',
+            'frame_idx': self.spinbox_meshFrame.value() - 1,
+        }
 
     def _on_frame_changed(self, value):
         self.frame = value
@@ -449,11 +841,15 @@ class MaskEditDialog(qtw.QDialog):
 
     def _on_press(self, event):
         """Start Ctrl+Click pixel painting (left=add, right=remove) or
-        Shift+drag rectangular-region painting."""
+        Shift+drag rectangular-region painting - or, while the Mesh box is
+        enabled, a plain left-click (no modifier - unused on this canvas
+        otherwise) toggles the mesh cell under the cursor instead."""
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             return
         mods = event.modifiers
-        if 'ctrl' in mods and event.button in (1, 3):
+        if (self.checkbox_meshEnabled.isChecked() and event.button == 1 and not mods):
+            self._toggle_mesh_cell(event)
+        elif 'ctrl' in mods and event.button in (1, 3):
             self._pixel_paint_value = (event.button == 1)
             self._paint_pixel(event)
         elif 'shift' in mods and event.button in (1, 3):

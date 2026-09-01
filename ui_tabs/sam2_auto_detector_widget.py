@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 
 from .worker_launch import worker_command
 from .loading_label import LoadingSpinner
+from .worker_thread import ProcessStderrBuffer
 
 # (key, label, is_int, default, minimum, maximum, step, tooltip) - a
 # practical subset of SAM2AutomaticMaskGenerator's ~15 constructor kwargs,
@@ -69,6 +70,12 @@ class SAM2AutoDetectorWidget(qtw.QWidget):
         self.path_save = path_save
         self._ensure_sam2_ready = ensure_sam2_ready
         self.logger = logger
+        # Unlike the main tab's SAM2 QProcess launches, this widget never
+        # read stderr at all - not just the new "which device" print
+        # (worker_sam.py's check_torch_device), but every diagnostic this
+        # subprocess writes there was previously invisible. Matches the
+        # main tab's own ProcessStderrBuffer.log_info usage.
+        self._stderr_buffer = ProcessStderrBuffer()
         self.candidates = []          # list of {'segmentation','area','bbox','predicted_iou','stability_score'}
         self._candidate_artists = []  # one AxesImage overlay per candidate, index-aligned with self.candidates
         self._selection_label_artist = None  # the "#N" label for whichever row is currently selected
@@ -235,6 +242,8 @@ class SAM2AutoDetectorWidget(qtw.QWidget):
         self._process = QProcess(self)
         self._process.setProgram(program)
         self._process.setArguments(arguments)
+        self._process.readyReadStandardError.connect(
+            lambda: self._stderr_buffer.log_info(self._process, self.logger, 'Auto Detector'))
         self._process.finished.connect(self._on_detection_finished)
         self._process.errorOccurred.connect(self._on_detection_failed)
         self._process.start()

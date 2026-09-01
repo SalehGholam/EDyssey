@@ -8,6 +8,9 @@ numpy==2.4.4
 PyQt5==5.15.11
 hyperspy==2.4.0
 dask==2026.3.0
+# distributed: dask.distributed.Client/LocalCluster (worker_extract_frame.py)
+# aren't part of plain dask - kept in lockstep with dask's own version above.
+distributed==2026.3.0
 # opencv-contrib-python, not plain opencv-python: tracking_utils_ui.py calls
 # cv2.TrackerCSRT_create()/TrackerMIL_create()/TrackerNano_create()/
 # TrackerDaSiamRPN_create(), which only exist in the contrib build. Do not

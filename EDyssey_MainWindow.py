@@ -242,12 +242,18 @@ class MainWindow(qtw.QMainWindow):
         action_about.triggered.connect(self.show_about_dialog)
 
     def duplicate_current_tab(self):
-        """Open a new, empty tab of the same type as the currently active
-        one, appended at the end and switched to - e.g. a second
-        independent "ROI on 4D" tab, for comparing two signals side by side
-        without losing the first one's state. The new tab is a fresh
-        instance (its own class's __init__, same as the 4 original tabs
-        get at startup), not a copy of the current tab's loaded data."""
+        """Open a new tab of the same type as the currently active one,
+        appended at the end and switched to - e.g. a second independent
+        "ROI on 4D" tab, for comparing two signals side by side without
+        losing the first one's state. The new tab is a fresh instance (its
+        own class's __init__, same as the 4 original tabs get at startup),
+        but if the current tab has an in-progress analysis (a loaded
+        signal, computed images, tracked/segmented objects, ...), that
+        state is copied into the new tab too - see each tab class's own
+        get_duplicate_state()/apply_duplicate_state() (all 4 implement
+        this same pair, so no per-type branching is needed here). A tab
+        with nothing loaded yet still duplicates fine - it just starts
+        empty, same as before this state-copying existed."""
         current = self.tabs.currentWidget()
         if current is None:
             return
@@ -260,6 +266,21 @@ class MainWindow(qtw.QMainWindow):
             qtw.QMessageBox.critical(self, 'Duplicate Failed',
                 f'Could not create a new {base_label} tab - see the log for details.')
             return
+        get_state = getattr(current, 'get_duplicate_state', None)
+        if get_state is not None:
+            state = get_state()
+            if state:
+                apply_state = getattr(new_tab, 'apply_duplicate_state', None)
+                if apply_state is not None:
+                    try:
+                        apply_state(state)
+                    except Exception:
+                        logging.getLogger('EDyssey.app').exception(
+                            'Failed to copy analysis state into duplicated tab %s',
+                            type(current).__name__)
+                        qtw.QMessageBox.warning(self, 'Duplicate Tab',
+                            'The new tab was created, but copying its analysis state failed - '
+                            'see the log for details. It opened empty instead.')
         existing = sum(1 for i in range(self.tabs.count())
                       if re.sub(r' \(\d+\)$', '', self.tabs.tabText(i)) == base_label)
         index = self.tabs.addTab(new_tab, f'{base_label} ({existing + 1})')

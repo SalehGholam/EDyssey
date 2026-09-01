@@ -10,8 +10,8 @@ later:
   [Releases](https://github.com/SalehGholam/EDyssey/releases) page and run
   it - no Python setup needed. The SAM2 checkpoint and the Nano/DaSiamRPN
   tracker model files are downloaded automatically, once, the first time
-  you actually use the relevant feature (SAM2 Seg. tab, or the
-  "nano"/"dasiamrpn" tracker options in Tracking by CV2) - see
+  you actually use the relevant feature (SAM2 Tracker tab, or the
+  "nano"/"dasiamrpn" tracker options in the ROI Tracker tab) - see
   [EDyssey/tracking_utils/asset_fetch.py](EDyssey/tracking_utils/asset_fetch.py)
   and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for exactly what
   gets downloaded and from where. This needs an internet connection the
@@ -64,8 +64,11 @@ bundled in this repo under `EDyssey/io_utils/` - nothing to install
 separately, but they're platform- and Python-version-specific. If you're on
 a different platform/Python version than they were built for, `.tpx3` file
 loading (the eventem-based fast paths in `EDyssey/io_utils/loaders.py` and
-`nav_image.py`) will fail to import; every other file format (.hdf5, .hspy,
-.zspy, .mib) works without them.
+`nav_image.py`) will fail to import; every other file format
+(`.hdf5 (eventem)`, `.hdf5`, `.hspy`, `.zspy`, `.mib`, `.blo`) works without
+them - `.hdf5 (eventem)` (eventem's own export layout, internally the
+'.hdf5_eventem' dtype) is read directly via h5py/dask, not the compiled
+eventem extension itself, despite the name.
 
 ### 4. ffmpeg (optional, for video export)
 
@@ -105,5 +108,5 @@ so there's no single build that would be right for every machine.
   `C:\Program Files\EDyssey` for an all-users one). This needs *some*
   separate Python+pip available on the machine as a tool - not the
   installed app itself, which doesn't ship one. If you skip this step,
-  every tab except SAM2 Seg. still works; that tab shows a message with
+  every tab except SAM2 Tracker still works; that tab shows a message with
   this same command when you try to use it without `torch`/`sam2` present.

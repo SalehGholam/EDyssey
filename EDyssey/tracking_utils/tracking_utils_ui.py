@@ -647,10 +647,10 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None
     Returns:
         numpy.ndarray of shape (det_y, det_x) with the summed diffraction pattern.
     """
-    # load_signal/load_tpx3/load_hs/load_hdf5 no longer return HyperSpy
-    # Signal2D objects (nor a (signal, file_handle) tuple for hdf5 - the
-    # file is now closed internally): .tpx3 returns the raw eventem.Roi
-    # object itself, everything else a plain numpy/dask array.
+    # load_signal/load_tpx3/load_hs/load_hdf5_eventem no longer return
+    # HyperSpy Signal2D objects (nor a (signal, file_handle) tuple for
+    # .hdf5_eventem - the file is now closed internally): .tpx3 returns the
+    # raw eventem.Roi object itself, everything else a plain numpy/dask array.
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
 
@@ -667,13 +667,13 @@ def extract_3ded_mask_single_frame(fn, mask, dtype=None, scanSize=None, roi=None
     if roi is not None:
         x, y, w, h = roi
         mask = mask[y:y+h, x:x+w]
-    # .hdf5's lazy=True path returns a dask array built from a dataset whose
-    # file is already closed by the time load_signal returns (see
-    # loaders.load_hdf5) - not safe to compute later here, so read it
-    # eagerly instead; .hspy/.zspy/.mib's lazy loading is HyperSpy-managed
-    # and stays safely readable across the call boundary.
+    # .hdf5_eventem's lazy=True path returns a dask array built from a
+    # dataset whose file is already closed by the time load_signal returns
+    # (see loaders.load_hdf5_eventem) - not safe to compute later here, so
+    # read it eagerly instead; .hspy/.zspy/.mib/.hdf5/.blo's lazy loading is
+    # HyperSpy-managed and stays safely readable across the call boundary.
     s = io.load_signal(fn, dtype=dtype, scanSize=scanSize,
-                       roi=roi, lazy=(dtype != '.hdf5'))
+                       roi=roi, lazy=(dtype != '.hdf5_eventem'))
 
     with config.set(**{'array.slicing.split_large_chunks': False}):
         arr_flat = s.reshape(-1, *s.shape[2:])

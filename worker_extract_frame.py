@@ -41,7 +41,7 @@ def extract_3ded_mask_core(task):
         task: dict with keys 'fn' (path to the 4D-STEM file), 'roi'
             ([x, y, w, h]/(x, y, w, h) scan-space crop), 'mask_path' (path
             to a .npy file containing the binary 2-D mask), 'dtype' (file
-            extension, e.g. '.tpx3'/'.hdf5'), 'scanSize' ([nx, ny]/(nx, ny)
+            extension, e.g. '.tpx3'/'.hdf5_eventem'), 'scanSize' ([nx, ny]/(nx, ny)
             or None), 'fn_pattern' (optional smart-scan pattern-file path
             for this frame), 'det_shape' (optional [det_x, det_y]/
             (det_x, det_y) - .tpx3 only, see load_tpx3's docstring; None
@@ -140,9 +140,9 @@ def load_dp(fn, **kwargs):
             result = load_tpx3_patches(fn, **kwargs)
         else:
             result = load_tpx3(fn, **kwargs)
-    elif dtype == '.hdf5':
-        result = load_hdf5(fn, **kwargs)
-    elif dtype in ['.zspy', '.hspy']:
+    elif dtype == '.hdf5_eventem':
+        result = load_hdf5_eventem(fn, **kwargs)
+    elif dtype in ['.zspy', '.hspy', '.hdf5', '.blo']:
         result = load_hs(fn, **kwargs)
     elif dtype == '.mib':
         result = load_mib(fn, **kwargs)
@@ -303,11 +303,12 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
                               dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape)
     return dp_total
 
-def load_hdf5(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
-    """Load an .hdf5 file and sum diffraction patterns at mask-True scan pixels.
+def load_hdf5_eventem(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
+    """Load an eventem-format '.hdf5_eventem' file and sum diffraction
+    patterns at mask-True scan pixels.
 
     Args:
-        fn: Path to the .hdf5 file.
+        fn: Path to the .hdf5_eventem file.
         roi: (x, y, w, h) scan-space crop (currently unused in this loader).
         mask: 2-D boolean array matching the full scan dimensions.
         scanSize: (nx, ny) scan dimensions for reshaping flat storage.

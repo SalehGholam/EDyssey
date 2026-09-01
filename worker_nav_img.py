@@ -13,13 +13,15 @@ os.chdir(main_path)
 import io_utils_ui as io
 
 
-def _read_scansize_hdf5(fn):
-    """Read scan dimensions (nx, ny) directly from an .hdf5 file's metadata.
+def _read_scansize_hdf5_eventem(fn):
+    """Read scan dimensions (nx, ny) directly from an eventem-format
+    '.hdf5_eventem' file's metadata (NOT a conventional/HyperSpy-loadable
+    HDF5 - see EDyssey.io_utils.loaders' module docstring).
 
     Handles both 4-D `f['4D']` arrays and flat 1-D storage where shape is in `f['shape']`.
 
     Args:
-        fn: Path to the .hdf5 file.
+        fn: Path to the .hdf5_eventem file.
 
     Returns:
         Tuple (nx, ny) as integers.
@@ -44,8 +46,8 @@ def calculate_nav_img_core(task):
     Args:
         task: dict with keys 'fn' (path), 'dtype' (file extension),
             'scanSize' ((nx, ny)/[nx, ny] or None - resolved from the
-            .hdf5 file's own metadata if still None here and dtype is
-            '.hdf5'), 'dwellTime' (int, microseconds), 'detectors'
+            .hdf5_eventem file's own metadata if still None here and dtype
+            is '.hdf5_eventem'), 'dwellTime' (int, microseconds), 'detectors'
             (optional list of {'center': [x, y] or (x, y), 'r_in',
             'r_out'} dicts - a virtual detector mask, or None/absent for
             none), 'fn_pattern' (optional smart-scan pattern-file path),
@@ -60,8 +62,8 @@ def calculate_nav_img_core(task):
     dtype = task['dtype']
     scanSize = task.get('scanSize')
     scanSize = tuple(scanSize) if scanSize is not None else None
-    if scanSize is None and dtype == '.hdf5':
-        scanSize = _read_scansize_hdf5(fn)
+    if scanSize is None and dtype == '.hdf5_eventem':
+        scanSize = _read_scansize_hdf5_eventem(fn)
     dwellTime = int(task['dwellTime'])
     det_shape = task.get('det_shape')
     det_shape = tuple(det_shape) if det_shape is not None else (512, 512)
@@ -115,7 +117,7 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
 
     Args:
         fn: Absolute path to the 4D-STEM file.
-        dtype: File extension (e.g. `.hdf5`, `.tpx3`, `.hspy`).
+        dtype: File extension (e.g. `.hdf5_eventem`, `.hdf5`, `.tpx3`, `.hspy`, `.blo`).
         scanSize: Scan dimensions as string `'(nx, ny)'` or `'None'`.
         dwellTime: Dwell time in microseconds as a string.
         i_index: Position of this file in the overall file list, as a string.
@@ -129,7 +131,7 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
             string/'None' for a normal dense file) - see `loaders.load_tpx3`/
             `loaders._load_mib_smart_scan`.
         mode: 'sum' (default) or 'variance' - see
-            EDyssey.io_utils.nav_image.calculate_nav_img_hdf5's docstring.
+            EDyssey.io_utils.nav_image.calculate_nav_img_hdf5_eventem's docstring.
     """
     try:
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern

@@ -14,6 +14,7 @@ tools with no matplotlib equivalent (Select ROI, Add point, Remove point)
 are drawn on the fly with QPainter instead - this repo has no bundled icon
 set of its own (see ui_tabs/logo/, just the app icon/splash) to draw from.
 """
+import math
 import os
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -73,12 +74,32 @@ def _drawn_icon(kind, size):
         painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
         painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
     elif kind == 'remove_point':
-        # The same target, minus the "+" (a plain ring reads as "undo the
-        # last point placed" paired with add_point's filled crosshair).
+        # A counter-clockwise "undo" arrow - reads unambiguously as "undo/
+        # remove the last point placed". A previous design (a plain ring
+        # with one horizontal line through it, echoing add_point's "+"
+        # minus its vertical stroke) looked too much like a bare minus
+        # sign, easily mistaken for "add a NEGATIVE point" instead of
+        # "remove the last point" - add_point's own left/right-click
+        # already covers positive/negative, so this icon must read as
+        # neither.
         r = size / 2 - margin
-        painter.drawEllipse(QPointF(cx, cy), r, r)
-        d = r * 0.5
-        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        # Qt angles are in 1/16th of a degree, counter-clockwise from the
+        # 3-o'clock position - drawn from 40 to 320 degrees, leaving a gap
+        # at the bottom-right for the arrowhead below.
+        start_deg, span_deg = 40, 280
+        painter.drawArc(rect, start_deg * 16, span_deg * 16)
+        ang = math.radians(start_deg)
+        tip = QPointF(cx + r * math.cos(ang), cy - r * math.sin(ang))
+        tangent = ang + math.pi / 2  # direction of travel at the arc's start
+        head_len = r * 0.6
+        head_angle = math.radians(28)
+        p1 = QPointF(tip.x() - head_len * math.cos(tangent - head_angle),
+                     tip.y() + head_len * math.sin(tangent - head_angle))
+        p2 = QPointF(tip.x() - head_len * math.cos(tangent + head_angle),
+                     tip.y() + head_len * math.sin(tangent + head_angle))
+        painter.drawLine(tip, p1)
+        painter.drawLine(tip, p2)
     elif kind == 'clear_roi':
         # A selection rectangle crossed out - "remove the current selection".
         painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
@@ -111,6 +132,20 @@ def _drawn_icon(kind, size):
         painter.drawEllipse(QPointF(cx, cy), r_out, r_out)
         painter.drawEllipse(QPointF(cx, cy), r_in, r_in)
         painter.drawLine(QPointF(margin, margin), QPointF(size - margin, size - margin))
+    elif kind == 'help':
+        # A plain "?" in a circle - opens this tab's Shortcuts/Controls
+        # dialog (see TabBase.show_shortcuts_dialog), which is where the
+        # mouse/keyboard hints that used to run underneath each subplot as
+        # xlabel text now live, instead of crowding the canvas (adjacent
+        # axes' multi-line hints used to visibly run into each other on a
+        # narrow window).
+        r = size / 2 - margin
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        font = painter.font()
+        font.setBold(True)
+        font.setPixelSize(round(size * 0.5))
+        painter.setFont(font)
+        painter.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, '?')
     else:
         raise ValueError(f'Unknown drawn-icon kind {kind!r}')
 
@@ -119,7 +154,7 @@ def _drawn_icon(kind, size):
 
 
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
-                      'center_recip', 'center_mask', 'hide_mask'}
+                      'center_recip', 'center_mask', 'hide_mask', 'help'}
 
 
 def build_icon(key, size=_ICON_SIZE):
