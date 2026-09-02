@@ -68,6 +68,13 @@ px_datas, px_binaries, px_hidden = collect_all('pyxem')
 # (e.g. loading a .mib file). Collecting orix explicitly, the same way as
 # pyxem, fixes it.
 orix_datas, orix_binaries, orix_hidden = collect_all('orix')
+# scikit-learn (Blob Selection's K-Means/GMM segmentation methods - see
+# EDyssey/io_utils/blob_segmentation.py) ships several compiled Cython
+# submodules PyInstaller's static import-tracing commonly misses (e.g.
+# sklearn.utils._cython_blas, sklearn.neighbors._partition_nodes) - same
+# class of problem as hyperspy/rsciio/dask/pyxem/orix above, so it gets
+# the same collect_all() treatment rather than relying on default tracing.
+sk_datas, sk_binaries, sk_hidden = collect_all('sklearn')
 
 torch_datas, torch_binaries, torch_hidden = [], [], []
 torch_excludes = ['torch', 'sam2', 'torchvision']
@@ -125,7 +132,7 @@ a = Analysis(
         ('EDyssey/io_utils/hdf5.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_cpp.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_hl.dll', 'EDyssey/io_utils'),
-    ] + hs_binaries + rs_binaries + dask_binaries + px_binaries + orix_binaries + torch_binaries,
+    ] + hs_binaries + rs_binaries + dask_binaries + px_binaries + orix_binaries + sk_binaries + torch_binaries,
     datas=[
         # io_utils_ui.py is imported two ways elsewhere in this codebase:
         # package-relative (EDyssey/io_utils/__init__.py) AND as a bare
@@ -136,9 +143,9 @@ a = Analysis(
         # on disk too.
         ('EDyssey/io_utils/io_utils_ui.py', 'EDyssey/io_utils'),
         ('ui_tabs/logo', 'ui_tabs/logo'),
-    ] + extra_datas + hs_datas + rs_datas + dask_datas + px_datas + orix_datas + torch_datas,
+    ] + extra_datas + hs_datas + rs_datas + dask_datas + px_datas + orix_datas + sk_datas + torch_datas,
     hiddenimports=(['matplotlib.backends.backend_qt5agg']
-                    + hs_hidden + rs_hidden + dask_hidden + px_hidden + orix_hidden + torch_hidden),
+                    + hs_hidden + rs_hidden + dask_hidden + px_hidden + orix_hidden + sk_hidden + torch_hidden),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
