@@ -61,14 +61,15 @@ plt.style.use('dark_background')
 
 # Semantic-versioning-shaped, but the 3rd/4th parts are a build timestamp
 # rather than counts: MAJOR.MINOR.YYYYMMDD.HHMM (local time, zero-padded) -
-# MAJOR.MINOR is bumped by hand for real milestones (this is 2.0), the
-# date/time update on every user-facing change anywhere in the app, so
-# Help > About always reflects how current the running build actually is,
-# without needing a separate build/release process to compute it. A plain
-# source constant (not computed at run time) so it's visible directly in
-# the repo on GitHub, not just at runtime. Shown only in the About dialog
-# (Help > About EDyssey).
-APP_VERSION = '2.0.20260902.1625'
+# MAJOR.MINOR is bumped by hand for real milestones (this is 2.1: Blob
+# Selection segmentation methods - Watershed/K-Means/GMM - plus the
+# transposed object-list tables), the date/time update on every user-facing
+# change anywhere in the app, so Help > About always reflects how current
+# the running build actually is, without needing a separate build/release
+# process to compute it. A plain source constant (not computed at run
+# time) so it's visible directly in the repo on GitHub, not just at
+# runtime. Shown only in the About dialog (Help > About EDyssey).
+APP_VERSION = '2.1.20260902.1731'
 
 #%% window
 class MainWindow(qtw.QMainWindow):

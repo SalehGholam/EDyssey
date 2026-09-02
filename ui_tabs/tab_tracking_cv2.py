@@ -43,6 +43,7 @@ from .pets2_dialog import Pets2ParamsDialog
 from .ribbon import RibbonPanel, RibbonTool
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
+from .blob_segmentation_dialog import BlobSegmentationDialog
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -409,7 +410,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
-        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=True)
 
 
         # Adjust Contrast and Feature Handling have moved out of the
@@ -490,34 +491,39 @@ class Tab_Tracking_CV2(TabBase):
         # stacked ribbon column, per user request.
         layout_box_tracking = layout_box_3ded
 
-        layout_tracking_1 = qtw.QHBoxLayout()
+        # One row: label + tracker-choice combo + the two buttons that act
+        # on the tracked result (Track!/Fine-Tune Mask...) - Blob Settings...
+        # used to live here too, but now lives in the left object-list panel
+        # instead, directly below the Auto Detector/Reset ROIs row (see
+        # button_blobSettings below) since it acts on a selected ROI from
+        # that panel, not on the tracker choice above it.
+        layout_tracking = qtw.QHBoxLayout()
         label_track = qtw.QLabel('Tracker')
-        layout_tracking_1.addWidget(label_track)
+        layout_tracking.addWidget(label_track)
         self.combo_trackMethod = qtw.QComboBox()
         # Closed-state width tracks a fixed character count instead of the
         # longest item ('xcorr-template') - the popup itself still shows
         # full item text, only the always-visible closed box is capped.
         self.combo_trackMethod.setSizeAdjustPolicy(qtw.QComboBox.AdjustToMinimumContentsLength)
         self.combo_trackMethod.setMinimumContentsLength(8)
-        layout_tracking_1.addWidget(self.combo_trackMethod)
+        layout_tracking.addWidget(self.combo_trackMethod)
         self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
-        layout_tracking_1.addStretch(1)
-        layout_box_tracking.addLayout(layout_tracking_1)
 
-        layout_tracking_2 = qtw.QHBoxLayout()
         self.button_track = qtw.QPushButton('Track!')
         self.button_track.setFixedHeight(button_h_lrg)
-        layout_tracking_2.addWidget(self.button_track)
+        layout_tracking.addWidget(self.button_track)
         self.button_track.clicked.connect(self.track_rois)
         self.button_track.setDisabled(True)
 
         self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
         self.button_fineTuneMask.setFixedHeight(button_h_lrg)
         self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
-        layout_tracking_2.addWidget(self.button_fineTuneMask)
+        layout_tracking.addWidget(self.button_fineTuneMask)
         self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
         self.button_fineTuneMask.setDisabled(True)
-        layout_box_tracking.addLayout(layout_tracking_2)
+
+        layout_tracking.addStretch(1)
+        layout_box_tracking.addLayout(layout_tracking)
         self._ribbon_group_end(layout_ribbon, layout_box_tracking, 'Tracking', separator=False, stretch=False)
 
         sep_extract = qtw.QFrame()
@@ -600,7 +606,6 @@ class Tab_Tracking_CV2(TabBase):
         self.button_cancel.clicked.connect(self.cancel_running_work)
         layout_extract_2.addWidget(self.button_cancel)
 
-        self.disable_3ded_widgets(True)
         self._ribbon_group_end(layout_ribbon, layout_box_extract, 'Extract', separator=False)
         layout_ribbon.addStretch(1)
         #%% Adjust Contrast (top) + Feature Handling
@@ -640,6 +645,27 @@ class Tab_Tracking_CV2(TabBase):
         self.button_reset_rois = qtw.QPushButton('Reset ROIs')
         layout_featureTop.addWidget(self.button_reset_rois)
         self.button_reset_rois.clicked.connect(self.reset_rois)
+
+        # Acts on the selected ROI below (tree_objects), not on the tracker
+        # choice up in the ribbon - moved down here from the ribbon's
+        # Tracking group for that reason. Still governed by
+        # disable_3ded_widgets (see its own docstring) even though it's no
+        # longer one of box_3ded's own children.
+        self.button_blobSettings = qtw.QPushButton('Blob Settings...')
+        self.button_blobSettings.setToolTip(
+            "Configure the selected ROI's Blob Selection - which segmentation "
+            'method splits its threshold mask into individual blobs (for '
+            "touching/overlapping particles), and which one's currently chosen. "
+            'Also opens automatically the first time this ROI\'s "Blob" column '
+            'checkbox is checked.')
+        layout_featurePanel.addWidget(self.button_blobSettings)
+        self.button_blobSettings.clicked.connect(self.open_blob_settings_dialog)
+        self.button_blobSettings.setDisabled(True)
+
+        # Moved here (from right after the Extract ribbon group) - needs
+        # button_blobSettings to already exist, since disable_3ded_widgets
+        # toggles it explicitly too (see its own docstring).
+        self.disable_3ded_widgets(True)
 
         # tree - stretches to fill the rest of this column's height now that
         # it sits beside the (tall) canvas, rather than being capped to fit
@@ -1503,6 +1529,7 @@ class Tab_Tracking_CV2(TabBase):
         # self.button_cur_roi.setEnabled(True)
         self.button_track.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
+        self.button_blobSettings.setEnabled(True)
 
     def load_saved_analysis(self):
         """Restore a previously saved analysis folder (produced by
@@ -1651,6 +1678,12 @@ class Tab_Tracking_CV2(TabBase):
             if isinstance(wid, qtw.QLabel) or wid in (self.button_cancel, self.combo_trackMethod):
                 continue
             wid.setDisabled(state)
+        # button_blobSettings lives in the left object-list panel (see
+        # init_widget), not box_3ded, so the sweep above doesn't reach it -
+        # toggled explicitly here instead, same as everything else in this
+        # column (it acts on a selected ROI's tracked mask, so it shouldn't
+        # stay clickable mid-tracking/extraction either).
+        self.button_blobSettings.setDisabled(state)
     
     def disable_roiInRoi_widgets(self, state):
         for wid in self.box_roiInRoi.findChildren(qtw.QWidget):
@@ -2140,15 +2173,149 @@ class Tab_Tracking_CV2(TabBase):
         return edge if isinstance(edge, dict) else None
 
     def _blob_settings_for(self, idx):
-        """This ROI's Blob Selection segments (`{'segments': [{'start',
-        'end','enabled','seed_centroid'}, ...]}`), or None if it has none
-        set / idx is None. Per-ROI, main-tab-only (unlike Dilate/Erode/
-        Edge Detection/Mesh, which live in the Fine-Tune Mask dialog) -
-        see the "Blob Selection" ribbon section/_on_blob_mask_clicked."""
+        """This ROI's Blob Selection settings - `{'method', 'params',
+        'segments': [{'start','end','enabled','seed_centroid'}, ...]}` (see
+        EDyssey/io_utils/blob_segmentation.py for 'method'/'params', which a
+        ROI that's never opened the Blob Settings dialog may not have set
+        at all yet - see _blob_method_params for the DEFAULT_BLOB_METHOD
+        fallback) - or None if it has none set / idx is None. Per-ROI,
+        main-tab-only (unlike Dilate/Erode/Edge Detection/Mesh, which live
+        in the Fine-Tune Mask dialog) - see the "Blob" object-list column/
+        _on_blob_mask_clicked/blob_segmentation_dialog.py."""
         if idx is None:
             return None
         blob = self.df_rois.at[idx, 'blob']
         return blob if isinstance(blob, dict) else None
+
+    def _blob_method_params(self, idx):
+        """This ROI's chosen Blob Selection segmentation method/params (see
+        blob_segmentation.py), defaulting to DEFAULT_BLOB_METHOD/its own
+        default params for a ROI that's never opened the Blob Settings
+        dialog (or unset one of the two) - keeps every caller from needing
+        its own fallback logic."""
+        blob = self._blob_settings_for(idx) or {}
+        method = blob.get('method') or io.DEFAULT_BLOB_METHOD
+        if method not in io.BLOB_SEGMENTATION_METHODS:
+            method = io.DEFAULT_BLOB_METHOD
+        params = blob.get('params') or io.default_blob_params(method)
+        return method, params
+
+    def _current_intensity_crop(self, idx, frame_idx):
+        """The raw-intensity ROI crop matching this frame's mask crop (see
+        _raw_threshold_crop/_current_raw_blob_mask) - or None if there's
+        nothing to compute it from yet. Needed by the intensity-based Blob
+        Selection segmentation method (see blob_segmentation.py), which
+        must tell touching particles apart using more than just the binary
+        mask's own shape."""
+        if idx is None:
+            return None
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if np.all(pd.isna(out_rois)) or frame_idx >= len(out_rois):
+            return None
+        roi = out_rois[frame_idx]
+        if roi is None or not roi.any():
+            return None
+        y, x, h, w = roi
+        return self.nav_imgs[frame_idx][x:x+w, y:y+h]
+
+    def _label_blobs_for(self, mask, idx, frame_idx, method, params):
+        """This ROI's raw threshold `mask` split into individual blobs via
+        its own chosen segmentation `method`/`params` (see
+        blob_segmentation.label_blobs) - fetching the matching intensity
+        crop (see _current_intensity_crop) only when that method actually
+        needs one. None (blob_segmentation.label_blobs' own signal to fall
+        back to plain connected-components) for 'connected' or an empty
+        mask."""
+        if method == io.DEFAULT_BLOB_METHOD or not mask.any():
+            return None
+        img_cut = None
+        if io.BLOB_SEGMENTATION_METHODS.get(method, {}).get('needs_intensity'):
+            img_cut = self._current_intensity_crop(idx, frame_idx)
+        return io.label_blobs(mask, img_cut, method, params)
+
+    def _current_blob_labels(self, idx, frame_idx):
+        """(raw_mask, labels) for ROI `idx`'s threshold mask at
+        `frame_idx`, labels split according to this ROI's own chosen Blob
+        Selection segmentation method (see _label_blobs_for) - shared by
+        _on_blob_mask_clicked (click -> blob lookup) and _draw_blob_overlay
+        (contour/number display), so both agree exactly with what
+        _resolve_blob_mask will itself pick during extraction. raw_mask is
+        None (labels then meaningless) if there's nothing to compute
+        either from yet - see _current_raw_blob_mask."""
+        mask = self._current_raw_blob_mask(idx, frame_idx)
+        if mask is None:
+            return None, None
+        method, params = self._blob_method_params(idx)
+        return mask, self._label_blobs_for(mask, idx, frame_idx, method, params)
+
+    def _sync_blob_checkbox(self, idx):
+        """Make the "Blob" object-list column checkbox for ROI `idx` match
+        _blob_enabled_for(idx) - needed after _open_blob_segmentation_dialog
+        enables Blob Selection from the "Blob Settings..." button (which,
+        unlike checking the column's own checkbox, doesn't already go
+        through on_item_check_changed). Signals blocked while setting it so
+        this doesn't itself re-trigger on_item_check_changed/reopen the
+        dialog."""
+        idx_col = self.cols_tree.index('idx')
+        blob_col = self.cols_tree.index('blob')
+        for col in range(self.tree_objects.topLevelItemCount()):
+            item = self.tree_objects.topLevelItem(col)
+            if item.text(idx_col) == str(idx):
+                self.tree_objects.blockSignals(True)
+                item.setCheckState(blob_col,
+                                   Qt.Checked if self._blob_enabled_for(idx) else Qt.Unchecked)
+                self.tree_objects.blockSignals(False)
+                return
+
+    def _open_blob_segmentation_dialog(self, idx):
+        """Open BlobSegmentationDialog for ROI `idx`, pre-filled with its
+        current segmentation method/params/seed (see _blob_method_params/
+        _blob_settings_for) and a live preview built from its current
+        (main-tab slider) frame's own raw threshold mask/intensity crop -
+        called both right after a fresh "Blob" checkbox check
+        (on_item_check_changed) and from the "Blob Settings..." ribbon
+        button, to revisit an already-configured ROI's choice.
+
+        On Accept, writes the dialog's (possibly unchanged) method/params
+        back, and - if a blob was actually clicked in the dialog - reseeds
+        Blob Selection at the previewed frame via _split_blob_segment
+        (exactly as clicking that same blob directly on the "ROI with
+        Threshold" panel would). On Cancel/close, leaves whatever was
+        already there - the default (Connected Components, no seed)
+        _set_blob_enabled already put in place for a fresh checkbox check,
+        or this ROI's previous settings if reopened via the ribbon button -
+        untouched, so cancelling never leaves Blob Selection worse off than
+        before the dialog opened."""
+        imgNo = self.slider_imgNo.value()
+        mask = self._current_raw_blob_mask(idx, imgNo)
+        img_cut = self._current_intensity_crop(idx, imgNo)
+        if mask is None:
+            qtw.QMessageBox.information(self, 'Blob Selection',
+                "This ROI has no tracked mask on the current frame yet, so there's "
+                "nothing to preview here - Blob Selection is enabled with the default "
+                '(Connected Components) method for now. Track this ROI, then reopen '
+                'this from the "Blob Settings..." button to fine-tune it.')
+            return
+        method, params = self._blob_method_params(idx)
+        blob = self._blob_settings_for(idx) or {}
+        segments = blob.get('segments') or []
+        seg = io.segment_for_frame(segments, imgNo) if segments else None
+        seed_centroid = tuple(seg['seed_centroid']) if seg and seg.get('seed_centroid') else None
+
+        dlg = BlobSegmentationDialog(mask, img_cut, method, params, seed_centroid, parent=self)
+        if dlg.exec_() != qtw.QDialog.Accepted:
+            return
+        method, params, seed_centroid, seed_changed = dlg.result()
+        self.df_rois.at[idx, 'blob'] = {**blob, 'method': method, 'params': params,
+                                        'segments': segments or [
+                                            {'start': 0, 'end': len(self.nav_imgs) - 1,
+                                             'enabled': True, 'seed_centroid': None}]}
+        if seed_changed:
+            self._split_blob_segment(idx, imgNo, seed_centroid)  # also clears the centroid cache
+        else:
+            self._blob_centroid_cache.pop(idx, None)
+        self._sync_blob_checkbox(idx)
+        self.update_canvas()
 
     def _has_active_postprocessing(self, idx):
         """Whether ROI `idx` has ANY segment (see MaskEditDialog's Segments
@@ -2159,7 +2326,8 @@ class Tab_Tracking_CV2(TabBase):
             segs = (settings or {}).get('segments') or []
             return any(s.get('enabled') and extra(s) for s in segs)
         return (_any_enabled(self._edge_settings_for(idx))
-               or _any_enabled(self._dilate_erode_settings_for(idx), lambda s: s.get('kernel', 0) != 0)
+               or _any_enabled(self._dilate_erode_settings_for(idx), lambda s: (
+                   s.get('kernel', 0) != 0 or s.get('open_kernel', 0) != 0 or s.get('close_kernel', 0) != 0))
                or _any_enabled(self._mesh_settings_for(idx), lambda s: s.get('cells'))
                or _any_enabled(self._blob_settings_for(idx)))
 
@@ -2188,12 +2356,14 @@ class Tab_Tracking_CV2(TabBase):
         seg = io.segment_for_frame(segments, frame_idx) if segments else None
         if not seg or not seg.get('enabled'):
             return mask
+        method, params = self._blob_method_params(idx)
+        labels = self._label_blobs_for(mask, idx, frame_idx, method, params)
         cache = self._blob_centroid_cache.setdefault(idx, {})
         prev = cache.get(frame_idx - 1)
         fixed_seed = seg.get('seed_centroid')
         seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
             else (tuple(fixed_seed) if fixed_seed is not None else None)
-        restricted, chosen_centroid = io.select_blob_by_centroid(mask, seed)
+        restricted, chosen_centroid = io.select_blob_by_centroid(mask, seed, labels=labels)
         if chosen_centroid is not None:
             cache[frame_idx] = chosen_centroid
         return restricted
@@ -2228,13 +2398,19 @@ class Tab_Tracking_CV2(TabBase):
         frame-range like Dilate/Erode/Edge Detection/Mesh - clicking a blob
         (see _on_blob_mask_clicked) is what actually introduces segment
         boundaries, only once the user needs different blobs on different
-        frame ranges."""
+        frame ranges. The segmentation method/params (see
+        _blob_method_params/blob_segmentation_dialog.py) carry over from
+        whatever this ROI was last left on, defaulting to
+        DEFAULT_BLOB_METHOD the first time - re-enabling after a previous
+        disable shouldn't forget a method the user already picked."""
+        method, params = self._blob_method_params(idx)
         if enabled:
             n = len(self.nav_imgs) if hasattr(self, 'nav_imgs') else 1
             self.df_rois.at[idx, 'blob'] = {
+                'method': method, 'params': params,
                 'segments': [{'start': 0, 'end': n - 1, 'enabled': True, 'seed_centroid': None}]}
         else:
-            self.df_rois.at[idx, 'blob'] = {'segments': []}
+            self.df_rois.at[idx, 'blob'] = {'method': method, 'params': params, 'segments': []}
         self._blob_centroid_cache.pop(idx, None)
 
     def _split_blob_segment(self, idx, frame_idx, seed_centroid):
@@ -2259,7 +2435,7 @@ class Tab_Tracking_CV2(TabBase):
                       'seed_centroid': seed_centroid}
             seg['end'] = frame_idx - 1
             segments.insert(seg_pos + 1, new_seg)
-        self.df_rois.at[idx, 'blob'] = {'segments': segments}
+        self.df_rois.at[idx, 'blob'] = {**(blob or {}), 'segments': segments}
         # A fresh seed invalidates any auto-follow trail computed forward
         # from the old settings - simplest safe choice is to drop the whole
         # per-ROI cache rather than reason about exactly which frames are
@@ -2298,11 +2474,11 @@ class Tab_Tracking_CV2(TabBase):
         if not self._blob_enabled_for(idx):
             return
         imgNo = self.slider_imgNo.value()
-        img_mask_raw = self._current_raw_blob_mask(idx, imgNo)
+        img_mask_raw, labels = self._current_blob_labels(idx, imgNo)
         if img_mask_raw is None:
             return
         click = (event.xdata, event.ydata)
-        _, chosen_centroid = io.select_blob_by_centroid(img_mask_raw, click)
+        _, chosen_centroid = io.select_blob_by_centroid(img_mask_raw, click, labels=labels)
         if chosen_centroid is None:
             self.logger.info('No blob under the click on ROI %d, frame %d.', idx, imgNo)
             return
@@ -2312,11 +2488,17 @@ class Tab_Tracking_CV2(TabBase):
     def _draw_blob_overlay(self, idx, frame_idx):
         """Outline every detected blob in ax_mask's current (raw, possibly
         multi-blob) threshold mask, numbered, so the user can see which is
-        which before clicking one (see _on_blob_mask_clicked) - only when
-        Blob Selection is enabled for this ROI; otherwise just clears
-        whatever was drawn for a previously-selected ROI. Cleared/rebuilt
-        every call rather than diffed, matching draw_rois_in/out's own
-        convention for other per-frame overlays."""
+        which before clicking one (see _on_blob_mask_clicked) - split
+        according to this ROI's own chosen segmentation method (see
+        _current_blob_labels/blob_segmentation_dialog.py), with whichever
+        one _resolve_blob_mask itself just picked for this exact frame
+        (already cached in _blob_centroid_cache by the threshold_img call
+        update_canvas makes just before this one - see _resolve_blob_mask)
+        highlighted in green instead of cyan. Only draws anything when Blob
+        Selection is enabled for this ROI; otherwise just clears whatever
+        was drawn for a previously-selected ROI. Cleared/rebuilt every call
+        rather than diffed, matching draw_rois_in/out's own convention for
+        other per-frame overlays."""
         for artist in self._blob_overlay_artists:
             try:
                 artist.remove()
@@ -2325,23 +2507,35 @@ class Tab_Tracking_CV2(TabBase):
         self._blob_overlay_artists = []
         if not self._blob_enabled_for(idx):
             return
-        img_mask_raw = self._current_raw_blob_mask(idx, frame_idx)
+        img_mask_raw, labels = self._current_blob_labels(idx, frame_idx)
         if img_mask_raw is None:
             return
-        mask_u8 = img_mask_raw.astype('uint8')
-        num_labels, labels, _stats, centroids = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
-        for label in range(1, num_labels):
+        if labels is None:
+            mask_u8 = img_mask_raw.astype('uint8')
+            _, labels = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)[:2]
+
+        chosen_centroid = self._blob_centroid_cache.get(idx, {}).get(frame_idx)
+        chosen_label = None
+        if chosen_centroid is not None:
+            row, col = int(round(chosen_centroid[1])), int(round(chosen_centroid[0]))
+            if 0 <= row < labels.shape[0] and 0 <= col < labels.shape[1]:
+                chosen_label = labels[row, col]
+
+        for label in (lid for lid in np.unique(labels) if lid != 0):
             blob_u8 = (labels == label).astype('uint8')
+            is_chosen = label == chosen_label
+            color = 'lime' if is_chosen else 'cyan'
+            ys, xs = np.where(blob_u8)
+            cx, cy = float(xs.mean()), float(ys.mean())
             contours, _ = cv2.findContours(blob_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 pts = contour.reshape(-1, 2)  # (col, row) = (x, y), matching ax_mask's own extent
                 if len(pts) < 2:
                     continue
-                line = Line2D(pts[:, 0], pts[:, 1], color='cyan', linewidth=1.2)
+                line = Line2D(pts[:, 0], pts[:, 1], color=color, linewidth=1.6 if is_chosen else 1.2)
                 self.ax_mask.add_line(line)
                 self._blob_overlay_artists.append(line)
-            cx, cy = centroids[label]
-            text = self.ax_mask.text(cx, cy, str(label), color='cyan', fontsize=9, fontweight='bold',
+            text = self.ax_mask.text(cx, cy, str(int(label)), color=color, fontsize=9, fontweight='bold',
                                      horizontalalignment='center', verticalalignment='center')
             self._blob_overlay_artists.append(text)
 
@@ -2372,8 +2566,13 @@ class Tab_Tracking_CV2(TabBase):
 
         de_segments = (self._dilate_erode_settings_for(idx) or {}).get('segments')
         de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
-        if de and de.get('enabled') and de.get('kernel', 0) != 0:
-            mask = io.dilate_erode_mask(mask, de['kernel'])
+        if de and de.get('enabled'):
+            if de.get('kernel', 0) != 0:
+                mask = io.dilate_erode_mask(mask, de['kernel'])
+            if de.get('open_kernel', 0) != 0:
+                mask = io.open_mask(mask, de['open_kernel'])
+            if de.get('close_kernel', 0) != 0:
+                mask = io.close_mask(mask, de['close_kernel'])
 
         edge_segments = (self._edge_settings_for(idx) or {}).get('segments')
         edge = io.segment_for_frame(edge_segments, frame_idx) if edge_segments else None
@@ -2696,8 +2895,18 @@ class Tab_Tracking_CV2(TabBase):
         if key == 'use':
             self.df_rois.at[idx, 'use'] = 1 if checked else 0
         else:  # 'blob'
+            was_enabled = self._blob_enabled_for(idx)
             self._set_blob_enabled(idx, checked)
             self.update_canvas()
+            if checked and not was_enabled:
+                # Fresh enable (not a re-sync from _open_blob_segmentation_
+                # dialog's own signal-blocked checkbox update) - offer to
+                # configure the segmentation method right away, same as
+                # picking one from the "Blob Settings..." button. Leaves
+                # _set_blob_enabled's own default (Connected Components, no
+                # seed) in place if cancelled - see
+                # _open_blob_segmentation_dialog's own docstring.
+                self._open_blob_segmentation_dialog(idx)
 
 
     def on_spinboxEnd_changed(self, idx, value):
@@ -3023,6 +3232,19 @@ class Tab_Tracking_CV2(TabBase):
             self.logger.info(
                 'CV2 tracking completed successfully for %d ROI(s) in %s.',
                 self.tracking_counter_end, io.format_duration_hms(duration))
+
+    def open_blob_settings_dialog(self):
+        """"Blob Settings..." button: open _open_blob_segmentation_dialog
+        for whichever ROI is currently selected - unlike the "Blob" column
+        checkbox (which only opens the dialog on a fresh check), this is
+        the way to revisit an already-configured ROI's segmentation method
+        without unchecking/rechecking it first."""
+        idx = self._selected_roi_idx()
+        if idx is None:
+            qtw.QMessageBox.warning(self, 'No ROI Selected',
+                "Select a ROI in the list to configure its Blob Selection first.")
+            return
+        self._open_blob_segmentation_dialog(idx)
 
     def open_fine_tune_mask_dialog(self):
         """Open MaskEditDialog on the selected ROI's mask stack, seeded at
@@ -3875,6 +4097,7 @@ class Tab_Tracking_CV2(TabBase):
         self.button_reset_rois.setEnabled(True)
         self.button_track.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
+        self.button_blobSettings.setEnabled(True)
 
         # Threshold / tracking settings - signals blocked so setting them
         # doesn't trigger a redundant re-blur/dialog/redraw (see docstring);

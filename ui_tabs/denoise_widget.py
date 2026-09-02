@@ -101,7 +101,7 @@ class DenoiseBox(qtw.QGroupBox):
         row3 = qtw.QHBoxLayout()
         layout_box.addLayout(row3)
         row3.addStretch(1)
-        self.button_checkMethods = qtw.QPushButton('Check Methods...')
+        self.button_checkMethods = qtw.QPushButton('Test Methods')
         self.button_checkMethods.setToolTip(
             'Run every denoising method on the current raw image and '
             'compare them side by side in a separate window')
@@ -109,7 +109,7 @@ class DenoiseBox(qtw.QGroupBox):
         row3.addWidget(self.button_checkMethods)
 
         if show_apply_all:
-            self.button_applyAll = qtw.QPushButton('Apply to All Images')
+            self.button_applyAll = qtw.QPushButton('Apply to All')
             self.button_applyAll.setToolTip(
                 'Run the current Denoise method on every frame, not just the '
                 'one on screen - can take a while for a slower method on a '

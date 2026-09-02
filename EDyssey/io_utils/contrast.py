@@ -5,6 +5,7 @@ helper used by the same tracking-prep code paths.
 """
 import numpy as np
 import cv2
+from scipy import ndimage as ndi
 
 CONTRAST_METHODS = ('percentile', 'minmax', 'std')
 
@@ -273,6 +274,42 @@ def dilate_erode_mask(mask, kernel_size):
     return op(mask_u8, kernel, anchor=(-1, -1), iterations=1).astype(bool)
 
 
+def open_mask(mask, kernel_size):
+    """Morphological opening (erode then dilate) with a plain isotropic
+    square structuring element - removes small bright specks/thin
+    protrusions from `mask`'s own edge without changing its overall size,
+    unlike dilate_erode_mask's uniform grow/shrink. Used by the "Dilate /
+    Erode Mask" box's own Opening control (mask_edit_dialog.py).
+
+    Args:
+        mask: 2-D array, truthy where the mask is set (any dtype).
+        kernel_size: Unsigned kernel size, in pixels - 0 (or negative) is a
+            no-op, unlike dilate_erode_mask's signed `kernel_size` there's
+            no "direction" to pick here.
+
+    Returns:
+        numpy.ndarray of dtype bool, same shape as `mask`.
+    """
+    kernel_size = int(round(kernel_size))
+    if kernel_size <= 0:
+        return mask.astype(bool)
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    return cv2.morphologyEx(mask.astype('uint8'), cv2.MORPH_OPEN, kernel).astype(bool)
+
+
+def close_mask(mask, kernel_size):
+    """Morphological closing (dilate then erode) with a plain isotropic
+    square structuring element - fills small dark holes/gaps inside `mask`
+    without changing its overall size, unlike dilate_erode_mask's uniform
+    grow/shrink. Used by the "Dilate / Erode Mask" box's own Closing
+    control (mask_edit_dialog.py). Args/Returns: see open_mask."""
+    kernel_size = int(round(kernel_size))
+    if kernel_size <= 0:
+        return mask.astype(bool)
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    return cv2.morphologyEx(mask.astype('uint8'), cv2.MORPH_CLOSE, kernel).astype(bool)
+
+
 def mask_centroid(mask):
     """(x, y) center of mass of `mask` - the origin mesh_cell_ids/
     mesh_restrict_mask anchor their rotated grid to by default, so a mesh
@@ -288,15 +325,32 @@ def mask_centroid(mask):
     return float(xs.mean()), float(ys.mean())
 
 
-def select_blob_by_centroid(mask, seed_centroid=None):
-    """Restrict `mask` to just one of its connected components ("blobs") -
-    the one whose own centroid is closest to `seed_centroid` - for a
-    tracked ROI whose threshold mask actually contains more than one
-    separate object (e.g. two nearby particles), letting the caller keep
-    just one of them for extraction. Used by ROI Tracker's "Blob
-    Selection" (see Tab_Tracking_CV2.apply_edge_mask/_resolve_blob_mask) -
-    runs before Dilate/Erode/Edge Detection/Mesh, on the raw (possibly
-    multi-blob) threshold mask.
+def _blob_regions(labels):
+    """{label: {'area', 'centroid': (x, y)}} for every non-zero label in
+    `labels` - shared by select_blob_by_centroid regardless of whether
+    `labels` came from plain connected-components or one of
+    blob_segmentation.py's watershed methods, so picking-by-centroid works
+    identically either way."""
+    ids = np.unique(labels)
+    ids = ids[ids != 0]
+    if len(ids) == 0:
+        return {}
+    ones = np.ones_like(labels)
+    areas = ndi.sum(ones, labels, ids)
+    centroids = ndi.center_of_mass(ones, labels, ids)  # (row, col) = (y, x) per id
+    return {int(lid): {'area': float(a), 'centroid': (float(c[1]), float(c[0]))}
+            for lid, a, c in zip(ids, areas, centroids)}
+
+
+def select_blob_by_centroid(mask, seed_centroid=None, labels=None):
+    """Restrict `mask` to just one of its blobs - the one whose own
+    centroid is closest to `seed_centroid` - for a tracked ROI whose
+    threshold mask actually contains more than one separate object (e.g.
+    two nearby particles), letting the caller keep just one of them for
+    extraction. Used by ROI Tracker's "Blob Selection" (see
+    Tab_Tracking_CV2.apply_edge_mask/_resolve_blob_mask) - runs before
+    Dilate/Erode/Edge Detection/Mesh, on the raw (possibly multi-blob)
+    threshold mask.
 
     Args:
         mask: 2-D array, truthy where the mask is set (any dtype).
@@ -305,6 +359,13 @@ def select_blob_by_centroid(mask, seed_centroid=None):
             frame-to-frame "auto-follow" - see _resolve_blob_mask). None
             picks the largest-area blob instead - a reasonable default the
             first time a mask is seen, before any seed exists yet.
+        labels: optional pre-computed int-labeled array (0 = background,
+            each blob a distinct positive int), e.g. from
+            blob_segmentation.label_blobs, for a ROI whose Blob Selection
+            method actually splits touching/overlapping blobs instead of
+            just taking `mask`'s own plain connected components. None (the
+            default) computes plain connected components from `mask`
+            itself, unchanged from this function's original behavior.
 
     Returns:
         (restricted_mask, chosen_centroid) - `restricted_mask` is a bool
@@ -314,23 +375,24 @@ def select_blob_by_centroid(mask, seed_centroid=None):
         follow), or None if `mask` has no blobs at all (nothing to
         choose - `restricted_mask` is then just `mask` itself, unchanged).
     """
-    mask_u8 = mask.astype('uint8')
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
-    if num_labels <= 1:  # label 0 is background - no real blobs at all
+    if labels is None:
+        mask_u8 = mask.astype('uint8')
+        num_labels, labels = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)[:2]
+        if num_labels <= 1:  # label 0 is background - no real blobs at all
+            return mask.astype(bool), None
+    regions = _blob_regions(labels)
+    if not regions:
         return mask.astype(bool), None
-    blob_labels = np.arange(1, num_labels)
     if seed_centroid is None:
-        areas = stats[1:, cv2.CC_STAT_AREA]
-        chosen = blob_labels[int(np.argmax(areas))]
+        chosen = max(regions, key=lambda lid: regions[lid]['area'])
     else:
-        blob_centroids = centroids[1:]  # (x, y) per blob, matching blob_labels
-        dists = np.hypot(blob_centroids[:, 0] - seed_centroid[0],
-                         blob_centroids[:, 1] - seed_centroid[1])
-        chosen = blob_labels[int(np.argmin(dists))]
+        chosen = min(regions, key=lambda lid: np.hypot(
+            regions[lid]['centroid'][0] - seed_centroid[0],
+            regions[lid]['centroid'][1] - seed_centroid[1]))
     # Plain floats (not numpy.float64) - this ends up stored in a per-ROI
     # settings dict that gets serialized straight to JSON (see
     # Tab_Tracking_CV2.save_results), which numpy scalar types can trip up.
-    chosen_centroid = (float(centroids[chosen][0]), float(centroids[chosen][1]))
+    chosen_centroid = tuple(float(v) for v in regions[chosen]['centroid'])
     return labels == chosen, chosen_centroid
 
 

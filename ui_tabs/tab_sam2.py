@@ -420,7 +420,7 @@ class Tab_SAM2(TabBase):
         layout_loadSignal.addWidget(self.button_loadSavedAnalysis, alignment=Qt.AlignCenter)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
-        self._ribbon_group_end(layout_ribbon, layout_box_experiment, 'Input Parameters', stretch=0)
+        self._ribbon_group_end(layout_ribbon, layout_box_experiment, 'Input Parameters', stretch=True)
         
         #%% Tracking / Extract
         # Edge Detection used to live here as a tab-wide control - it's now
@@ -1070,7 +1070,8 @@ class Tab_SAM2(TabBase):
             segs = (settings or {}).get('segments') or []
             return any(s.get('enabled') and extra(s) for s in segs)
         return (_any_enabled(self._edge_settings_for(obj_id))
-               or _any_enabled(self._dilate_erode_settings_for(obj_id), lambda s: s.get('kernel', 0) != 0)
+               or _any_enabled(self._dilate_erode_settings_for(obj_id), lambda s: (
+                   s.get('kernel', 0) != 0 or s.get('open_kernel', 0) != 0 or s.get('close_kernel', 0) != 0))
                or _any_enabled(self._mesh_settings_for(obj_id), lambda s: s.get('cells')))
 
     def apply_edge_mask(self, mask, obj_id=None, frame_idx=None):
@@ -1099,8 +1100,13 @@ class Tab_SAM2(TabBase):
 
         de_segments = (self._dilate_erode_settings_for(obj_id) or {}).get('segments')
         de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
-        if de and de.get('enabled') and de.get('kernel', 0) != 0:
-            mask = io.dilate_erode_mask(mask, de['kernel'])
+        if de and de.get('enabled'):
+            if de.get('kernel', 0) != 0:
+                mask = io.dilate_erode_mask(mask, de['kernel'])
+            if de.get('open_kernel', 0) != 0:
+                mask = io.open_mask(mask, de['open_kernel'])
+            if de.get('close_kernel', 0) != 0:
+                mask = io.close_mask(mask, de['close_kernel'])
 
         edge_segments = (self._edge_settings_for(obj_id) or {}).get('segments')
         edge = io.segment_for_frame(edge_segments, frame_idx) if edge_segments else None

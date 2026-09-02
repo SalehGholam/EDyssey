@@ -728,13 +728,19 @@ class Tab_ROI_on_4D(TabBase):
         # Docked along the right edge (see layout_right_outer above) - an
         # additional way to reach the same canvas interactions already
         # available via Ctrl/Shift-click (see on_press); deliberately does
-        # NOT duplicate the left panel's buttons (Segment Image, Clear
-        # Points/ROI, ...), only actions that act directly on the plot
-        # itself. 'select_roi'/'add_point' are the only two tool modes
-        # on_press actually checks (see RibbonPanel.active_tool there).
+        # NOT duplicate the left panel's buttons (Segment Image, the
+        # deactivated "Clear Box", ...), only actions that act directly on
+        # the plot itself - including 'clear_roi' below, which removes the
+        # same drawn ROI 'select_roi' draws (see clear_roi()), distinct
+        # from the left panel's own (deactivated) button, which feeds the
+        # currently-disabled box-prompt SAM2 segmentation path instead.
+        # 'select_roi'/'add_point' are the only two tool modes on_press
+        # actually checks (see RibbonPanel.active_tool there).
         self.ribbon = RibbonPanel([
             RibbonTool('select_roi', 'select_roi', 'Select ROI: click+drag on the Nav. Image '
                       '(same as Ctrl+drag)', 'tool'),
+            RibbonTool('clear_roi', 'clear_roi', 'Remove the drawn ROI/box - diffraction-pattern '
+                      'extraction then uses the full frame again', 'action', self.clear_roi),
             RibbonTool('add_point', 'add_point', 'Add SAM2 point (left=+/right=-, same as Shift+click)',
                       'tool'),
             RibbonTool('remove_point', 'remove_point', 'Remove last SAM2 point (same as middle-click)',
@@ -1991,9 +1997,11 @@ class Tab_ROI_on_4D(TabBase):
 
     def clear_roi(self):
         """Remove the drawn ROI so it stops being used as the rectangle for
-        diffraction-pattern extraction. Not reachable via the (currently
-        deactivated) "Clear ROI/Box" button - only called internally, e.g.
-        by reset_canvas() - draw a new ROI to replace the old one instead."""
+        diffraction-pattern extraction - reachable via the ribbon's
+        "clear_roi" tool (see init_widget), or called internally, e.g. by
+        reset_canvas(). The left panel's own "Clear Box" button stays
+        deactivated (see its own comment) - that one specifically feeds the
+        now-disabled box-prompt SAM2 segmentation path, unlike this."""
         had_roi = self.roi is not None
         self.roi = None
         if self.rect is not None:

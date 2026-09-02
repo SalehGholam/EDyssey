@@ -28,6 +28,11 @@ scikit-image==0.26.0
 # method, via skimage.restoration.denoise_wavelet) needs this - scikit-image
 # doesn't bundle it itself.
 PyWavelets==1.8.0
+# Blob Selection's K-Means/GMM segmentation methods specifically
+# (EDyssey/io_utils/blob_segmentation.py's label_kmeans/label_gmm, via
+# sklearn.cluster.KMeans/sklearn.mixture.GaussianMixture) - scikit-image
+# doesn't bundle this either, despite the similar name.
+scikit-learn==1.9.0
 pandas==3.0.2
 Pillow==12.2.0
 

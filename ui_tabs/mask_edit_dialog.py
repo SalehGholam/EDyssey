@@ -79,9 +79,13 @@ _HELP_TEXT = (
     'Dilate / Erode Mask:\n'
     '  Live preview only - never changes the returned mask. Grows or '
     'shrinks the mask uniformly by "Kernel Size" pixels: positive dilates '
-    '(grows), negative erodes (shrinks), applied before Edge Detection '
-    'below, both scoped to the current segment (see Frame Navigation & '
-    'Segments above).\n'
+    '(grows), negative erodes (shrinks). "Opening Kernel Size" (erode then '
+    'dilate) removes small bright specks/thin protrusions without changing '
+    'the mask\'s overall size; "Closing Kernel Size" (dilate then erode) '
+    'fills small dark holes/gaps the same way - both 0 (off) by default, '
+    'applied in that order right after Kernel Size above. All three apply '
+    'before Edge Detection below, and are scoped to the current segment '
+    '(see Frame Navigation & Segments above).\n'
     '\n'
     'Edge Detection:\n'
     '  Live preview only - never changes the returned mask. Reduces the '
@@ -131,9 +135,15 @@ def _dilate_erode_fields(d):
     """Just the Dilate/Erode-relevant fields out of `d` (a flat settings
     dict, or one entry from a `{'segments': [...]}` list), with defaults
     for anything missing - the per-segment shape MaskEditDialog._segments
-    stores under each segment's 'dilate_erode' key."""
+    stores under each segment's 'dilate_erode' key. 'open_kernel'/
+    'close_kernel' are the box's own Opening/Closing controls - unlike
+    'kernel' (signed: grows or shrinks the mask), these are unsigned sizes
+    (0 = off) since opening/closing each apply as one fixed erode-then-
+    dilate (or reverse) pair, with no "which direction" to pick - see
+    io.open_mask/io.close_mask."""
     d = d or {}
-    return {'enabled': bool(d.get('enabled', False)), 'kernel': int(d.get('kernel', 0))}
+    return {'enabled': bool(d.get('enabled', False)), 'kernel': int(d.get('kernel', 0)),
+            'open_kernel': int(d.get('open_kernel', 0)), 'close_kernel': int(d.get('close_kernel', 0))}
 
 
 def _edge_fields(d):
@@ -806,30 +816,71 @@ class MaskEditDialog(qtw.QDialog):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
         #%% dilate/erode - live preview only, like Edge Detection above (see
-        # io.dilate_erode_mask). One checkbox + one signed spinbox: positive
-        # kernel size dilates (grows the mask), negative erodes (shrinks
-        # it), applied uniformly on every side before Edge Detection's own
-        # outline extraction (see _effective_mask). Per-ROI/object (like
-        # Mesh below, unlike Threshold, which lives on the caller's own
-        # main-tab controls) - this dialog is the only place it's ever
+        # io.dilate_erode_mask/io.open_mask/io.close_mask). One "Enable"
+        # checkbox governs all three kernel-size spinboxes below it: the
+        # signed one dilates (positive) or erodes (negative) the mask
+        # uniformly on every side; unsigned "Opening"/"Closing" clean it up
+        # instead (remove small specks / fill small holes) without changing
+        # its overall size - applied in that fixed order (Kernel Size, then
+        # Opening, then Closing), before Edge Detection's own outline
+        # extraction (see _effective_mask). Per-ROI/object (like Mesh below,
+        # unlike Threshold, which lives on the caller's own main-tab
+        # controls) - this dialog is the only place any of it is ever
         # set/edited; the caller round-trips it via
         # get_dilate_erode_settings() into its own per-object column.
         box_dilate = qtw.QGroupBox('Dilate / Erode Mask')
-        layout_dilate = qtw.QHBoxLayout()
+        layout_dilate = qtw.QVBoxLayout()
         box_dilate.setLayout(layout_dilate)
+
+        row_dilate = qtw.QHBoxLayout()
+        layout_dilate.addLayout(row_dilate)
         self.checkbox_dilateErode = qtw.QCheckBox('Enable')
-        self.checkbox_dilateErode.setToolTip('Live preview only - doesn\'t change the returned mask')
-        layout_dilate.addWidget(self.checkbox_dilateErode)
-        layout_dilate.addWidget(qtw.QLabel('Kernel Size'))
+        self.checkbox_dilateErode.setToolTip('Live preview only - doesn\'t change the returned mask '
+                                             '- governs Opening/Closing below too')
+        row_dilate.addWidget(self.checkbox_dilateErode)
+        row_dilate.addWidget(qtw.QLabel('Kernel Size'))
         self.spinbox_dilateErode = qtw.QSpinBox()
         self.spinbox_dilateErode.setRange(-99, 99)
         self.spinbox_dilateErode.setToolTip('Positive = dilate (grow the mask); Negative = erode (shrink it)')
-        layout_dilate.addWidget(self.spinbox_dilateErode)
-        layout_dilate.addStretch(1)
+        row_dilate.addWidget(self.spinbox_dilateErode)
+        row_dilate.addStretch(1)
+
+        # Opening (erode then dilate) and Closing (dilate then erode) -
+        # unlike the signed Dilate/Erode control above, these don't grow or
+        # shrink the mask overall; they clean it up instead (see
+        # io.open_mask/io.close_mask), so a single unsigned kernel size
+        # each is enough - 0 (the default) is a no-op. Applied in
+        # _effective_mask right after Dilate/Erode, in Opening-then-Closing
+        # order: Opening first strips small bright specks/thin protrusions
+        # before Closing fills small dark holes/gaps, so Closing doesn't
+        # end up bridging noise Opening would otherwise have removed.
+        row_open = qtw.QHBoxLayout()
+        layout_dilate.addLayout(row_open)
+        row_open.addWidget(qtw.QLabel('Opening Kernel Size'))
+        self.spinbox_openKernel = qtw.QSpinBox()
+        self.spinbox_openKernel.setRange(0, 99)
+        self.spinbox_openKernel.setToolTip(
+            'Erode then dilate by this much (0 = off) - removes small bright '
+            "specks/thin protrusions from the mask's edge without changing its "
+            'overall size.')
+        row_open.addWidget(self.spinbox_openKernel)
+        row_open.addStretch(1)
+
+        row_close = qtw.QHBoxLayout()
+        layout_dilate.addLayout(row_close)
+        row_close.addWidget(qtw.QLabel('Closing Kernel Size'))
+        self.spinbox_closeKernel = qtw.QSpinBox()
+        self.spinbox_closeKernel.setRange(0, 99)
+        self.spinbox_closeKernel.setToolTip(
+            'Dilate then erode by this much (0 = off) - fills small dark holes/'
+            "gaps inside the mask without changing its overall size.")
+        row_close.addWidget(self.spinbox_closeKernel)
+        row_close.addStretch(1)
 
         # No per-box scope here either - see the Edge Detection box's own
         # comment above.
-        for signal in (self.checkbox_dilateErode.stateChanged, self.spinbox_dilateErode.valueChanged):
+        for signal in (self.checkbox_dilateErode.stateChanged, self.spinbox_dilateErode.valueChanged,
+                       self.spinbox_openKernel.valueChanged, self.spinbox_closeKernel.valueChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
         # Row 1: Threshold, if this tab has one, spanning both columns -
@@ -1012,8 +1063,13 @@ class MaskEditDialog(qtw.QDialog):
         mask = base
         seg = self._segment_for_frame(frame)
         de = seg['dilate_erode']
-        if de['enabled'] and de['kernel'] != 0:
-            mask = io.dilate_erode_mask(mask, de['kernel'])
+        if de['enabled']:
+            if de['kernel'] != 0:
+                mask = io.dilate_erode_mask(mask, de['kernel'])
+            if de['open_kernel'] != 0:
+                mask = io.open_mask(mask, de['open_kernel'])
+            if de['close_kernel'] != 0:
+                mask = io.close_mask(mask, de['close_kernel'])
         edge = seg['edge']
         if edge['enabled']:
             direction = edge['direction'] if edge['directional'] else None
@@ -1036,7 +1092,8 @@ class MaskEditDialog(qtw.QDialog):
         overwrite the very segment it's loading from."""
         seg = self._segments[self._current_segment_idx]
         de, edge, mesh = seg['dilate_erode'], seg['edge'], seg['mesh']
-        widgets = (self.checkbox_dilateErode, self.spinbox_dilateErode, self.checkbox_edgeOnly,
+        widgets = (self.checkbox_dilateErode, self.spinbox_dilateErode, self.spinbox_openKernel,
+                  self.spinbox_closeKernel, self.checkbox_edgeOnly,
                   self.spinbox_edgeKernel, self.checkbox_edgeDirectional, self.spinbox_edgeDirection,
                   self.checkbox_revertMask, self.checkbox_meshEnabled, self.spinbox_meshAngle,
                   self.spinbox_meshCellSize, self.checkbox_meshLinesOnly, self.checkbox_meshCenterInitial)
@@ -1044,6 +1101,8 @@ class MaskEditDialog(qtw.QDialog):
             wid.blockSignals(True)
         self.checkbox_dilateErode.setChecked(de['enabled'])
         self.spinbox_dilateErode.setValue(de['kernel'])
+        self.spinbox_openKernel.setValue(de['open_kernel'])
+        self.spinbox_closeKernel.setValue(de['close_kernel'])
         self.checkbox_edgeOnly.setChecked(edge['enabled'])
         self.spinbox_edgeKernel.setValue(edge['kernel'])
         self.checkbox_edgeDirectional.setChecked(edge['directional'])
@@ -1069,7 +1128,9 @@ class MaskEditDialog(qtw.QDialog):
         sync separately via the _mesh_cells property."""
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = {'enabled': self.checkbox_dilateErode.isChecked(),
-                               'kernel': self.spinbox_dilateErode.value()}
+                               'kernel': self.spinbox_dilateErode.value(),
+                               'open_kernel': self.spinbox_openKernel.value(),
+                               'close_kernel': self.spinbox_closeKernel.value()}
         edge = {'enabled': self.checkbox_edgeOnly.isChecked(),
                 'kernel': self.spinbox_edgeKernel.value(),
                 'directional': self.checkbox_edgeDirectional.isChecked(),
