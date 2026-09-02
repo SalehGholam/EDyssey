@@ -34,6 +34,7 @@ from .worker_thread import ProcessStderrBuffer, WorkerThread_General
 from .worker_launch import worker_command
 from .ribbon import RibbonPanel, RibbonTool
 from .clipping_thresholds import ClippingThresholdsWidget
+from .denoise_widget import DenoiseBox
 from worker_extract_frame import load_dp
 # import matplotlib.gridspec as gridspec
 # from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
@@ -269,12 +270,139 @@ class Tab_ROI_on_4D(TabBase):
 
         layout_exp.addLayout(layout_exp_groups)
         self._ribbon_group_end(layout_ribbon, layout_exp, 'Experiment Info')
+        #%% SAM2 Segmentation / Edge Detection / Summed DP Threshold
+        # These three used to each be their own full-height ribbon column;
+        # they're now stacked vertically inside ONE column (box_edgeDetection)
+        # instead, each sub-section separated by an HLine and captioned on
+        # its own - a deliberate way to fit more, lower-priority/action-
+        # oriented groups into fewer ribbon columns. _ribbon_group_end() is
+        # called once per sub-section (all still targeting the same
+        # layout_edgeDetection), with `stretch=False` only for the very
+        # first one (SAM2 Segmentation - its controls should sit right above
+        # its caption, not be pushed down by addStretch) and
+        # `separator=False` for the second and third (no vertical-line
+        # ribbon separator needed between them - the HLine above already
+        # marks the boundary; only the group's outer edge needs one).
+        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=0)
+        self.box_edgeDetection.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+
+        #%% SAM2 segmentation (first sub-section in this combined column)
+        layout_segmentation_row = qtw.QHBoxLayout()
+
+        self.button_segment_image = qtw.QPushButton('Segment Image')
+        self.button_segment_image.setFixedSize(button_w, button_h)
+        layout_segmentation_row.addWidget(self.button_segment_image)
+        self.button_segment_image.clicked.connect(self.segment_image)
+        self.button_segment_image.setDisabled(True)
+        self.button_segment_image.setToolTip('Run SAM2 on the points added below (Shift+Click)')
+
+        self.button_clear_points = qtw.QPushButton('Clear Points')
+        self.button_clear_points.setFixedSize(button_w, button_h)
+        layout_segmentation_row.addWidget(self.button_clear_points)
+        self.button_clear_points.clicked.connect(self.clear_seg_points)
+        self.button_clear_points.setDisabled(True)
+        self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
+
+        self.button_clear_roi = qtw.QPushButton('Clear Box')
+        self.button_clear_roi.setFixedSize(button_w, button_h)
+        layout_segmentation_row.addWidget(self.button_clear_roi)
+        self.button_clear_roi.clicked.connect(self.clear_roi)
+        # Deactivated for now, at Saleh's request, pending his own review of
+        # the box-prompt path - segment_image() no longer reads self.roi
+        # either (see its docstring), so there's nothing left for this
+        # button to affect while it's off.
+        self.button_clear_roi.setDisabled(True)
+        self.button_clear_roi.setToolTip('Temporarily deactivated (pending review)')
+        layout_edgeDetection.addLayout(layout_segmentation_row)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', stretch=False)
+
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+
+        #%% Edge Detection
+        layout_edgeDetection_row_1 = qtw.QHBoxLayout()
+        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
+        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
+        layout_edgeDetection_row_1.addWidget(self.checkbox_edgeOnly)
+        self.checkbox_edgeOnly.stateChanged.connect(self._preview_edge_mask)
+        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_edgeDirectional.setToolTip(
+            'Keep only the edge facing one direction (angle below)')
+        layout_edgeDetection_row_1.addWidget(self.checkbox_edgeDirectional)
+        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
+        self.checkbox_revertMask = qtw.QCheckBox('Reverse Mask')
+        self.checkbox_revertMask.setToolTip(
+            'With Activate: keep the interior, cut the edge band (inverse)')
+        layout_edgeDetection_row_1.addWidget(self.checkbox_revertMask)
+        self.checkbox_revertMask.stateChanged.connect(self._preview_edge_mask)
+
+        layout_edgeDetection.addLayout(layout_edgeDetection_row_1)
+
+        # self._ribbon_inline_separator(layout_edgeDetection_row_1)
+        layout_edgeDetection_row_2 = qtw.QHBoxLayout()
+        layout_edgeDetection_row_2.addWidget(qtw.QLabel('Kernel'))
+        self.spinbox_edgeKernel = qtw.QSpinBox()
+        self.spinbox_edgeKernel.setRange(1, 99)
+        self.spinbox_edgeKernel.setValue(3)
+        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
+        self.spinbox_edgeKernel.valueChanged.connect(self._preview_edge_mask)
+        layout_edgeDetection_row_2.addWidget(self.spinbox_edgeKernel)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row_2)
+        layout_edgeDetection_row_2.addWidget(qtw.QLabel('Angle (°)'))
+        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
+        self.spinbox_edgeDirection.setRange(-360, 360)
+        self.spinbox_edgeDirection.setDecimals(1)
+        self.spinbox_edgeDirection.setSingleStep(5)
+        self.spinbox_edgeDirection.setValue(0)
+        self.spinbox_edgeDirection.setDisabled(True)
+        self.spinbox_edgeDirection.setToolTip(
+            '0°=right, 90°=down, 180°=left, 270°=up (clockwise); needs "Directional"')
+        self.spinbox_edgeDirection.valueChanged.connect(self._preview_edge_mask)
+        layout_edgeDetection_row_2.addWidget(self.spinbox_edgeDirection)
+
+        self._ribbon_inline_separator(layout_edgeDetection_row_2)
+        self.button_computeEdgeDp = qtw.QPushButton('Re-compute DP')
+        self.button_computeEdgeDp.setFixedSize(button_w, button_h)
+        self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
+        self.button_computeEdgeDp.setToolTip(
+            'Recompute the diffraction pattern with the settings above (slower, reads disk)')
+        layout_edgeDetection_row_2.addWidget(self.button_computeEdgeDp)
+        layout_edgeDetection.addLayout(layout_edgeDetection_row_2)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', separator=False, stretch=True)
+
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+
+        #%% Sum DP
+        layout_sumDp_row = qtw.QHBoxLayout()
+        self.button_sumDpWhole = qtw.QPushButton('Sum DPs')
+        self.button_sumDpWhole.setFixedSize(button_w, button_h)
+        self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
+        self.button_sumDpWhole.setToolTip(
+            'Sum every DP in the whole scan into one reference DP - no ROI/mask needed')
+        layout_sumDp_row.addWidget(self.button_sumDpWhole)
+
+        self.button_sumDpFromThreshold = qtw.QPushButton('DP by Threshold')
+        self.button_sumDpFromThreshold.setFixedSize(button_w+10, button_h)
+        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
+        self.button_sumDpFromThreshold.setToolTip(
+            'Sum diffraction patterns at scan positions above a real-space threshold')
+        layout_sumDp_row.addWidget(self.button_sumDpFromThreshold)
+
+        layout_edgeDetection.addLayout(layout_sumDp_row)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Sum DP', separator=False, stretch=True)
+
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+
         #%% Virtual Imaging (ribbon group)
-        # Kept early (right after Experiment Info, where "Load Signal" used
-        # to sit) since "Compute Virtual Image" below is now this tab's
-        # only way to load a signal in the first place - Edge Detection/
-        # SAM2 Segmentation/Summed DP Threshold are all downstream,
-        # later-stage steps that need something loaded first.
         self.box_virtualImaging, layout_virtualImaging = self._ribbon_group_start(layout_ribbon, stretch=0)
         self.box_virtualImaging.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
 
@@ -449,138 +577,6 @@ class Tab_ROI_on_4D(TabBase):
         self._vi_mask_hidden = False
         self._ribbon_group_end(layout_ribbon, layout_virtualImaging, 'Virtual Imaging')
 
-        #%% SAM2 Segmentation / Edge Detection / Summed DP Threshold
-        # These three used to each be their own full-height ribbon column;
-        # they're now stacked vertically inside ONE column (box_edgeDetection)
-        # instead, each sub-section separated by an HLine and captioned on
-        # its own - a deliberate way to fit more, lower-priority/action-
-        # oriented groups into fewer ribbon columns. _ribbon_group_end() is
-        # called once per sub-section (all still targeting the same
-        # layout_edgeDetection), with `stretch=False` only for the very
-        # first one (SAM2 Segmentation - its controls should sit right above
-        # its caption, not be pushed down by addStretch) and
-        # `separator=False` for the second and third (no vertical-line
-        # ribbon separator needed between them - the HLine above already
-        # marks the boundary; only the group's outer edge needs one).
-        self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=0)
-        self.box_edgeDetection.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
-
-        #%% SAM2 segmentation (first sub-section in this combined column)
-        layout_segmentation_row = qtw.QHBoxLayout()
-
-        self.button_segment_image = qtw.QPushButton('Segment Image')
-        self.button_segment_image.setFixedSize(button_w, button_h)
-        layout_segmentation_row.addWidget(self.button_segment_image)
-        self.button_segment_image.clicked.connect(self.segment_image)
-        self.button_segment_image.setDisabled(True)
-        self.button_segment_image.setToolTip('Run SAM2 on the points added below (Shift+Click)')
-
-        self.button_clear_points = qtw.QPushButton('Clear Points')
-        self.button_clear_points.setFixedSize(button_w, button_h)
-        layout_segmentation_row.addWidget(self.button_clear_points)
-        self.button_clear_points.clicked.connect(self.clear_seg_points)
-        self.button_clear_points.setDisabled(True)
-        self.button_clear_points.setToolTip('Remove all SAM2 points and the segmentation mask')
-
-        self.button_clear_roi = qtw.QPushButton('Clear Box')
-        self.button_clear_roi.setFixedSize(button_w, button_h)
-        layout_segmentation_row.addWidget(self.button_clear_roi)
-        self.button_clear_roi.clicked.connect(self.clear_roi)
-        # Deactivated for now, at Saleh's request, pending his own review of
-        # the box-prompt path - segment_image() no longer reads self.roi
-        # either (see its docstring), so there's nothing left for this
-        # button to affect while it's off.
-        self.button_clear_roi.setDisabled(True)
-        self.button_clear_roi.setToolTip('Temporarily deactivated (pending review)')
-        layout_edgeDetection.addLayout(layout_segmentation_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', stretch=False)
-
-        sep = qtw.QFrame()
-        sep.setFrameShape(qtw.QFrame.HLine)
-        sep.setFrameShadow(qtw.QFrame.Sunken)
-        layout_edgeDetection.addWidget(sep)
-
-        #%% Edge Detection
-        layout_edgeDetection_row_1 = qtw.QHBoxLayout()
-        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
-        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
-        layout_edgeDetection_row_1.addWidget(self.checkbox_edgeOnly)
-        self.checkbox_edgeOnly.stateChanged.connect(self._preview_edge_mask)
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge facing one direction (angle below)')
-        layout_edgeDetection_row_1.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
-        self.checkbox_revertMask = qtw.QCheckBox('Reverse Mask')
-        self.checkbox_revertMask.setToolTip(
-            'With Activate: keep the interior, cut the edge band (inverse)')
-        layout_edgeDetection_row_1.addWidget(self.checkbox_revertMask)
-        self.checkbox_revertMask.stateChanged.connect(self._preview_edge_mask)
-        
-        layout_edgeDetection.addLayout(layout_edgeDetection_row_1)
-        
-        # self._ribbon_inline_separator(layout_edgeDetection_row_1)
-        layout_edgeDetection_row_2 = qtw.QHBoxLayout()
-        layout_edgeDetection_row_2.addWidget(qtw.QLabel('Kernel'))
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        self.spinbox_edgeKernel.valueChanged.connect(self._preview_edge_mask)
-        layout_edgeDetection_row_2.addWidget(self.spinbox_edgeKernel)
-
-        self._ribbon_inline_separator(layout_edgeDetection_row_2)
-        layout_edgeDetection_row_2.addWidget(qtw.QLabel('Angle (°)'))
-        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(-360, 360)
-        self.spinbox_edgeDirection.setDecimals(1)
-        self.spinbox_edgeDirection.setSingleStep(5)
-        self.spinbox_edgeDirection.setValue(0)
-        self.spinbox_edgeDirection.setDisabled(True)
-        self.spinbox_edgeDirection.setToolTip(
-            '0°=right, 90°=down, 180°=left, 270°=up (clockwise); needs "Directional"')
-        self.spinbox_edgeDirection.valueChanged.connect(self._preview_edge_mask)
-        layout_edgeDetection_row_2.addWidget(self.spinbox_edgeDirection)
-
-        self._ribbon_inline_separator(layout_edgeDetection_row_2)
-        self.button_computeEdgeDp = qtw.QPushButton('Re-compute DP')
-        self.button_computeEdgeDp.setFixedSize(button_w, button_h)
-        self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
-        self.button_computeEdgeDp.setToolTip(
-            'Recompute the diffraction pattern with the settings above (slower, reads disk)')
-        layout_edgeDetection_row_2.addWidget(self.button_computeEdgeDp)
-        layout_edgeDetection.addLayout(layout_edgeDetection_row_2)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', separator=False, stretch=True)
-
-        sep = qtw.QFrame()
-        sep.setFrameShape(qtw.QFrame.HLine)
-        sep.setFrameShadow(qtw.QFrame.Sunken)
-        layout_edgeDetection.addWidget(sep)
-
-        #%% Sum DP 
-        layout_sumDp_row = qtw.QHBoxLayout()
-        self.button_sumDpWhole = qtw.QPushButton('Sum DPs')
-        self.button_sumDpWhole.setFixedSize(button_w, button_h)
-        self.button_sumDpWhole.clicked.connect(self.compute_sum_dp_whole)
-        self.button_sumDpWhole.setToolTip(
-            'Sum every DP in the whole scan into one reference DP - no ROI/mask needed')
-        layout_sumDp_row.addWidget(self.button_sumDpWhole)
-
-        self.button_sumDpFromThreshold = qtw.QPushButton('DP by Threshold')
-        self.button_sumDpFromThreshold.setFixedSize(button_w+10, button_h)
-        self.button_sumDpFromThreshold.clicked.connect(self.open_threshold_dialog)
-        self.button_sumDpFromThreshold.setToolTip(
-            'Sum diffraction patterns at scan positions above a real-space threshold')
-        layout_sumDp_row.addWidget(self.button_sumDpFromThreshold)
-
-        layout_edgeDetection.addLayout(layout_sumDp_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Sum DP', separator=False, stretch=True)
-
-        sep = qtw.QFrame()
-        sep.setFrameShape(qtw.QFrame.HLine)
-        sep.setFrameShadow(qtw.QFrame.Sunken)
-        layout_edgeDetection.addWidget(sep)
-
         layout_ribbon.addStretch(1)
         #%% canvas layout (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -608,6 +604,13 @@ class Tab_ROI_on_4D(TabBase):
         # browsing); it doesn't auto-compute - "Compute Virtual Image"
         # still starts that.
         widget_fileList = qtw.QWidget()
+        # Fixed (not just an initial splitter size) - a child widget's own
+        # minimum-size floor would otherwise let this pane grow past 220px
+        # on a squeezed window, independently of whatever floor the other 3
+        # tabs' own left panes happen to have, so the 4 tabs' panes could
+        # drift to different actual widths even though every tab starts
+        # from the same 220.
+        widget_fileList.setFixedWidth(220)
         layout_fileList = qtw.QVBoxLayout(widget_fileList)
         layout_fileList.setContentsMargins(2, 2, 2, 2)
         self.combo_dtype = qtw.QComboBox()
@@ -622,6 +625,18 @@ class Tab_ROI_on_4D(TabBase):
             '".tif" matches both .tif and .tiff files')
         self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
         layout_fileList.addWidget(self.combo_dtype)
+        # Denoise (see denoise_widget.DenoiseBox): unlike ROI Tracker/SAM2
+        # Tracker's own Adjust Contrast box, this tab has no full raw-to-8bit
+        # display pipeline to hook into - the Nav. Image stays displayed
+        # straight from self.navImg, contrast handled entirely by clip_nav's
+        # sliders (see update_canvas). So Denoise here doesn't touch the
+        # displayed image itself; it applies to the 8-bit copy of navImg fed
+        # into SAM2 segmentation (see segment_image), the one place this tab
+        # already builds one on demand - and "Check Methods..." compares
+        # every method on that same 8-bit copy for reference.
+        self.box_denoise = DenoiseBox(show_apply_all=False)
+        self.box_denoise.checkMethodsRequested.connect(self._show_denoise_check_methods)
+        layout_fileList.addWidget(self.box_denoise)
         self.file_list_widget = qtw.QListWidget()
         self.file_list_widget.setMinimumWidth(150)
         self.file_list_widget.setMaximumWidth(220)
@@ -2070,7 +2085,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setEnabled(True)
 
         path_seg = self._get_seg_temp_dir()
-        img_8bit = io.convert_img_to_8bit(self.navImg)
+        img_8bit = self.box_denoise.apply(io.convert_img_to_8bit(self.navImg))
         # worker_sam.py's 'image' branch takes a {obj_id: {points,labels}}
         # map (batches multiple objects against one image encoding - see
         # Tab_SAM2.initiate_image_segmentation) - this tab only ever
@@ -2089,6 +2104,17 @@ class Tab_ROI_on_4D(TabBase):
         self._process_sam.finished.connect(self._handle_finished_sam)
         self._process_sam.errorOccurred.connect(self._process_failed_sam)
         self._process_sam.start()
+
+    def _show_denoise_check_methods(self):
+        """box_denoise's "Check Methods..." button: compare every
+        denoising method on the current Nav. Image (8-bit, same conversion
+        segment_image() itself uses)."""
+        if not hasattr(self, 'navImg'):
+            qtw.QMessageBox.warning(self, 'No Image Computed',
+                'Compute a virtual image first to compare denoising methods on it.')
+            return
+        img_8bit = io.convert_img_to_8bit(self.navImg)
+        self._check_methods_dlg = self.box_denoise.open_check_methods_dialog(img_8bit, parent=self)
 
     def _process_failed_sam(self, error):
         """Slot for the SAM2 subprocess's QProcess.errorOccurred: report
@@ -2384,6 +2410,7 @@ class Tab_ROI_on_4D(TabBase):
             # Contrast
             'clip_nav': self.clip_nav.get_state(),
             'clip_dp': self.clip_dp.get_state(),
+            'denoise': self.box_denoise.get_state(),
         }
 
     def apply_duplicate_state(self, state):
@@ -2430,6 +2457,7 @@ class Tab_ROI_on_4D(TabBase):
         self._dp_center_cache_key = None
         self._dp_center_fn = self.fn
         self.clip_nav.set_state(state['clip_nav'])
+        self.box_denoise.set_state(state.get('denoise'))
         self.update_canvas('nav')
         shape_x, shape_y = self.navImg.shape
         self.ax_nav.set_xlim(0, shape_y)

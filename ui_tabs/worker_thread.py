@@ -60,6 +60,10 @@ class WorkerSignals(QObject):
     # results = pyqtSignal(object, int)  # Task returns a result
     results = pyqtSignal(object, object)
     error = pyqtSignal(object, object)  # (formatted traceback string, index)
+    # Optional (current, total) progress, emitted from inside `func` itself
+    # (e.g. a per-frame loop) for a long single job - purely additive, so
+    # existing callers that never emit/connect it are unaffected.
+    progress = pyqtSignal(int, int)
 
 # =============================================================================
 # class Worker(QRunnable):

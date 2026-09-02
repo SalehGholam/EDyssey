@@ -245,6 +245,34 @@ def shift_mask_edge(mask, direction, grow=True):
     return cv2.erode(mask_u8, kernel, anchor=anchor, iterations=1).astype(bool)
 
 
+def dilate_erode_mask(mask, kernel_size):
+    """Uniformly grow or shrink a binary mask with a plain isotropic square
+    structuring element - unlike shift_mask_edge (one direction, one pixel
+    per call) or erode_mask_edge (reduces the mask to a boundary band
+    instead of keeping its interior), this dilates/erodes the whole mask
+    by `kernel_size` on every side at once. Used by the "Dilate / Erode"
+    control shared by ROI Tracker, SAM2 Tracker and mask_edit_dialog.py's
+    Fine-Tune Mask dialog.
+
+    Args:
+        mask: 2-D array, truthy where the mask is set (any dtype).
+        kernel_size: Signed kernel size, in pixels - sign picks dilate
+            (positive, grows the mask) vs. erode (negative, shrinks it);
+            0 is a no-op. Same `np.ones((k, k))` square-kernel convention
+            as erode_mask_edge's own `kernel_size`.
+
+    Returns:
+        numpy.ndarray of dtype bool, same shape as `mask`.
+    """
+    kernel_size = int(round(kernel_size))
+    if kernel_size == 0:
+        return mask.astype(bool)
+    kernel = np.ones((abs(kernel_size), abs(kernel_size)), np.uint8)
+    mask_u8 = mask.astype('uint8')
+    op = cv2.dilate if kernel_size > 0 else cv2.erode
+    return op(mask_u8, kernel, anchor=(-1, -1), iterations=1).astype(bool)
+
+
 def mask_centroid(mask):
     """(x, y) center of mass of `mask` - the origin mesh_cell_ids/
     mesh_restrict_mask anchor their rotated grid to by default, so a mesh
@@ -258,6 +286,102 @@ def mask_centroid(mask):
         h, w = mask.shape
         return w / 2, h / 2
     return float(xs.mean()), float(ys.mean())
+
+
+def select_blob_by_centroid(mask, seed_centroid=None):
+    """Restrict `mask` to just one of its connected components ("blobs") -
+    the one whose own centroid is closest to `seed_centroid` - for a
+    tracked ROI whose threshold mask actually contains more than one
+    separate object (e.g. two nearby particles), letting the caller keep
+    just one of them for extraction. Used by ROI Tracker's "Blob
+    Selection" (see Tab_Tracking_CV2.apply_edge_mask/_resolve_blob_mask) -
+    runs before Dilate/Erode/Edge Detection/Mesh, on the raw (possibly
+    multi-blob) threshold mask.
+
+    Args:
+        mask: 2-D array, truthy where the mask is set (any dtype).
+        seed_centroid: (x, y) to match against, e.g. where the user last
+            clicked, or the previous frame's own chosen centroid (for
+            frame-to-frame "auto-follow" - see _resolve_blob_mask). None
+            picks the largest-area blob instead - a reasonable default the
+            first time a mask is seen, before any seed exists yet.
+
+    Returns:
+        (restricted_mask, chosen_centroid) - `restricted_mask` is a bool
+        array the same shape as `mask`, True only where the chosen blob
+        is; `chosen_centroid` is that blob's own (x, y) centroid (for the
+        caller to seed the *next* frame's call with, continuing the
+        follow), or None if `mask` has no blobs at all (nothing to
+        choose - `restricted_mask` is then just `mask` itself, unchanged).
+    """
+    mask_u8 = mask.astype('uint8')
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    if num_labels <= 1:  # label 0 is background - no real blobs at all
+        return mask.astype(bool), None
+    blob_labels = np.arange(1, num_labels)
+    if seed_centroid is None:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        chosen = blob_labels[int(np.argmax(areas))]
+    else:
+        blob_centroids = centroids[1:]  # (x, y) per blob, matching blob_labels
+        dists = np.hypot(blob_centroids[:, 0] - seed_centroid[0],
+                         blob_centroids[:, 1] - seed_centroid[1])
+        chosen = blob_labels[int(np.argmin(dists))]
+    # Plain floats (not numpy.float64) - this ends up stored in a per-ROI
+    # settings dict that gets serialized straight to JSON (see
+    # Tab_Tracking_CV2.save_results), which numpy scalar types can trip up.
+    chosen_centroid = (float(centroids[chosen][0]), float(centroids[chosen][1]))
+    return labels == chosen, chosen_centroid
+
+
+def estimate_tilt_axis_pca(centroids):
+    """PCA-based tomography tilt-axis angle estimate (degrees, 0-180, from
+    the +x axis via np.arctan2 - same convention as the Mesh box's own
+    `angle_deg` above) from a stack of per-frame (x, y) mask centroids
+    (mask_centroid) of one object tracked across a tilt series.
+
+    By the projection-slice theorem, a specimen's centroid coordinate
+    *along* the true tilt axis stays fixed as tilt angle changes, while
+    the perpendicular coordinate sweeps back and forth - so the tilt axis
+    is the minimum-variance direction of the centroid scatter, found here
+    via PCA (eigendecomposition of the covariance matrix). Ported from
+    the standalone tilt_axis_finder.py prototype (which estimates this
+    from raw per-frame intensity images instead) - mask_edit_dialog.py's
+    "Find Tilt Axis" button uses the already-tracked mask centroids
+    instead, since that's what's on hand there.
+
+    Returns:
+        (angle, centered) - the estimated angle, and the mean-centered
+        centroids (feed straight into sweep_tilt_axis_angle for a
+        refined/cross-checked estimate).
+    """
+    centroids = np.asarray(centroids, dtype=float)
+    centered = centroids - centroids.mean(axis=0)
+    cov = np.cov(centered.T)
+    eigvals, eigvecs = np.linalg.eigh(cov)  # ascending eigenvalues
+    axis_dir = eigvecs[:, 0]  # smallest-variance direction = tilt axis
+    angle = np.degrees(np.arctan2(axis_dir[1], axis_dir[0])) % 180
+    return float(angle), centered
+
+
+def sweep_tilt_axis_angle(centered, angle_range=(0, 180), step=0.5):
+    """Refinement/diagnostic for estimate_tilt_axis_pca: variance of the
+    along-axis centroid component for every candidate angle in
+    `angle_range` - the minimum should land close to the PCA estimate
+    (`centered` is that same function's second return value), and is a
+    bit more numerically direct since it doesn't depend on eigenvector
+    sign/degeneracy.
+
+    Returns:
+        (angles, variances, best_angle).
+    """
+    angles = np.arange(*angle_range, step)
+    variances = np.empty_like(angles)
+    for i, phi in enumerate(angles):
+        axis_dir = np.array([np.cos(np.radians(phi)), np.sin(np.radians(phi))])
+        variances[i] = (centered @ axis_dir).var()
+    best_angle = float(angles[np.argmin(variances)])
+    return angles, variances, best_angle
 
 
 def mesh_cell_ids(shape, angle_deg, cell_size, origin):
@@ -292,7 +416,7 @@ def mesh_cell_ids(shape, angle_deg, cell_size, origin):
     return cell_i, cell_j
 
 
-def mesh_restrict_mask(mask, angle_deg, cell_size, cells, origin=None):
+def mesh_restrict_mask(mask, angle_deg, cell_size, cells, origin=None, lines_only=False):
     """`mask` AND the union of `cells` (an iterable of (cell_i, cell_j)
     tuples from mesh_cell_ids) - restricts a mask to just the mesh cell(s)
     the user picked in mask_edit_dialog.py's "Mesh" box. `mask` returned
@@ -305,13 +429,44 @@ def mesh_restrict_mask(mask, angle_deg, cell_size, cells, origin=None):
     tracked stack, however much the object itself has moved by then. Pass
     an explicit `origin` instead only to match a grid anchored elsewhere
     (e.g. mask_edit_dialog.py's live overlay, which shares one origin
-    across the whole redraw rather than recomputing it twice)."""
+    across the whole redraw rather than recomputing it twice).
+
+    `lines_only`: if True, each cell's `cell_j` (row-along-the-grid) index
+    is ignored - a selected (i, j) keeps every pixel with that same `i`,
+    regardless of `j`, i.e. a full-width band/stripe running the whole
+    length of the grid's rotated y-axis instead of one square cell. Lets
+    the Mesh box restrict to parallel stripes (mask_edit_dialog.py's
+    "Lines Only" checkbox) instead of a 2-D grid of squares."""
     if not cells:
         return mask
     if origin is None:
         origin = mask_centroid(mask)
     cell_i, cell_j = mesh_cell_ids(mask.shape, angle_deg, cell_size, origin)
     keep = np.zeros(mask.shape, dtype=bool)
-    for i, j in cells:
-        keep |= (cell_i == i) & (cell_j == j)
+    if lines_only:
+        for i in {c[0] for c in cells}:
+            keep |= (cell_i == i)
+    else:
+        for i, j in cells:
+            keep |= (cell_i == i) & (cell_j == j)
     return mask & keep
+
+
+def segment_for_frame(segments, frame):
+    """The segment (a dict with at least 'start'/'end', inclusive frame
+    indices) covering `frame`, from a sorted, contiguous list of segments -
+    mask_edit_dialog.py's Fine-Tune Mask "segments": per-object frame
+    ranges that can each carry their own Dilate/Erode, Edge Detection, and
+    Mesh settings, instead of one fixed setting for every frame (see
+    MaskEditDialog's own _segment_for_frame, and get_dilate_erode_settings/
+    get_edge_settings/get_mesh_settings's `{'segments': [...]}` shape that
+    ROI Tracker/SAM2 Tracker's own apply_edge_mask reads via this same
+    function). Falls back to the last segment if `frame` is past every
+    listed range (e.g. a stack that grew since these segments were last
+    edited), and to None if `segments` is empty."""
+    if not segments:
+        return None
+    for seg in segments:
+        if seg['start'] <= frame <= seg['end']:
+            return seg
+    return segments[-1]

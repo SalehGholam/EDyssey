@@ -23,6 +23,7 @@ from EDyssey.io_utils.loaders import *
 from EDyssey.io_utils.metadata import *
 from EDyssey.io_utils.nav_image import *
 from EDyssey.io_utils.contrast import *
+from EDyssey.io_utils.denoise import *
 from EDyssey.io_utils.video import *
 from EDyssey.io_utils.pets import *
 from EDyssey.io_utils.smart_scan import *

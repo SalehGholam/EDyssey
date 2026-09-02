@@ -132,6 +132,38 @@ def _drawn_icon(kind, size):
         painter.drawEllipse(QPointF(cx, cy), r_out, r_out)
         painter.drawEllipse(QPointF(cx, cy), r_in, r_in)
         painter.drawLine(QPointF(margin, margin), QPointF(size - margin, size - margin))
+    elif kind == 'paint_in':
+        # A solid filled square - "paint pixels IN (add to the mask)",
+        # paired with paint_out's hollow counterpart below (mask_edit_dialog
+        # ribbon only).
+        rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+        painter.setBrush(_ICON_COLOR)
+        painter.drawRect(rect)
+    elif kind == 'paint_out':
+        # paint_in's hollow counterpart - "paint pixels OUT (remove from
+        # the mask)".
+        rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+        painter.drawRect(rect)
+    elif kind == 'rect_in':
+        # select_roi's own dashed marquee, plus a small "+" at its center -
+        # "paint a rectangular region IN", paired with rect_out's "-"
+        # counterpart below (mask_edit_dialog ribbon only).
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
+        pen.setStyle(Qt.SolidLine)
+        painter.setPen(pen)
+        d = size * 0.12
+        painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
+        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+    elif kind == 'rect_out':
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
+        pen.setStyle(Qt.SolidLine)
+        painter.setPen(pen)
+        d = size * 0.12
+        painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
     elif kind == 'help':
         # A plain "?" in a circle - opens this tab's Shortcuts/Controls
         # dialog (see TabBase.show_shortcuts_dialog), which is where the
@@ -154,7 +186,8 @@ def _drawn_icon(kind, size):
 
 
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
-                      'center_recip', 'center_mask', 'hide_mask', 'help'}
+                      'center_recip', 'center_mask', 'hide_mask', 'help',
+                      'paint_in', 'paint_out', 'rect_in', 'rect_out'}
 
 
 def build_icon(key, size=_ICON_SIZE):
@@ -201,8 +234,11 @@ class RibbonTool:
 
 
 class RibbonPanel(qtw.QWidget):
-    """Vertical strip of icon QToolButtons docked to the right of a tab's
-    canvas.
+    """Strip of icon QToolButtons - vertical and docked to the right of a
+    tab's canvas by default (`orientation='vertical'`); pass
+    `orientation='horizontal'` for a horizontal strip instead (used under
+    the canvas in MaskEditDialog, where a tall narrow dock doesn't fit the
+    dialog's single-column layout).
 
     At most one 'tool' button is checked at a time; selecting one updates
     `active_tool` and emits toolChanged. Re-clicking the active tool's own
@@ -212,24 +248,29 @@ class RibbonPanel(qtw.QWidget):
     """
     toolChanged = pyqtSignal(object)  # new active_tool id (str), or None
 
-    def __init__(self, tools, parent=None):
+    def __init__(self, tools, parent=None, orientation='vertical'):
         super().__init__(parent)
         self._active_tool = None
         self._tool_buttons = {}
         self._icon_size = _ICON_SIZE
+        self._orientation = orientation
         # Every non-separator button, with the icon key used to build it -
         # set_icon_size() (see the Edit tab's "Ribbon Icon Size" control)
         # re-renders each one's icon at a new size from this list.
         self._icon_buttons = []
-        layout = qtw.QVBoxLayout(self)
-        layout.setContentsMargins(2, 4, 2, 4)
+        horizontal = orientation == 'horizontal'
+        layout = qtw.QHBoxLayout(self) if horizontal else qtw.QVBoxLayout(self)
+        if horizontal:
+            layout.setContentsMargins(4, 2, 4, 2)
+        else:
+            layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(3)
-        layout.setAlignment(Qt.AlignTop)
+        layout.setAlignment(Qt.AlignLeft if horizontal else Qt.AlignTop)
 
         for tool in tools:
             if tool.kind == 'separator':
                 line = qtw.QFrame()
-                line.setFrameShape(qtw.QFrame.HLine)
+                line.setFrameShape(qtw.QFrame.VLine if horizontal else qtw.QFrame.HLine)
                 line.setFrameShadow(qtw.QFrame.Sunken)
                 layout.addWidget(line)
                 continue
@@ -274,7 +315,10 @@ class RibbonPanel(qtw.QWidget):
         for btn, _icon_key in self._icon_buttons:
             btn.setIconSize(QSize(size, size))
             btn.setFixedSize(size + 14, size + 10)
-        self.setFixedWidth(size + 22)
+        if self._orientation == 'horizontal':
+            self.setFixedHeight(size + 16)
+        else:
+            self.setFixedWidth(size + 22)
 
     def _on_tool_clicked(self, tool_id, checked):
         # QToolButton has already toggled itself by the time this slot runs

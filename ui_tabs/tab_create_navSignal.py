@@ -568,14 +568,17 @@ class Tab_Create_NavSignal(TabBase):
         # Image/Cancel row right after its own Center/Radius+Detectors row.
         layout_calculate_buttons = qtw.QHBoxLayout()
 
-        self.button_testFile = qtw.QPushButton('Test Single File')
-        # self.button_testFile.setFixedSize(button_w, button_h_lrg)
+        self.button_testFile = qtw.QPushButton('Compute Virtual Image')
+        # Longer label than the old "Test Single File" - a slightly smaller
+        # font keeps it from outgrowing/crowding its row now that it's not
+        # fixed-size (see the commented-out setFixedSize above).
+        self.button_testFile.setStyleSheet('font-size: 9pt;')
         layout_calculate_buttons.addWidget(self.button_testFile)
         self.button_testFile.clicked.connect(lambda: self.test_selected_file(None))
         self.button_testFile.setToolTip('Preview the selected (or first) file only')
 
-        self.button_calculate = qtw.QPushButton('Calculate All')
-        # self.button_calculate.setFixedSize(button_w, button_h_lrg)
+        self.button_calculate = qtw.QPushButton('Compute All Files')
+        self.button_calculate.setStyleSheet('font-size: 9pt;')
         layout_calculate_buttons.addWidget(self.button_calculate)
         self.button_calculate.clicked.connect(self.calculate_button)
         self.button_calculate.setToolTip('Run the full batch over every listed (or selected) file')
@@ -641,6 +644,13 @@ class Tab_Create_NavSignal(TabBase):
         # filter combo sits above the list; the list fills the rest of the
         # canvas row's height.
         widget_fileList = qtw.QWidget()
+        # Fixed (not just an initial splitter size) - a child widget's own
+        # minimum-size floor would otherwise let this pane grow past 220px
+        # on a squeezed window, independently of whatever floor the other 3
+        # tabs' own left panes happen to have, so the 4 tabs' panes could
+        # drift to different actual widths even though every tab starts
+        # from the same 220.
+        widget_fileList.setFixedWidth(220)
         layout_fileList = qtw.QVBoxLayout(widget_fileList)
         layout_fileList.setContentsMargins(2, 2, 2, 2)
         self.combo_dtype = qtw.QComboBox()

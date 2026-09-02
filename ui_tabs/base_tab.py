@@ -185,6 +185,43 @@ class TabBase(qtw.QWidget):
         # end of its own construction to pick up the current values too).
         DisplaySettings.instance().changed.connect(self.apply_display_settings)
 
+    def _blit_canvas(self, canvas, figure, bg_attr, artists,
+                     hide_for_background=(), titles_for_background=()):
+        """Render `artists` onto `canvas` via blit instead of a full
+        canvas.draw()/draw_idle() - shared by Tab_Tracking_CV2 (its main
+        per-frame update_canvas) and Tab_SAM2 (its cheap denoise/contrast
+        preview refresh - see _refresh_current_frame_display).
+
+        Reuses a cached "clean" background (everything in the figure except
+        `artists`) stored in `self.<bg_attr>`. That background is captured
+        lazily - whenever `self.<bg_attr>` is None (first use, or after
+        being invalidated elsewhere e.g. on canvas resize, new data, or a
+        scale bar being added/removed) - by briefly hiding
+        `hide_for_background` and blanking `titles_for_background`, doing
+        one full draw(), then restoring them before the real content is
+        blitted on top.
+        """
+        if getattr(self, bg_attr) is None:
+            prev_visible = [a.get_visible() for a in hide_for_background]
+            for a in hide_for_background:
+                a.set_visible(False)
+            prev_titles = [ax.get_title() for ax in titles_for_background]
+            for ax in titles_for_background:
+                ax.set_title('')
+
+            canvas.draw()
+            setattr(self, bg_attr, canvas.copy_from_bbox(figure.bbox))
+
+            for a, v in zip(hide_for_background, prev_visible):
+                a.set_visible(v)
+            for ax, t in zip(titles_for_background, prev_titles):
+                ax.set_title(t)
+
+        canvas.restore_region(getattr(self, bg_attr))
+        for artist in artists:
+            artist.axes.draw_artist(artist)
+        canvas.blit(figure.bbox)
+
     def cancel_running_work(self):
         """Stop this tab's running background work. The base implementation
         just raises the flag other code already checks against - subclasses

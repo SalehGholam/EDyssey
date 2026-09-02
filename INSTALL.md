@@ -91,6 +91,16 @@ includes `torch`/CUDA/`sam2`.
 CUDA-version-specific download (see https://pytorch.org/get-started/locally/),
 so there's no single build that would be right for every machine.
 
+**Easiest**: open EDyssey and use **Help > Set Up SAM2...** in the menu
+bar. It picks the install location for you, offers a dropdown of common
+CUDA versions (or CPU-only), and runs the install commands with the output
+shown live in the dialog - no manual pip commands or path-hunting needed.
+It still needs *some* separate Python+pip already on the machine as a tool
+(not the installed app itself, which doesn't ship one) - the dialog says
+so and links to python.org if none is found.
+
+Manual alternative, if you'd rather run the commands yourself:
+
 - **Running from source**: `pip install torch` (matching your CUDA version)
   into whatever environment you installed `requirements.txt` into, then
   the SAM2-from-source step above.
@@ -105,8 +115,8 @@ so there's no single build that would be right for every machine.
   CPU-only), and replace `<install_dir>` with wherever EDyssey was
   installed (shown in the app's "About"/install location, typically
   `%LocalAppData%\Programs\EDyssey` for a per-user install or
-  `C:\Program Files\EDyssey` for an all-users one). This needs *some*
-  separate Python+pip available on the machine as a tool - not the
-  installed app itself, which doesn't ship one. If you skip this step,
-  every tab except SAM2 Tracker still works; that tab shows a message with
-  this same command when you try to use it without `torch`/`sam2` present.
+  `C:\Program Files\EDyssey` for an all-users one).
+
+If you skip this entirely, every tab except SAM2 Tracker still works; that
+tab shows a message pointing at Help > Set Up SAM2... when you try to use
+it without `torch`/`sam2` present.

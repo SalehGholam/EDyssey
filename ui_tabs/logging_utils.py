@@ -143,6 +143,10 @@ class LogConsole(qtw.QPlainTextEdit):
         logging.ERROR: '#ff6b6b',
         logging.WARNING: '#e0c341',
     }
+    # Matches the stylesheet's own `color: #d0d0d0` below - used to give
+    # every appended line an *explicit* color (see _append_log's own
+    # comment on why that matters), not just error/warning ones.
+    _DEFAULT_COLOR = '#d0d0d0'
 
     def __init__(self, parent=None, height=140):
         """Build the console widget (dark theme, 2000-line scrollback) and
@@ -165,14 +169,28 @@ class LogConsole(qtw.QPlainTextEdit):
     def _append_log(self, tab_name, msg, levelno, progress_key=''):
         """Append `msg` as a new console line, colored by level; if
         `progress_key` matches the line last written for that key, replace
-        that line in place instead of appending a new one."""
+        that line in place instead of appending a new one.
+
+        Every line is wrapped in an *explicit* color span - even the
+        default-colored ones - rather than mixing appendHtml() (for
+        colored lines) with appendPlainText() (for everything else): after
+        appendHtml() inserts a colored span, QPlainTextEdit's text cursor
+        keeps that span's character format as its own "current" format, so
+        a later appendPlainText() (which inserts using whatever the
+        cursor's current format already is, not the widget's own default)
+        silently inherited the previous line's color instead of resetting
+        to the console's normal text color - the color used to visibly
+        "stick" to every line after the first warning/error. Explicitly
+        setting a color every single time sidesteps that inherited-format
+        behavior entirely."""
         if levelno >= logging.ERROR:
             color = self._LEVEL_COLORS[logging.ERROR]
         elif levelno >= logging.WARNING:
             color = self._LEVEL_COLORS[logging.WARNING]
         else:
-            color = None
+            color = self._DEFAULT_COLOR
         line = f'[{tab_name}] {html.escape(msg)}'
+        html_line = f'<span style="color:{color}">{line}</span>'
 
         if progress_key:
             cursor = self._progress_cursors.get(progress_key)
@@ -186,17 +204,11 @@ class LogConsole(qtw.QPlainTextEdit):
                 cursor.movePosition(QTextCursor.StartOfBlock)
                 cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
                 cursor.removeSelectedText()
-                if color:
-                    cursor.insertHtml(f'<span style="color:{color}">{line}</span>')
-                else:
-                    cursor.insertText(line)
+                cursor.insertHtml(html_line)
                 self._progress_text[progress_key] = line
                 return
 
-        if color:
-            self.appendHtml(f'<span style="color:{color}">{line}</span>')
-        else:
-            self.appendPlainText(line)
+        self.appendHtml(html_line)
 
         if progress_key:
             new_cursor = QTextCursor(self.document())

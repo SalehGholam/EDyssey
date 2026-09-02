@@ -25,6 +25,8 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 from matplotlib_scalebar.scalebar import ScaleBar
 import matplotlib.patches as patches
+from matplotlib.lines import Line2D
+import cv2
 import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
@@ -36,6 +38,7 @@ from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
 from .clipping_thresholds import ClippingThresholdsWidget
+from .transposed_object_table import TransposedObjectTable
 from .pets2_dialog import Pets2ParamsDialog
 from .ribbon import RibbonPanel, RibbonTool
 from .smart_scan_dialog import SmartScanCheckDialog
@@ -409,13 +412,16 @@ class Tab_Tracking_CV2(TabBase):
         self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=False)
 
 
-        # Display Contrast and Feature Handling have moved out of the
+        # Adjust Contrast and Feature Handling have moved out of the
         # ribbon, into one stacked column beside the canvas (same position
         # as the Navigator tab's file list) - see the #%% canvas section
         # below, where self.box_contrast/self.tree_objects etc. are built.
 
         #%% Threshold / Edge Detection
-        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0)
+        # Fixed width (rather than sizing to content) - matches SAM2
+        # Tracker's own Threshold/Tracking/Extract column so the two tabs'
+        # ribbons don't visibly shift width against each other.
+        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0, width=320)
         #### threshold
         layout_thresh_method = qtw.QHBoxLayout()
         label_thresh_method = qtw.QLabel('Threshold Method')
@@ -424,14 +430,21 @@ class Tab_Tracking_CV2(TabBase):
         self.combo_thresh_method = qtw.QComboBox()
         layout_thresh_method.addWidget(self.combo_thresh_method)
         self.combo_thresh_method.addItems(['li', 'otsu', 'yen', 'mean'])
-        self.combo_thresh_method.currentIndexChanged.connect(lambda: self.update_canvas()) #TODO change to update mask
+        self.combo_thresh_method.currentIndexChanged.connect(self._on_threshold_control_changed) #TODO change to update mask
         
         label_blur = qtw.QLabel('ROI Blur')
         layout_thresh_method.addWidget(label_blur)
-        self.combo_blur = qtw.QComboBox()
-        layout_thresh_method.addWidget(self.combo_blur)
-        self.combo_blur.addItems([str(i) for i in range(1,23,2)])
-        self.combo_blur.currentIndexChanged.connect(lambda: self.update_canvas())
+        self.spinbox_blur = qtw.QDoubleSpinBox()
+        self.spinbox_blur.setFixedWidth(60)
+        # Same Gaussian-blur-sigma convention as the "Adjust Contrast" box's
+        # own Denoise control (io.DENOISE_PARAM_SPECS['Gaussian Blur']) - 0
+        # means no blur.
+        self.spinbox_blur.setRange(0.0, 20.0)
+        self.spinbox_blur.setSingleStep(0.1)
+        self.spinbox_blur.setDecimals(1)
+        self.spinbox_blur.setValue(0.0)
+        layout_thresh_method.addWidget(self.spinbox_blur)
+        self.spinbox_blur.valueChanged.connect(self._on_threshold_control_changed)
         layout_box_3ded.addLayout(layout_thresh_method)
 
         layout_deviation = qtw.QHBoxLayout()
@@ -442,7 +455,7 @@ class Tab_Tracking_CV2(TabBase):
         self.slider_thresh = qtw.QSlider(1)
         layout_deviation.addWidget(self.slider_thresh)
         self.slider_thresh.setDisabled(True)
-        self.slider_thresh.valueChanged.connect(lambda: self.update_canvas()) # TODO plot only mask ax
+        self.slider_thresh.valueChanged.connect(self._on_threshold_control_changed) # TODO plot only mask ax
         self.slider_thresh.setRange(0, 200)
         
         self.button_thresh = qtw.QPushButton('Reset')
@@ -450,61 +463,69 @@ class Tab_Tracking_CV2(TabBase):
         self.button_thresh.clicked.connect(self.reset_thresh)
         self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Threshold', stretch=False)
 
-        sep_3ded = qtw.QFrame()
-        sep_3ded.setFrameShape(qtw.QFrame.HLine)
-        sep_3ded.setFrameShadow(qtw.QFrame.Sunken)
-        layout_box_3ded.addWidget(sep_3ded)
+        # Edge Detection used to live here as a tab-wide control - it's now
+        # per-ROI, set only from the Fine-Tune Mask dialog's Segments
+        # feature (same as Mesh/Dilate-Erode already were - see
+        # apply_edge_mask/_edge_settings_for), so there's no main-tab
+        # widget for it anymore.
+        # Edge Detection used to live here as a tab-wide control too - it's
+        # now per-ROI, set only from the Fine-Tune Mask dialog's Segments
+        # feature (same as Mesh/Dilate-Erode already were). Blob Selection
+        # (when a ROI's threshold mask actually contains more than one
+        # separate object - e.g. two nearby particles - lets the user pick
+        # just one of them for extraction) is per-ROI too, but lives as its
+        # own "Blob" column in the object list below (see add_item_tree)
+        # instead of a tab-wide control here - click directly on the "ROI
+        # with Threshold" panel, once that column's checkbox is on for the
+        # selected ROI, to seed/reseed which blob to follow (see on_press's
+        # ax_mask branch/_resolve_blob_mask - runs before Dilate/Erode/Edge
+        # Detection/Mesh, in apply_edge_mask).
+        sep_tracking = qtw.QFrame()
+        sep_tracking.setFrameShape(qtw.QFrame.HLine)
+        sep_tracking.setFrameShadow(qtw.QFrame.Sunken)
+        layout_box_3ded.addWidget(sep_tracking)
 
-        
-        #### Edge detection
-        layout_edgeDetection_row1 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_edgeDetection_row1)
-        self.checkbox_edgeOnly = qtw.QCheckBox('Activate')
-        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
-        self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge facing one direction (angle below)')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
-        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
-        self.checkbox_revertMask.setToolTip(
-            'With Edge Detection: keep the interior, cut the edge band (inverse)')
-        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
-        self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
+        #%% Tracking - moved here from the bottom of the left object-list
+        # panel (below tree_objects), directly above Extract in the same
+        # stacked ribbon column, per user request.
+        layout_box_tracking = layout_box_3ded
 
-        layout_edgeDetection_row2 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_edgeDetection_row2)
-        label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection_row2.addWidget(label_edgeKernel)
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
-        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
-        self._ribbon_inline_separator(layout_edgeDetection_row2)
-        label_edgeDirection = qtw.QLabel('Angle (°)')
-        layout_edgeDetection_row2.addWidget(label_edgeDirection)
-        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(-360, 360)
-        self.spinbox_edgeDirection.setDecimals(1)
-        self.spinbox_edgeDirection.setSingleStep(5)
-        self.spinbox_edgeDirection.setValue(0)
-        self.spinbox_edgeDirection.setDisabled(True)
-        self.spinbox_edgeDirection.setToolTip(
-            '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
-        self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', separator=False, stretch=True)
+        layout_tracking_1 = qtw.QHBoxLayout()
+        label_track = qtw.QLabel('Tracker')
+        layout_tracking_1.addWidget(label_track)
+        self.combo_trackMethod = qtw.QComboBox()
+        # Closed-state width tracks a fixed character count instead of the
+        # longest item ('xcorr-template') - the popup itself still shows
+        # full item text, only the always-visible closed box is capped.
+        self.combo_trackMethod.setSizeAdjustPolicy(qtw.QComboBox.AdjustToMinimumContentsLength)
+        self.combo_trackMethod.setMinimumContentsLength(8)
+        layout_tracking_1.addWidget(self.combo_trackMethod)
+        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
+        layout_tracking_1.addStretch(1)
+        layout_box_tracking.addLayout(layout_tracking_1)
+
+        layout_tracking_2 = qtw.QHBoxLayout()
+        self.button_track = qtw.QPushButton('Track!')
+        self.button_track.setFixedHeight(button_h_lrg)
+        layout_tracking_2.addWidget(self.button_track)
+        self.button_track.clicked.connect(self.track_rois)
+        self.button_track.setDisabled(True)
+
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
+        self.button_fineTuneMask.setFixedHeight(button_h_lrg)
+        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
+        layout_tracking_2.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+        layout_box_tracking.addLayout(layout_tracking_2)
+        self._ribbon_group_end(layout_ribbon, layout_box_tracking, 'Tracking', separator=False, stretch=False)
 
         sep_extract = qtw.QFrame()
         sep_extract.setFrameShape(qtw.QFrame.HLine)
         sep_extract.setFrameShadow(qtw.QFrame.Sunken)
         layout_box_3ded.addWidget(sep_extract)
 
-        #%% Extract 
+        #%% Extract
         layout_box_extract = layout_box_3ded
 
         layout_threadNo = qtw.QHBoxLayout()
@@ -582,13 +603,31 @@ class Tab_Tracking_CV2(TabBase):
         self.disable_3ded_widgets(True)
         self._ribbon_group_end(layout_ribbon, layout_box_extract, 'Extract', separator=False)
         layout_ribbon.addStretch(1)
-        #%% Display Contrast (top) + Feature Handling
+        #%% Adjust Contrast (top) + Feature Handling
         widget_featurePanel = qtw.QWidget()
+        # Fixed (not just an initial splitter size) - a child widget's own
+        # minimum-size floor (e.g. tree_objects.setMinimumWidth below) would
+        # otherwise let this pane grow past 220px on a squeezed window,
+        # independently of whatever floor the other 3 tabs' own left panes
+        # happen to have, so the 4 tabs' panes could drift to different
+        # actual widths even though every tab starts from the same 220.
+        widget_featurePanel.setFixedWidth(220)
         layout_featurePanel = qtw.QVBoxLayout(widget_featurePanel)
         layout_featurePanel.setContentsMargins(2, 2, 2, 2)
 
         self.box_contrast = ContrastScalingBox()
         self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        # Denoise-only changes are decoupled from the full-stack rescale
+        # above (some methods are too slow to re-run on every frame for
+        # every parameter tweak) - see _on_denoise_preview_changed/
+        # _apply_denoise_to_all_frames, and box_contrast's own docstring.
+        self.box_contrast.denoisePreviewChanged.connect(self._on_denoise_preview_changed)
+        self.box_contrast.denoiseApplyAllRequested.connect(self._apply_denoise_to_all_frames)
+        self.box_contrast.checkMethodsRequested.connect(self._show_denoise_check_methods)
+        # True once a Denoise change has been previewed on the current frame
+        # only, but not yet (re)applied to the rest of the stack - see
+        # _on_denoise_preview_changed/_on_slider_imgNo_changed.
+        self._denoise_dirty = False
         layout_featurePanel.addWidget(self.box_contrast)
 
         # top
@@ -604,66 +643,42 @@ class Tab_Tracking_CV2(TabBase):
 
         # tree - stretches to fill the rest of this column's height now that
         # it sits beside the (tall) canvas, rather than being capped to fit
-        # inside a short ribbon column.
-        self.tree_objects = qtw.QTreeWidget()
+        # inside a short ribbon column. Transposed (see
+        # TransposedObjectTable): property names run down the fixed first
+        # column instead of across the top, and each tracked ROI is one
+        # column instead of one row, so adding a ROI adds a column - still
+        # called tree_objects (not literally a QTreeWidget anymore) since
+        # renaming the many existing references below wasn't worth it.
+        self.cols_tree = ["use", "idx", "init", "end", "ref", "blob", "trk", "ext", "dup", "del"]
+        row_labels = ["Use", "Idx", "Start", "End", "Ref", "Blob",
+                     "Tracked", "Extracted", "Duplicate", "Delete"]
+        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels)
         layout_featurePanel.addWidget(self.tree_objects, 1)
         self.tree_objects.setMinimumWidth(200)
-        self.cols_tree = ["use", "idx", "init", "end", "ref", "trk", "ext", "dup", "del"]
-        self.tree_objects.setHeaderLabels(["Use", "Idx", "Start", "End", "Ref", "Tracked", "Extracted", "Duplicate", "Delete"])
-        self.tree_objects.setColumnCount(len(self.cols_tree))
-        # Wide enough for their content: dup/del hold a 30px button, end
-        # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
-        col_widths = {'use': 35, 'idx': 30, 'init': 50, 'end': 60, 'ref': 45,
-                      'trk': 60, 'ext': 65, 'dup': 60, 'del': 45}
+        # Tall enough for their content: dup/del hold a 48/30px button, end
+        # holds a QSpinBox with up/down arrows, ref/blob hold a
+        # QComboBox/QCheckBox.
+        row_heights = {'use': 24, 'idx': 24, 'init': 24, 'end': 28, 'ref': 28, 'blob': 24,
+                       'trk': 24, 'ext': 24, 'dup': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
-            self.tree_objects.setColumnWidth(i, col_widths[col])
-        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
+            self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
+        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
 
         self.patches_axNav = []
         self.patches_axTrack = []
+        # {idx: {frame: (x, y)}} - Blob Selection's per-ROI auto-follow
+        # cache (see _resolve_blob_mask), cleared whenever a fresh seed is
+        # clicked or a ROI's tracking/threshold settings that would change
+        # what's in its threshold mask are touched, so a stale chosen-blob
+        # trail is never carried into a differently-thresholded/tracked run.
+        self._blob_centroid_cache = {}
+        # Contour/number-label artists drawn on ax_mask when Blob Selection
+        # is enabled (see _draw_blob_overlay) - cleared/rebuilt every
+        # update_canvas() call, tracked here so they can be removed again
+        # without touching anything else on that axis.
+        self._blob_overlay_artists = []
         self.empty_main_dataframe()
-
-        # bottom - blur/tracker selection on its own row, action buttons on
-        # another, rather than all 6 widgets crammed into one (too wide for
-        # the panel) row.
-        layout_featureBottom = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(layout_featureBottom)
-
-        label_blur_track = qtw.QLabel('Image Blur')
-        layout_featureBottom.addWidget(label_blur_track)
-        self.combo_blur_track = qtw.QComboBox()
-        layout_featureBottom.addWidget(self.combo_blur_track)
-        self.combo_blur_track.addItems([str(i) for i in range(1,23,2)])
-        self.combo_blur_track.currentIndexChanged.connect(self.blur_navImages)
-
-        label_track = qtw.QLabel('Tracker')
-        layout_featureBottom.addWidget(label_track)
-        self.combo_trackMethod = qtw.QComboBox()
-        # Closed-state width tracks a fixed character count instead of the
-        # longest item ('xcorr-template') - the popup itself still shows
-        # full item text, only the always-visible closed box is capped.
-        self.combo_trackMethod.setSizeAdjustPolicy(qtw.QComboBox.AdjustToMinimumContentsLength)
-        self.combo_trackMethod.setMinimumContentsLength(8)
-        layout_featureBottom.addWidget(self.combo_trackMethod)
-        self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
-        layout_featureBottom.addStretch(1)
-
-        layout_featureButtons = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(layout_featureButtons)
-        layout_featureButtons.addStretch(1)
-
-        self.button_track = qtw.QPushButton('Track!')
-        layout_featureButtons.addWidget(self.button_track, alignment=Qt.AlignCenter)
-        self.button_track.clicked.connect(self.track_rois)
-        self.button_track.setDisabled(True)
-
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
-        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
-        layout_featureButtons.addWidget(self.button_fineTuneMask, alignment=Qt.AlignCenter)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
-        layout_featureButtons.addStretch(1)
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -692,23 +707,25 @@ class Tab_Tracking_CV2(TabBase):
         layout_canvas.setContentsMargins(0, 0, 0, 0)
         layout_canvas_splitter.addWidget(_canvas_pane)
         
-        # All 4 subplots in one figure, one row (plt.subplots(1, 4)'s
+        # 3 subplots in one figure, one row (plt.subplots(1, 3)'s
         # arrangement) - Figure()+add_subplot() rather than pyplot's own
         # plt.subplots() to match every other tab's idiom (a bare Figure
         # handed straight to FigureCanvas, not registered with pyplot's
-        # global figure manager).
+        # global figure manager). Nav. Signal and Tracking Results used to
+        # be two separate subplots - now one merged axis (ax_nav): the
+        # input ROI (red) and tracked ROI (tab:orange) are distinguishable
+        # by color alone, so a second copy of the same frame image added
+        # nothing - see draw_rois_in/draw_rois_out.
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
-        self.ax_nav = self.figure.add_subplot(1, 4, 1)
-        self.ax_track = self.figure.add_subplot(1, 4, 2)
-        self.ax_mask = self.figure.add_subplot(1, 4, 3)
-        self.ax_dp = self.figure.add_subplot(1, 4, 4)
+        self.ax_nav = self.figure.add_subplot(1, 3, 1)
+        self.ax_mask = self.figure.add_subplot(1, 3, 2)
+        self.ax_dp = self.figure.add_subplot(1, 3, 3)
 
         # titles for axes
-        self.ax_nav.set_title('(1) Nav. Signal')
-        self.ax_track.set_title('(2) Tracking Results')
-        self.ax_mask.set_title('(3) Roi with Threshold')
-        self.ax_dp.set_title('(4) DP')
+        self.ax_nav.set_title('(1) Navigation / Tracking')
+        self.ax_mask.set_title('(2) Roi with Threshold')
+        self.ax_dp.set_title('(3) DP')
         self.img_display = {}
         self.img_zero = np.zeros((512,512), dtype='uint16')
         # One-off "Extract DP (Current Frame)" result - only shown while the
@@ -717,9 +734,9 @@ class Tab_Tracking_CV2(TabBase):
         # per-series dp display as soon as either changes. See
         # extract_dp_current_frame()/_on_current_frame_dp().
         self._current_frame_dp_preview = None
-        axes = ['nav', 'track', 'dp']
+        axes = ['nav', 'dp']
 
-        for i, ax in enumerate([self.ax_nav, self.ax_track, self.ax_dp]):
+        for i, ax in enumerate([self.ax_nav, self.ax_dp]):
             self.img_display[axes[i]] = ax.imshow(self.img_zero, cmap='viridis')
             # ax.set_axis_off()
             for spine in ax.spines.values():
@@ -748,8 +765,6 @@ class Tab_Tracking_CV2(TabBase):
         self.colorbars = {}
         self.colorbars['nav'] = self.figure.colorbar(
             self.img_display['nav'], ax=self.ax_nav, fraction=0.046, pad=0.04)
-        self.colorbars['track'] = self.figure.colorbar(
-            self.img_display['track'], ax=self.ax_track, fraction=0.046, pad=0.04)
         self.colorbars['img_mask'] = self.figure.colorbar(
             self.img_display['img_mask'], ax=self.ax_mask, fraction=0.046, pad=0.04)
         self.colorbars['dp'] = self.figure.colorbar(
@@ -770,12 +785,10 @@ class Tab_Tracking_CV2(TabBase):
         # does NOT duplicate the left panel's buttons (Track!, Extract All,
         # Save Results, ...), only actions that act directly on the plot
         # itself. 'select_roi' is the only tool mode on_press actually
-        # checks (see RibbonPanel.active_tool there) - it covers both a new
-        # ROI (on ax_nav) and a ROI-in-ROI (on ax_track), same as Ctrl+drag
-        # already does on each. Pan/Zoom/Home act on the one shared toolbar.
+        # checks (see RibbonPanel.active_tool there). Pan/Zoom/Home act on
+        # the one shared toolbar.
         self.ribbon = RibbonPanel([
-            RibbonTool('select_roi', 'select_roi', 'Select ROI (or ROI-in-ROI, right axis) - '
-                      'same as Ctrl+drag', 'tool'),
+            RibbonTool('select_roi', 'select_roi', 'Select ROI - same as Ctrl+drag', 'tool'),
             RibbonTool('sep1', kind='separator'),
             RibbonTool('pan', 'pan', 'Toggle pan mode on the canvas',
                       'action', self.toolbar.pan),
@@ -799,7 +812,7 @@ class Tab_Tracking_CV2(TabBase):
         layout_canvas_stack = qtw.QVBoxLayout(self._canvas_stack_widget)
 
         # Clipping Thresholds beside the canvas (only the DP axis's own
-        # clipping, per the decision that the Display Contrast box already
+        # clipping, per the decision that the Adjust Contrast box already
         # covers the nav image on this tab - unlike Tab_ROI_on_4D/Navigator,
         # which had no equivalent).
         layout_canvas_row = qtw.QHBoxLayout()
@@ -823,7 +836,6 @@ class Tab_Tracking_CV2(TabBase):
         # event.inaxes themselves and no-op outside their own axes, so both
         # can safely share the one canvas's button_press_event.
         self.rect = None            # Currently drawn rectangle
-        self.rect_roiInRoi = None
         self.press = None           # Mouse press coordinates
 
         self.canvas.mpl_connect('button_press_event', self.on_press)
@@ -836,8 +848,7 @@ class Tab_Tracking_CV2(TabBase):
         self.canvas.mpl_connect('resize_event', lambda evt: setattr(self, '_bg', None))
 
         self.backgrounds = {}
-        for ax_name, ax in (('nav', self.ax_nav), ('track', self.ax_track)):
-            self.backgrounds[ax_name] = self.canvas.copy_from_bbox(ax.bbox)
+        self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
 
         #%% slider img num
         layout_slider = qtw.QHBoxLayout()
@@ -851,6 +862,20 @@ class Tab_Tracking_CV2(TabBase):
         self.lineEdit_imgNo.setFixedWidth(35)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
         self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
+
+        # Prev/Next sit together, right before the slider itself, rather
+        # than flanking it on both sides.
+        self.button_prevFrame = qtw.QPushButton('◀')
+        self.button_prevFrame.setFixedWidth(28)
+        self.button_prevFrame.setToolTip('Previous frame')
+        self.button_prevFrame.clicked.connect(lambda: self._step_frame(-1))
+        layout_slider.addWidget(self.button_prevFrame)
+
+        self.button_nextFrame = qtw.QPushButton('▶')
+        self.button_nextFrame.setFixedWidth(28)
+        self.button_nextFrame.setToolTip('Next frame')
+        self.button_nextFrame.clicked.connect(lambda: self._step_frame(1))
+        layout_slider.addWidget(self.button_nextFrame)
 
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
@@ -879,7 +904,7 @@ class Tab_Tracking_CV2(TabBase):
             lambda: self.slider_imgNo.setValue(self.slider_imgNo.maximum()))
         layout_slider.addWidget(self.button_frame_end)
 
-        self.slider_imgNo.valueChanged.connect(self.update_canvas)
+        self.slider_imgNo.valueChanged.connect(self._on_slider_imgNo_changed)
         #%% progress bar
         layout_progress_bar = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_progress_bar)
@@ -947,9 +972,8 @@ class Tab_Tracking_CV2(TabBase):
         self.combo_trackMethod.setToolTip(
             'Tracking algorithm - CSRT is most accurate; xcorr-phase/template '
             'track by cross-correlation shift (best for drift-only motion)')
-        self.combo_blur_track.setToolTip('Gaussian blur kernel applied before tracking (higher = more smoothing)')
         self.combo_thresh_method.setToolTip('Thresholding algorithm used to create the binary mask')
-        self.combo_blur.setToolTip('Gaussian blur kernel applied before thresholding')
+        self.spinbox_blur.setToolTip('Gaussian blur sigma applied to the ROI before thresholding - 0 = no blur')
         self.spinbox_threadNo.setToolTip('Number of CPU cores used for parallel 4D extraction')
         self.checkbox_autosave.setToolTip('Automatically save results when extraction finishes')
         self.checkbox_makePets2.setToolTip(
@@ -1274,10 +1298,6 @@ class Tab_Tracking_CV2(TabBase):
             try:
                 p.remove()
             except Exception: pass
-        for p in self.ax_track.patches:
-            try:
-                p.remove()
-            except Exception: pass
         for p in self.patches_axNav:
             try:
                 p.remove()
@@ -1291,7 +1311,6 @@ class Tab_Tracking_CV2(TabBase):
         # background to be recaptured on the next frame update.
         self._bg = None
 
-        self.img_display['track'].set_data(self.img_zero)
         self.img_display['mask'].set_data(self.img_zero)
         self.img_display['img_mask'].set_data(self.img_zero)
         self.img_display['dp'].set_data(self.img_zero)
@@ -1305,36 +1324,129 @@ class Tab_Tracking_CV2(TabBase):
         
     
     def rescale_nav_signal(self):
-        """Retune contrast without reloading the signal from disk: the
-        currently-displayed frame is rescaled immediately (cheap, instant
-        feedback), while the full stack (used for tracking, and to keep
-        every other frame in sync) rescales in the background - a long
-        stack no longer blocks/lags the GUI on every settings tweak.
-        Rapid retuning cancels (i.e. discards the result of) any
-        still-running previous background rescale - see
-        ContrastScalingBox.rescale_async."""
+        """Contrast settings changed: the currently-displayed frame is
+        rescaled immediately (cheap, instant feedback), while the full
+        stack (used for tracking, and to keep every other frame in sync)
+        rescales in the background - a long stack no longer blocks/lags the
+        GUI on every settings tweak. Rapid retuning cancels (i.e. discards
+        the result of) any still-running previous background rescale - see
+        ContrastScalingBox.rescale_async. Also used as
+        _apply_denoise_to_all_frames's own worker - both end up wanting
+        exactly this same full-stack-refresh-from-current-settings."""
         if not hasattr(self, 's'):
             return
-        imgNo = self.slider_imgNo.value()
+        self._refresh_current_frame_display()
+        self.box_contrast.set_denoise_apply_all_busy(True)
+        self.progress_bar.setRange(0, len(self.nav_imgs))
+        self.progress_bar.setValue(0)
+        self.box_contrast.rescale_async(self.s, self.threadpool, self.logger,
+                                        on_done=self._on_nav_signal_rescaled,
+                                        on_error=self._on_nav_signal_rescale_failed,
+                                        on_progress=self.update_progress_bar)
+
+    def _refresh_current_frame_display(self, imgNo=None):
+        """Rescale (contrast + denoise, current settings) and redraw just
+        the currently-displayed frame - cheap, so safe to call on every
+        Denoise parameter tweak (see _on_denoise_preview_changed) or frame
+        navigation (see _on_slider_imgNo_changed) without waiting for a full
+        background stack rescale.
+
+        update_canvas() already blits (see _blit_canvas) - it paints the
+        canvas itself, so no trailing canvas.draw_idle() belongs here: that
+        used to schedule a full, unblitted redraw of the whole figure right
+        after the cheap blit, silently undoing it and making every single
+        Denoise parameter nudge as expensive as a full draw."""
+        if not hasattr(self, 's'):
+            return
+        if imgNo is None:
+            imgNo = self.slider_imgNo.value()
         frame_8bit = self.box_contrast.rescale_frame(self.nav_imgs_raw[imgNo])
         self.nav_imgs[imgNo] = frame_8bit
         self.img_display['nav'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
-        self.img_display['track'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
-        self.update_canvas()
-        self.canvas.draw_idle()
+        self.update_canvas(imgNo)
 
-        self.box_contrast.rescale_async(self.s, self.threadpool, self.logger,
-                                        on_done=self._on_nav_signal_rescaled)
+    def _on_denoise_preview_changed(self):
+        """box_contrast's Denoise method/parameter changed: refresh just
+        the current frame (cheap) - the rest of the stack is intentionally
+        left as-is (some denoise methods are too slow to re-run on every
+        frame for every tweak) until "Apply to All Images" is clicked (see
+        _apply_denoise_to_all_frames) or a contrast change triggers a full
+        refresh anyway (rescale_nav_signal). Marks the stack "dirty" so
+        navigating to a different frame in the meantime also gets a fresh
+        preview instead of showing that frame's old, differently-denoised
+        pixels - see _on_slider_imgNo_changed."""
+        self._denoise_dirty = True
+        self._refresh_current_frame_display()
+
+    def _apply_denoise_to_all_frames(self):
+        """box_contrast's "Apply to All Images" button: run the full
+        contrast+denoise pipeline across the whole stack now, on demand -
+        exactly what rescale_nav_signal already does for a contrast change,
+        just triggered explicitly instead.
+
+        Clears "dirty" right away, rather than waiting for the background
+        rescale to actually finish: the whole point of this button is to
+        make frame navigation fast again immediately, not just once a
+        possibly slow (large stack, slow method) background job eventually
+        completes - during that window _on_slider_imgNo_changed no longer
+        recomputes per-frame (which would otherwise keep contending with
+        the background job for CPU, defeating the point), so a frame
+        visited in that window may briefly show its pre-rescale pixels
+        until _on_nav_signal_rescaled's own refresh catches it up."""
+        self._denoise_dirty = False
+        self.rescale_nav_signal()
+
+    def _show_denoise_check_methods(self):
+        """box_contrast's "Check Methods..." button: compare every
+        denoising method on the currently-displayed raw frame."""
+        if not hasattr(self, 'nav_imgs_raw'):
+            qtw.QMessageBox.warning(self, 'No Signal Loaded',
+                'Load a signal first to compare denoising methods on it.')
+            return
+        imgNo = self.slider_imgNo.value()
+        self._check_methods_dlg = self.box_contrast.open_check_methods_dialog(
+            self.nav_imgs_raw[imgNo], parent=self)
 
     def _on_nav_signal_rescaled(self, s_8bit):
         """Callback for box_contrast.rescale_async(): apply the freshly
-        rescaled full image stack once the background rescale finishes."""
+        rescaled full image stack once the background rescale finishes -
+        every frame now reflects the current Denoise settings too, so the
+        stack is no longer "dirty" (see _on_denoise_preview_changed)."""
+        self.box_contrast.set_denoise_apply_all_busy(False)
         self.s_8bit = s_8bit
         self.nav_imgs = deepcopy(s_8bit.data)
+        self._denoise_dirty = False
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.update_canvas()
-        self.canvas.draw_idle()
+        self.update_canvas()  # already blits and paints - no trailing draw_idle() needed
+
+    def _on_nav_signal_rescale_failed(self, traceback_text):
+        """ContrastScalingBox.rescale_async's on_error callback: without
+        this, a failed full-stack rescale (e.g. Apply to All Images hitting
+        a denoise-method error) would vanish silently - the "dirty" flag
+        would stay False (cleared optimistically by
+        _apply_denoise_to_all_frames) forever, leaving every frame but the
+        one on screen at that moment permanently stuck showing pre-rescale
+        pixels with no way to tell it had failed. Re-dirtying falls back to
+        per-frame recompute on navigation (see _on_slider_imgNo_changed)
+        until the user retries."""
+        self.box_contrast.set_denoise_apply_all_busy(False)
+        self._denoise_dirty = True
+        self.logger.error('Full-stack contrast/denoise rescale failed:\n%s', traceback_text)
+        qtw.QMessageBox.warning(self, 'Rescale Failed',
+            f'Could not apply the current contrast/denoise settings to the '
+            f'full image stack:\n{traceback_text[-500:]}')
+
+    def _on_slider_imgNo_changed(self, imgNo):
+        """Frame slider moved: if the currently-configured Denoise settings
+        haven't been applied to the whole stack yet (see
+        _on_denoise_preview_changed/_apply_denoise_to_all_frames), refresh
+        just this now-visible frame first, so navigating around always
+        reflects the live-configured settings without eagerly recomputing
+        every other frame too."""
+        if self._denoise_dirty:
+            self._refresh_current_frame_display(imgNo)
+        else:
+            self.update_canvas(imgNo)
 
     def initiate_processing(self, result, index):
         """WorkerThread_General callback for load_navSignal()/
@@ -1359,10 +1471,8 @@ class Tab_Tracking_CV2(TabBase):
         
         shape_x, shape_y = self.nav_imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
 
         # Reset the view to the newly loaded data's full extent (in case the
@@ -1371,12 +1481,11 @@ class Tab_Tracking_CV2(TabBase):
         # button resets to *this* view instead of doing nothing (it does
         # nothing until something pushes at least one view onto its stack,
         # which our own scroll-wheel zoom deliberately bypasses).
-        # ax_mask is deliberately excluded here: unlike nav/track, it shows a
+        # ax_mask is deliberately excluded here: unlike ax_nav, it shows a
         # per-ROI *cropped* image whose size varies with each ROI, and whose
         # view is kept in sync with that in update_ax_mask() instead.
-        for ax in (self.ax_nav, self.ax_track):
-            ax.set_xlim(0, shape_y)
-            ax.set_ylim(shape_x, 0)
+        self.ax_nav.set_xlim(0, shape_y)
+        self.ax_nav.set_ylim(shape_x, 0)
         self.toolbar.update()
         self.toolbar.push_current()
 
@@ -1490,6 +1599,14 @@ class Tab_Tracking_CV2(TabBase):
                 'idx': idx, 'use': row['use'], 'init': row['init'],
                 'in_rois': row['in_rois'], 'end': row['end'], 'ref': row['ref'],
                 'out_rois': out_rois, 'mask': mask, 'dp': dp,
+                # Old saved analyses simply lack these keys - default to
+                # "no segments" (nothing configured) rather than KeyError.
+                # 'edge_detection' (not 'edge') matches _save_results_impl's
+                # own JSON field name.
+                'mesh': row.get('mesh', {'segments': []}),
+                'dilate_erode': row.get('dilate_erode', {'segments': []}),
+                'edge': row.get('edge_detection', {'segments': []}),
+                'blob': row.get('blob', {'segments': []}),
             })
         return s, rois, path, fn_nav
 
@@ -1503,7 +1620,8 @@ class Tab_Tracking_CV2(TabBase):
         for roi in rois:
             idx = roi['idx']
             self.df_rois.loc[idx] = [roi['use'], roi['init'], roi['in_rois'], roi['end'],
-                                      roi['ref'], roi['out_rois'], roi['mask'], roi['dp'], None]
+                                      roi['ref'], roi['out_rois'], roi['mask'], roi['dp'],
+                                      roi['mesh'], roi['dilate_erode'], roi['edge'], roi['blob']]
             self.add_item_tree(idx, roi['init'], roi['end'], roi['ref'], roi['use'])
             row_index = self.df_rois.index.get_loc(idx)
             if roi['out_rois'] is not None:
@@ -1519,14 +1637,18 @@ class Tab_Tracking_CV2(TabBase):
         self.logger.info('Loaded saved analysis from %s (%d ROI(s)).', path, len(rois))
 
     def disable_3ded_widgets(self, state):
-        # box_3ded now stacks Threshold/Edge Detection/Extract (CPU Cores/
-        # Clip FPS/Autosave/Make *.pts2/the 3 extract buttons) in one
+        # box_3ded now stacks Threshold/Blob Selection/Tracking/Extract (CPU
+        # Cores/Clip FPS/Autosave/Make *.pts2/the 3 extract buttons) in one
         # combined ribbon column. button_cancel lives in here too, but must
         # stay independent of this sweep - it needs to stay clickable
         # regardless of tracking/extraction state, managed by its own
-        # enable/disable calls elsewhere.
+        # enable/disable calls elsewhere. combo_trackMethod is excluded the
+        # same way - it's just a preference (which tracker algorithm to use
+        # next time "Track!" is clicked), pickable at any time, not
+        # something that needs a loaded signal/tracked ROI first the way
+        # everything else in this column does.
         for wid in self.box_3ded.findChildren(qtw.QWidget):
-            if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
+            if isinstance(wid, qtw.QLabel) or wid in (self.button_cancel, self.combo_trackMethod):
                 continue
             wid.setDisabled(state)
     
@@ -1542,23 +1664,15 @@ class Tab_Tracking_CV2(TabBase):
         """(Re)create df_rois as an empty dataframe with the expected
         columns/dtypes, and clear the cached ROI patch lists."""
         self.cols_df = ['use', 'init', 'in_rois', 'end',
-                        'ref', 'out_rois', 'mask', 'dp', 'mesh']
+                        'ref', 'out_rois', 'mask', 'dp', 'mesh', 'dilate_erode', 'edge', 'blob']
         self.df_rois = pd.DataFrame([], columns=self.cols_df)
         self.df_rois = self.df_rois.astype({'use': int, 'init': object, 'in_rois': object, 'end': int,
                                             'out_rois': object, 'dp': object, 'ref':str, 'mask':object,
-                                            'mesh': object})
+                                            'mesh': object, 'dilate_erode': object, 'edge': object,
+                                            'blob': object})
         
         self.patches_axTrack.clear()
         self.patches_axNav.clear()
-
-    def blur_navImages(self):
-        kernelSize = int(self.combo_blur_track.currentText())
-        new_images = np.zeros_like(self.nav_imgs)
-        for i, img in enumerate(self.s_8bit.data):
-            new_images[i] = io.gaussian_blur(img, kernelSize)
-        self.nav_imgs = new_images
-        self.update_canvas()
-        self.logger.info('Applied blur (kernel size %d) to navigation images.', kernelSize)
 
     def reset_rois(self):
         self.tree_objects.clear()
@@ -1574,14 +1688,24 @@ class Tab_Tracking_CV2(TabBase):
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
         self.slider_imgNo.setValue(num)
-    
+
+    def _step_frame(self, delta):
+        """Previous/Next Frame buttons: move the slider by one frame,
+        clamped to its range - mirrors MaskEditDialog's own _step_frame."""
+        self.slider_imgNo.setValue(int(np.clip(
+            self.slider_imgNo.value() + delta,
+            self.slider_imgNo.minimum(), self.slider_imgNo.maximum())))
+
     def update_canvas(self, imgNo=None):
-        """Redraw the nav/track/mask/dp panels for `imgNo` (or the slider's
-        current value) and the selected ROI, via blit."""
-        # Guards the edge-detection/threshold controls' live-preview wiring
-        # (checkbox_edgeOnly, spinbox_edgeKernel, checkbox_edgeDirectional,
-        # spinbox_edgeDirection) - they live in box_3ded, normally disabled
-        # until a navigation signal is loaded, but a disabled QWidget still
+        """Redraw the nav/mask/dp panels for `imgNo` (or the slider's
+        current value) and the selected ROI, via blit. Nav. Signal and
+        Tracking Results share one merged axis (ax_nav) - the input ROI
+        (red, draw_rois_in) and tracked ROI (tab:orange, draw_rois_out) are
+        both drawn directly on top of the one frame image, so there's no
+        separate "track" image to update - just the ROI overlays."""
+        # Guards the threshold controls' live-preview wiring - they live in
+        # box_3ded, normally disabled until a navigation signal is loaded,
+        # but a disabled QWidget still
         # emits its change signals when set programmatically, and an
         # uncaught exception inside a Qt slot aborts the whole process
         # rather than raising normally - so this can't just rely on
@@ -1592,17 +1716,16 @@ class Tab_Tracking_CV2(TabBase):
             imgNo = self.slider_imgNo.value()
 
         img = self.nav_imgs[imgNo]
-        
+
         self.update_ax(img, 'nav', self.ax_nav, f'Nav Image No. {imgNo:d}')
         self.draw_rois_in(imgNo)
-        
+
         selected_items = self.tree_objects.selectedItems()
         if selected_items:
             item = selected_items[0]
             idx = int(item.text(1))
             # track
             if not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])):
-                self.update_ax(img, 'track', self.ax_track, f'Nav Image No. {imgNo:d}')
                 self.draw_rois_out(imgNo)
 
                 # mask
@@ -1613,13 +1736,15 @@ class Tab_Tracking_CV2(TabBase):
                         self.combo_thresh_method.currentText(),
                         self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
                     self.update_ax_mask(img_roi, img_mask)
+                    self._draw_blob_overlay(idx, imgNo)
                 else:
-                    self.update_ax(self.img_zero, 'track', self.ax_track)
                     self.update_ax_mask(self.img_zero, self.img_zero)
+                    self._draw_blob_overlay(None, imgNo)
             else:
-                self.update_ax(self.img_zero, 'track', self.ax_track)
+                self._clear_tracked_roi_overlay()
                 self.update_ax_mask(self.img_zero, self.img_zero)
-            
+                self._draw_blob_overlay(None, imgNo)
+
             # dp
             preview = self._current_frame_dp_preview
             if preview is not None and preview['idx'] == idx and preview['i_fr'] == imgNo:
@@ -1635,8 +1760,11 @@ class Tab_Tracking_CV2(TabBase):
                         self.update_ax(self.img_zero, 'dp', self.ax_dp)
                 else:
                     self.update_ax(self.img_zero, 'dp', self.ax_dp)
+        else:
+            self._clear_tracked_roi_overlay()
+            self._draw_blob_overlay(None, imgNo)
 
-        # A single blit for the whole (single, 4-subplot) canvas here
+        # A single blit for the whole (single, 3-subplot) canvas here
         # (instead of a full canvas.draw()/draw_idle() per frame) avoids
         # re-rendering every artist in the figure - scale bars, static
         # titles/labels, axis chrome - on every single slider tick; only
@@ -1645,53 +1773,29 @@ class Tab_Tracking_CV2(TabBase):
         # constrained_layout's spacing solve is also one of the most
         # expensive parts of a full draw and doesn't need to repeat once
         # subplot spacing has settled.
-        nav_artists = ([self.img_display['nav'], self.img_display['track'],
-                        self.ax_nav.title, self.ax_track.title]
+        nav_artists = ([self.img_display['nav'], self.ax_nav.title]
                        + self.patches_axNav + self.patches_axTrack)
-        extract_artists = [self.img_display['img_mask'], self.img_display['mask'],
-                           self.img_display['dp']]
+        extract_artists = ([self.img_display['img_mask'], self.img_display['mask'],
+                           self.img_display['dp']] + self._blob_overlay_artists)
         self._blit_canvas(
             self.canvas, self.figure, '_bg', nav_artists + extract_artists,
-            hide_for_background=[self.img_display['nav'], self.img_display['track']] + extract_artists,
-            titles_for_background=(self.ax_nav, self.ax_track))
+            hide_for_background=[self.img_display['nav']] + extract_artists,
+            titles_for_background=(self.ax_nav,))
         if not self._layout_frozen:
             self.figure.set_layout_engine('none')
             self._layout_frozen = True
 
-    def _blit_canvas(self, canvas, figure, bg_attr, artists,
-                     hide_for_background=(), titles_for_background=()):
-        """Render `artists` onto `canvas` via blit instead of a full
-        canvas.draw()/draw_idle().
-
-        Reuses a cached "clean" background (everything in the figure except
-        `artists`) stored in `self.<bg_attr>`. That background is captured
-        lazily - whenever `self.<bg_attr>` is None (first use, or after
-        being invalidated elsewhere e.g. on canvas resize, new data, or a
-        scale bar being added/removed) - by briefly hiding
-        `hide_for_background` and blanking `titles_for_background`, doing
-        one full draw(), then restoring them before the real content is
-        blitted on top.
-        """
-        if getattr(self, bg_attr) is None:
-            prev_visible = [a.get_visible() for a in hide_for_background]
-            for a in hide_for_background:
-                a.set_visible(False)
-            prev_titles = [ax.get_title() for ax in titles_for_background]
-            for ax in titles_for_background:
-                ax.set_title('')
-
-            canvas.draw()
-            setattr(self, bg_attr, canvas.copy_from_bbox(figure.bbox))
-
-            for a, v in zip(hide_for_background, prev_visible):
-                a.set_visible(v)
-            for ax, t in zip(titles_for_background, prev_titles):
-                ax.set_title(t)
-
-        canvas.restore_region(getattr(self, bg_attr))
-        for artist in artists:
-            artist.axes.draw_artist(artist)
-        canvas.blit(figure.bbox)
+    def _clear_tracked_roi_overlay(self):
+        """Remove the tracked-ROI (tab:orange) overlay - and its reference-
+        ROI dashed-yellow box, if any - from the merged nav/track axis,
+        e.g. when no ROI is selected or the selected one isn't tracked yet.
+        draw_rois_out() would otherwise leave a stale overlay on screen
+        from whatever was previously selected, since it's simply not called
+        in that case."""
+        if len(self.patches_axTrack) > 0:
+            for p in self.patches_axTrack:
+                p.remove()
+            self.patches_axTrack.clear()
 
     def update_ax(self, img, img_disp, ax, title=None,):
         """Update the image data, title, and color limits for one display
@@ -1755,7 +1859,9 @@ class Tab_Tracking_CV2(TabBase):
 
     def draw_rois_out(self, imgNo):
         """Draw the tracked (output) ROI rectangles (+ id labels) for frame
-        `imgNo` onto ax_track, replacing whatever was drawn there before.
+        `imgNo` onto the merged nav/track axis (ax_nav), replacing whatever
+        was drawn there before - tab:orange, distinguishing them from the
+        (red) input ROIs drawn by draw_rois_in on the same axis.
 
         A ROI-in-ROI object's own reference/parent ROI is drawn too (a
         distinct dashed yellow box), even if the parent isn't itself
@@ -1782,7 +1888,7 @@ class Tab_Tracking_CV2(TabBase):
                     if (w>0) and (h>0):
                         rect = patches.Rectangle((x,y), w, h, linewidth=1, edgecolor='tab:orange',
                                                  facecolor='none')
-                        self.ax_track.add_patch(rect)
+                        self.ax_nav.add_patch(rect)
                         self.patches_axTrack.append(rect)
 
                         # id
@@ -1790,7 +1896,7 @@ class Tab_Tracking_CV2(TabBase):
                         font_size = 8
                         pos = (x+w/2, y-15)
                         # font_size = 12
-                        t = self.ax_track.text(pos[0], pos[1], str(i), horizontalalignment='center',
+                        t = self.ax_nav.text(pos[0], pos[1], str(i), horizontalalignment='center',
                                                verticalalignment='center', color='tab:orange', fontsize=font_size)
                         self.patches_axTrack.append(t)
                 except Exception:
@@ -1810,9 +1916,9 @@ class Tab_Tracking_CV2(TabBase):
                         ref_rect = patches.Rectangle((rx, ry), rw, rh, linewidth=1.5,
                                                      edgecolor='yellow', linestyle='--',
                                                      facecolor='none')
-                        self.ax_track.add_patch(ref_rect)
+                        self.ax_nav.add_patch(ref_rect)
                         self.patches_axTrack.append(ref_rect)
-                        t = self.ax_track.text(rx+rw/2, ry-15, str(ref_idx), horizontalalignment='center',
+                        t = self.ax_nav.text(rx+rw/2, ry-15, str(ref_idx), horizontalalignment='center',
                                                verticalalignment='center', color='yellow', fontsize=8)
                         self.patches_axTrack.append(t)
                 except Exception:
@@ -1851,20 +1957,44 @@ class Tab_Tracking_CV2(TabBase):
         if (shape_x, shape_y) != getattr(self, '_ax_mask_shape_seen', None):
             self.ax_mask.set_xlim(0, shape_y)
             self.ax_mask.set_ylim(shape_x, 0)
+            # adjustable='box' (not the 'datalim' some other call could have
+            # left it on) - a tracked ROI's crop aspect ratio can change a
+            # lot frame to frame, and 'datalim' would stretch/distort the
+            # *data* limits to fill this axis's already-allotted box,
+            # exactly the pixel-squashing this is meant to avoid. 'box'
+            # instead resizes the box itself (within its allotted subplot
+            # space) to fit the image at its correct 1:1 pixel aspect.
+            self.ax_mask.set_aspect('equal', adjustable='box')
             self._ax_mask_shape_seen = (shape_x, shape_y)
+            # That box resize only actually takes effect during a REAL
+            # Axes.draw() (Axes.apply_aspect(), which recomputes the axes'
+            # own position/bbox within the figure, only runs there) - but
+            # update_canvas's own blit (_blit_canvas) never calls that,
+            # only canvas.restore_region(self._bg) (repainting a *cached*
+            # bitmap captured back when the box had a DIFFERENT shape) plus
+            # draw_artist() on the handful of per-frame artists. The result
+            # was the reported stretching: img_mask/mask get freshly drawn
+            # at the new, correctly-reshaped box, painted right on top of
+            # chrome/other-axes pixels still sitting at the OLD box shape
+            # underneath. Invalidating the cached background here forces
+            # the next update_canvas() to fall back to a real canvas.draw()
+            # (see _blit_canvas's own "if self._bg is None" branch), which
+            # re-runs apply_aspect() for every axis and recaptures a fresh,
+            # correctly-shaped background before any further blitting.
+            self._bg = None
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
         # self.canvas.draw_idle()
         
     def update_scalebar(self, which):
-        """Add/update the scale bar (which='real', on nav/track/mask) or
-        the reciprocal-space rings (which='reciprocal', on the dp axis),
-        based on the current scale line-edit text."""
+        """Add/update the scale bar (which='real', on nav/mask) or the
+        reciprocal-space rings (which='reciprocal', on the dp axis), based
+        on the current scale line-edit text."""
         if which == 'real':
             try:
                 scale_real = float(self.lineEdit_scale_real.text())
 
-                for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
+                for ax in [self.ax_nav, self.ax_mask]:
                     io.add_readable_scalebar(ax, scale_real, 'nm')
 
                 # The scale bar itself is static across frames, so it needs
@@ -1876,7 +2006,7 @@ class Tab_Tracking_CV2(TabBase):
 
             except ValueError:
 
-                for ax in [self.ax_nav, self.ax_track, self.ax_mask]:
+                for ax in [self.ax_nav, self.ax_mask]:
                     for artist in ax.artists[:]:
                         if isinstance(artist, ScaleBar):
                             artist.remove()
@@ -1907,12 +2037,12 @@ class Tab_Tracking_CV2(TabBase):
         crowded, and on a narrow window two adjacent subplots' multi-line
         hints could visibly run into each other."""
         self.show_shortcuts_dialog(
-            'Nav. Image:\n'
+            'Nav. Image / Tracking Results (merged axis):\n'
             '  Hold "Ctrl" + Left Click+Drag  ->  New ROI\n'
             '  Hold "Ctrl" + Right Click  ->  Add init to existing ROI\n'
-            '\n'
-            'Track Image:\n'
-            '  Select the reference ROI, then Hold "Ctrl" + Drag  ->  Draw ROI-in-ROI\n'
+            '  To make a ROI-in-ROI: draw a plain ROI here, then set its "Ref" '
+            'in the object list below to another ROI\'s index - it\'s auto-clamped '
+            'to fit inside that reference ROI\'s current bounds.\n'
             '\n'
             'Diffraction Pattern:\n'
             '  Click "Center" (Input Parameters)  ->  Find the beam center\n'
@@ -1943,18 +2073,30 @@ class Tab_Tracking_CV2(TabBase):
         """Blur `img`, compute a threshold via `thresh_method` (over the
         whole image if mode='full', or just within `roi` if mode='roi'),
         binarize at `thresh_offset` (percent of the computed threshold),
-        then crop both the mask and the raw image to `roi` and apply the
-        current edge-detection settings (and, if `idx` is given, that ROI's
-        Mesh restriction for `frame_idx` - see apply_edge_mask) to the
-        mask. Returns (img_mask, img_cut)."""
-        # thresh_method = self.combo_thresh_method.currentText()
-        blur_kernel = int(self.combo_blur.currentText())
+        then crop both the mask and the raw image to `roi` (see
+        _raw_threshold_crop) and apply Blob Selection/the current edge-
+        detection settings (and, if `idx` is given, that ROI's Mesh
+        restriction for `frame_idx` - see apply_edge_mask) to the mask.
+        Returns (img_mask, img_cut)."""
+        img_mask, img_cut = self._raw_threshold_crop(img, roi, thresh_method, thresh_offset, mode)
+        img_mask = self.apply_edge_mask(img_mask, idx, frame_idx)
+        return img_mask, img_cut
+
+    def _raw_threshold_crop(self, img, roi, thresh_method, thresh_offset, mode='full'):
+        """The blur+threshold+crop portion of threshold_img, without any of
+        apply_edge_mask's post-processing (Blob Selection/Dilate-Erode/Edge
+        Detection/Mesh) - split out so the "which blob did the user click"
+        handler (see _on_blob_mask_clicked) can get at the same raw,
+        possibly-multi-blob mask threshold_img itself starts from, instead
+        of the already-restricted-to-one-blob result. Returns (img_mask,
+        img_cut), same as threshold_img."""
+        blur_sigma = self.spinbox_blur.value()
         threshold_methods = {'otsu': threshold_otsu, 'li': threshold_li,
                              'yen': threshold_yen, 'mean': threshold_mean}
         threshold_func = threshold_methods[thresh_method]
 
         y,x,h,w = roi
-        img_blur = io.gaussian_blur(img, blur_kernel)
+        img_blur = io.denoise_image(img, 'Gaussian Blur', blur_sigma) if blur_sigma > 0 else img
         img_cut = img[x:x+w, y:y+h]
         if mode == 'full':
             th = io.threshold_ignore_zero(threshold_func, img_blur)
@@ -1964,7 +2106,6 @@ class Tab_Tracking_CV2(TabBase):
         thresh = thresh_offset * th
         img_mask = img_blur >= thresh
         img_mask = img_mask[x:x+w, y:y+h]
-        img_mask = self.apply_edge_mask(img_mask, idx, frame_idx)
         return img_mask, img_cut
 
     def _mesh_settings_for(self, idx):
@@ -1975,35 +2116,277 @@ class Tab_Tracking_CV2(TabBase):
         mesh = self.df_rois.at[idx, 'mesh']
         return mesh if isinstance(mesh, dict) else None
 
+    def _dilate_erode_settings_for(self, idx):
+        """This ROI's Dilate/Erode segments (see MaskEditDialog/
+        get_dilate_erode_settings - `{'segments': [...]}`), or None if it
+        has none set / idx is None. Per-ROI, set only from the Fine-Tune
+        Mask dialog - no main-tab control (same as Mesh, and, since the
+        Segments feature, Edge Detection too - see _edge_settings_for)."""
+        if idx is None:
+            return None
+        dilate_erode = self.df_rois.at[idx, 'dilate_erode']
+        return dilate_erode if isinstance(dilate_erode, dict) else None
+
+    def _edge_settings_for(self, idx):
+        """This ROI's Edge Detection segments (see MaskEditDialog/
+        get_edge_settings - `{'segments': [...]}`), or None if it has none
+        set / idx is None. Per-ROI (like Mesh/Dilate-Erode) - Edge
+        Detection used to be a single tab-wide setting before the Fine-Tune
+        Mask dialog's Segments feature; now it's only ever set there, one
+        range at a time, same as the other two."""
+        if idx is None:
+            return None
+        edge = self.df_rois.at[idx, 'edge']
+        return edge if isinstance(edge, dict) else None
+
+    def _blob_settings_for(self, idx):
+        """This ROI's Blob Selection segments (`{'segments': [{'start',
+        'end','enabled','seed_centroid'}, ...]}`), or None if it has none
+        set / idx is None. Per-ROI, main-tab-only (unlike Dilate/Erode/
+        Edge Detection/Mesh, which live in the Fine-Tune Mask dialog) -
+        see the "Blob Selection" ribbon section/_on_blob_mask_clicked."""
+        if idx is None:
+            return None
+        blob = self.df_rois.at[idx, 'blob']
+        return blob if isinstance(blob, dict) else None
+
+    def _has_active_postprocessing(self, idx):
+        """Whether ROI `idx` has ANY segment (see MaskEditDialog's Segments
+        feature) with Dilate/Erode, Edge Detection, Mesh, or Blob Selection
+        actually enabled - lets extract_3ded skip apply_edge_mask's
+        per-frame work entirely for a ROI with nothing to do there."""
+        def _any_enabled(settings, extra=lambda s: True):
+            segs = (settings or {}).get('segments') or []
+            return any(s.get('enabled') and extra(s) for s in segs)
+        return (_any_enabled(self._edge_settings_for(idx))
+               or _any_enabled(self._dilate_erode_settings_for(idx), lambda s: s.get('kernel', 0) != 0)
+               or _any_enabled(self._mesh_settings_for(idx), lambda s: s.get('cells'))
+               or _any_enabled(self._blob_settings_for(idx)))
+
+    def _resolve_blob_mask(self, idx, frame_idx, mask):
+        """If ROI `idx` has Blob Selection enabled for `frame_idx` (see the
+        "Blob Selection" ribbon section/_on_blob_mask_clicked), restrict
+        `mask` to just one connected component - the one nearest whatever
+        it was last seen at - via io.select_blob_by_centroid. A no-op
+        (returns `mask` unchanged) only if Blob Selection isn't enabled at
+        all for this frame; with no seed yet (enabled but never clicked),
+        io.select_blob_by_centroid's own None-seed default (largest blob)
+        still applies, so simply checking "Enable" already shows a
+        reasonable starting choice before the user clicks a specific one.
+
+        Auto-follow: seeded from the immediately preceding frame's own
+        chosen centroid when that's already cached (true frame-to-frame
+        following - the common case, since both live-preview frame
+        scrubbing and extract_3ded's own per-frame loop naturally proceed
+        through frames in order) and still within the same segment;
+        otherwise falls back to reseeding from the segment's own fixed
+        seed_centroid (wherever the user last clicked, or None for
+        "largest blob") rather than walking every intermediate frame just
+        to jump far ahead - a bounded-cost approximation of "auto-follow",
+        not an exhaustive one."""
+        segments = (self._blob_settings_for(idx) or {}).get('segments')
+        seg = io.segment_for_frame(segments, frame_idx) if segments else None
+        if not seg or not seg.get('enabled'):
+            return mask
+        cache = self._blob_centroid_cache.setdefault(idx, {})
+        prev = cache.get(frame_idx - 1)
+        fixed_seed = seg.get('seed_centroid')
+        seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
+            else (tuple(fixed_seed) if fixed_seed is not None else None)
+        restricted, chosen_centroid = io.select_blob_by_centroid(mask, seed)
+        if chosen_centroid is not None:
+            cache[frame_idx] = chosen_centroid
+        return restricted
+
+    def _selected_roi_idx(self):
+        """The tree_objects row currently selected, as a df_rois index, or
+        None if nothing's selected - shared by the Blob Selection controls,
+        which (unlike Dilate/Erode/Edge Detection/Mesh) act on whichever
+        ROI is selected in the main tab rather than needing a dialog open."""
+        selected_items = self.tree_objects.selectedItems()
+        if not selected_items:
+            return None
+        return int(selected_items[0].text(1))
+
+    def _blob_enabled_for(self, idx):
+        """Whether Blob Selection's own "Blob" column checkbox is checked
+        for ROI `idx` - reads straight from df_rois (the source of truth,
+        kept in sync with that checkbox by on_item_check_changed) rather
+        than any UI widget, since (unlike the old single ribbon checkbox
+        this replaced) there's no single "the" Blob Selection widget
+        anymore - every row has its own."""
+        if idx is None:
+            return False
+        segments = (self._blob_settings_for(idx) or {}).get('segments') or []
+        return any(s.get('enabled') for s in segments)
+
+    def _set_blob_enabled(self, idx, enabled):
+        """"Blob" column checkbox toggled for ROI `idx` (see
+        on_item_check_changed): enable/disable it for the ROI's *whole*
+        stack (a fresh single segment spanning every frame, no seed yet -
+        see _resolve_blob_mask's own None-seed default) rather than per-
+        frame-range like Dilate/Erode/Edge Detection/Mesh - clicking a blob
+        (see _on_blob_mask_clicked) is what actually introduces segment
+        boundaries, only once the user needs different blobs on different
+        frame ranges."""
+        if enabled:
+            n = len(self.nav_imgs) if hasattr(self, 'nav_imgs') else 1
+            self.df_rois.at[idx, 'blob'] = {
+                'segments': [{'start': 0, 'end': n - 1, 'enabled': True, 'seed_centroid': None}]}
+        else:
+            self.df_rois.at[idx, 'blob'] = {'segments': []}
+        self._blob_centroid_cache.pop(idx, None)
+
+    def _split_blob_segment(self, idx, frame_idx, seed_centroid):
+        """Seed (or re-seed) ROI `idx`'s Blob Selection at `frame_idx` -
+        updates the segment already starting exactly there in place, or
+        splits a new one starting there (capping the previous one's own
+        `end` to `frame_idx - 1`) otherwise - mirrors MaskEditDialog's own
+        _split_segment_here, just implemented here directly since Blob
+        Selection has no Fine-Tune-Mask-style Split/Merge UI of its own;
+        every click either updates or creates exactly one boundary."""
+        blob = self._blob_settings_for(idx)
+        segments = list((blob or {}).get('segments') or [])
+        if not segments:
+            n = len(self.nav_imgs)
+            segments = [{'start': 0, 'end': n - 1, 'enabled': True, 'seed_centroid': None}]
+        seg = io.segment_for_frame(segments, frame_idx)
+        if seg['start'] == frame_idx:
+            seg['seed_centroid'] = seed_centroid
+        else:
+            seg_pos = segments.index(seg)
+            new_seg = {'start': frame_idx, 'end': seg['end'], 'enabled': True,
+                      'seed_centroid': seed_centroid}
+            seg['end'] = frame_idx - 1
+            segments.insert(seg_pos + 1, new_seg)
+        self.df_rois.at[idx, 'blob'] = {'segments': segments}
+        # A fresh seed invalidates any auto-follow trail computed forward
+        # from the old settings - simplest safe choice is to drop the whole
+        # per-ROI cache rather than reason about exactly which frames are
+        # still valid.
+        self._blob_centroid_cache.pop(idx, None)
+
+    def _current_raw_blob_mask(self, idx, frame_idx):
+        """The raw (possibly multi-blob) threshold mask for ROI `idx` at
+        `frame_idx` - or None if there's nothing to compute it from yet
+        (`idx` is None, not tracked, or an empty box on this frame).
+        Shared by _on_blob_mask_clicked and _draw_blob_overlay, both of
+        which need the SAME pre-restriction mask Blob Selection itself
+        picks a component out of (see _resolve_blob_mask)."""
+        if idx is None:
+            return None
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if np.all(pd.isna(out_rois)):
+            return None
+        roi = out_rois[frame_idx]
+        if not roi.any():
+            return None
+        img = self.nav_imgs[frame_idx]
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value()
+        img_mask_raw, _ = self._raw_threshold_crop(img, roi, thresh_method, thresh_offset)
+        return img_mask_raw
+
+    def _on_blob_mask_clicked(self, event):
+        """A plain left-click on ax_mask ("ROI with Threshold") while Blob
+        Selection is enabled: figure out which of the frame's connected
+        components the click landed in (nearest centroid to the click
+        point, among the RAW - not yet blob-restricted - threshold mask's
+        own blobs - see _current_raw_blob_mask), then seed/re-seed Blob
+        Selection there (see _split_blob_segment) and redraw."""
+        idx = self._selected_roi_idx()
+        if not self._blob_enabled_for(idx):
+            return
+        imgNo = self.slider_imgNo.value()
+        img_mask_raw = self._current_raw_blob_mask(idx, imgNo)
+        if img_mask_raw is None:
+            return
+        click = (event.xdata, event.ydata)
+        _, chosen_centroid = io.select_blob_by_centroid(img_mask_raw, click)
+        if chosen_centroid is None:
+            self.logger.info('No blob under the click on ROI %d, frame %d.', idx, imgNo)
+            return
+        self._split_blob_segment(idx, imgNo, chosen_centroid)
+        self.update_canvas(imgNo)
+
+    def _draw_blob_overlay(self, idx, frame_idx):
+        """Outline every detected blob in ax_mask's current (raw, possibly
+        multi-blob) threshold mask, numbered, so the user can see which is
+        which before clicking one (see _on_blob_mask_clicked) - only when
+        Blob Selection is enabled for this ROI; otherwise just clears
+        whatever was drawn for a previously-selected ROI. Cleared/rebuilt
+        every call rather than diffed, matching draw_rois_in/out's own
+        convention for other per-frame overlays."""
+        for artist in self._blob_overlay_artists:
+            try:
+                artist.remove()
+            except Exception:
+                self.logger.debug('Blob overlay artist already removed.', exc_info=True)
+        self._blob_overlay_artists = []
+        if not self._blob_enabled_for(idx):
+            return
+        img_mask_raw = self._current_raw_blob_mask(idx, frame_idx)
+        if img_mask_raw is None:
+            return
+        mask_u8 = img_mask_raw.astype('uint8')
+        num_labels, labels, _stats, centroids = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+        for label in range(1, num_labels):
+            blob_u8 = (labels == label).astype('uint8')
+            contours, _ = cv2.findContours(blob_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                pts = contour.reshape(-1, 2)  # (col, row) = (x, y), matching ax_mask's own extent
+                if len(pts) < 2:
+                    continue
+                line = Line2D(pts[:, 0], pts[:, 1], color='cyan', linewidth=1.2)
+                self.ax_mask.add_line(line)
+                self._blob_overlay_artists.append(line)
+            cx, cy = centroids[label]
+            text = self.ax_mask.text(cx, cy, str(label), color='cyan', fontsize=9, fontweight='bold',
+                                     horizontalalignment='center', verticalalignment='center')
+            self._blob_overlay_artists.append(text)
+
     def apply_edge_mask(self, mask, idx=None, frame_idx=None):
-        """Reduce `mask` to just its edge/outline when "Edge Only" is
-        checked (isotropic, or one-sided along "Directional"'s angle when
-        that's also checked - see io.erode_mask_edge), then - if `idx` is
-        given and that ROI has a Mesh restriction set (see MaskEditDialog)
-        that applies to `frame_idx` (every frame, or just the one frame the
-        Mesh box's "This Frame Only" scope names) - restrict it to the
-        selected mesh cell(s), relative to the object's own position on
-        THIS frame (see io.mesh_restrict_mask/io.mask_centroid, and
-        MaskEditDialog._effective_mask's identical convention) so a tracked
-        ROI's motion across frames doesn't throw off which part of it the
-        selection actually covers. A no-op otherwise."""
-        mesh = self._mesh_settings_for(idx)
-        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells')
-                       and (mesh.get('scope', 'all') == 'all' or mesh.get('frame_idx') == frame_idx))
+        """Restrict `mask` to a single blob first when Blob Selection is
+        enabled for `frame_idx` (see _resolve_blob_mask - runs first since
+        Dilate/Erode/Edge Detection/Mesh below should all act on just the
+        one selected object, not the raw possibly-multi-blob threshold
+        result). Then grow/shrink it uniformly when `idx`'s Dilate/Erode
+        setting for `frame_idx` (see MaskEditDialog's Segments - resolved
+        via io.segment_for_frame) is enabled (see io.dilate_erode_mask),
+        then reduce it to just its edge/outline when that frame's Edge
+        Detection segment is enabled (isotropic, or one-sided along
+        "Directional"'s angle when that's also set - see
+        io.erode_mask_edge), then - if `idx` is given and that frame's Mesh
+        segment has a restriction set - restrict it to the selected mesh
+        cell(s), relative to the object's own position on THIS frame (see
+        io.mesh_restrict_mask/io.mask_centroid, and MaskEditDialog.
+        _effective_mask's identical convention) so a tracked ROI's motion
+        across frames doesn't throw off which part of it the selection
+        actually covers. A no-op otherwise."""
+        mask = self._resolve_blob_mask(idx, frame_idx, mask)
+
+        mesh_segments = (self._mesh_settings_for(idx) or {}).get('segments')
+        mesh = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
+        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells'))
         origin = io.mask_centroid(mask) if mesh_on else None
-        if self.checkbox_edgeOnly.isChecked():
-            direction = (self.spinbox_edgeDirection.value()
-                        if self.checkbox_edgeDirectional.isChecked() else None)
-            mask = io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
-                                       revert=self.checkbox_revertMask.isChecked())
+
+        de_segments = (self._dilate_erode_settings_for(idx) or {}).get('segments')
+        de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
+        if de and de.get('enabled') and de.get('kernel', 0) != 0:
+            mask = io.dilate_erode_mask(mask, de['kernel'])
+
+        edge_segments = (self._edge_settings_for(idx) or {}).get('segments')
+        edge = io.segment_for_frame(edge_segments, frame_idx) if edge_segments else None
+        if edge and edge.get('enabled'):
+            direction = edge.get('direction') if edge.get('directional') else None
+            mask = io.erode_mask_edge(mask, edge.get('kernel', 3), direction=direction,
+                                      revert=edge.get('revert', False))
+
         if mesh_on:
             mask = io.mesh_restrict_mask(mask, mesh.get('angle', 0), mesh.get('cell_size', 20),
-                                         [tuple(c) for c in mesh['cells']], origin=origin)
+                                         [tuple(c) for c in mesh['cells']], origin=origin,
+                                         lines_only=mesh.get('lines_only', False))
         return mask
-
-    def _on_edge_directional_toggled(self):
-        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
-        self.update_canvas()
 
     def _on_ribbon_tool_changed(self, tool_id):
         self.logger.debug('Ribbon tool changed to %s', tool_id)
@@ -2024,13 +2407,23 @@ class Tab_Tracking_CV2(TabBase):
         self.canvas.setCursor(cursor if cursor is not None else Qt.ArrowCursor)
 
     def on_press(self, event):
-        """Mouse-button-press handler (ax_nav/ax_track only - no-ops for a
-        click elsewhere on the shared canvas, see on_click_dp for ax_dp):
-        with Ctrl held (or the ribbon's "Select ROI" tool active), start a
-        new ROI rectangle on ax_nav, or a ROI-in-ROI rectangle on ax_track,
-        at the click position."""
+        """Mouse-button-press handler: ax_mask ("ROI with Threshold") takes
+        a plain left-click as "select this blob" whenever Blob Selection is
+        armed (see _on_blob_mask_clicked) - checked first since it's a
+        different axis/gesture entirely from everything below. Otherwise
+        ax_nav only (no-ops for a click elsewhere on the shared canvas, see
+        on_click_dp for ax_dp): with Ctrl held (or the ribbon's "Select
+        ROI" tool active), start a new ROI rectangle at the click position.
+        ROI-in-ROI is no longer a separate drag gesture - draw a plain ROI
+        here, then set its Ref via the object list's own combo (see
+        add_item_tree/_on_ref_changed)."""
+        if event.inaxes == self.ax_mask:
+            if event.xdata is not None and event.ydata is not None and event.button == 1:
+                self._on_blob_mask_clicked(event)
+            self.press = None
+            return
         ribbon_tool = self.ribbon.active_tool
-        if event.inaxes not in (self.ax_nav, self.ax_track) or (
+        if event.inaxes != self.ax_nav or (
                 ribbon_tool != 'select_roi' and 'ctrl' not in event.modifiers):
             # Plain click/drag is reserved for the navigation toolbar's
             # Pan/Zoom tool (and the scroll-wheel zoom) so images can be
@@ -2039,102 +2432,41 @@ class Tab_Tracking_CV2(TabBase):
             self.press = None
             return
         self.press = (event.xdata, event.ydata)
-        if event.inaxes == self.ax_nav:
-            if self.rect is not None:
-                self.rect.remove()
-            self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1,
-                                          edgecolor='r', facecolor='none')
-            self.patches_axNav.append(self.rect)
-            self.ax_nav.add_patch(self.rect)
-            self.canvas.draw()
-            self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
-
-        elif (event.inaxes == self.ax_track):
-            self.canvas.restore_region(self.backgrounds['track'])
-            if self.rect_roiInRoi is not None:
-                self.rect_roiInRoi.remove()
-
-            self.rect_roiInRoi = patches.Rectangle(self.press, 0, 0, linewidth=1,
-                                                   edgecolor='r', facecolor='none')
-            self.patches_axTrack.append(self.rect_roiInRoi)
-            self.ax_track.add_patch(self.rect_roiInRoi)
-            self.canvas.draw()
-            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
-            
-        else:
-            self.press = None
-        
+        if self.rect is not None:
+            self.rect.remove()
+        self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1,
+                                      edgecolor='r', facecolor='none')
+        self.patches_axNav.append(self.rect)
+        self.ax_nav.add_patch(self.rect)
+        self.canvas.draw()
+        self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
 
     def on_motion(self, event):
         """Mouse-motion handler: while a Ctrl+drag started by on_press is in
-        progress, resize the in-progress ROI rectangle (clamped to the
-        parent ROI's bounds for a ROI-in-ROI) and blit it."""
+        progress, resize the in-progress ROI rectangle and blit it."""
         if self.press is None or event.inaxes is None:
             return
-        # if (event.inaxes == self.ax_track) and (not self.checkbox_roiInRoi.isChecked()):
-            # return
-        if event.inaxes == self.ax_nav:
-            x0, y0 = self.press
-            width = event.xdata - x0
-            height = event.ydata - y0
-            try:
-                self.rect.set_width(width)
-                self.rect.set_height(height)
-                self.rect.set_xy((x0, y0))
-            except AttributeError:
-                self.press = None
-            self.canvas.restore_region(self.backgrounds['nav'])
-            self.ax_nav.draw_artist(self.rect)
-            self.canvas.blit(self.ax_nav.bbox)
-            
-        elif (event.inaxes == self.ax_track):
-            if event.xdata is None or event.ydata is None:
-                return
-        
-            x0, y0 = self.press
-            width = event.xdata - x0
-            height = event.ydata - y0
-        
-            # Confine ROI
-            try:
-                selected_items = self.tree_objects.selectedItems()
-                item = selected_items[0]
-                ind = int(item.text(1))
-            except (IndexError, ValueError):
-                qtw.QMessageBox.critical(self, 'No Ref ROI', 'There is no reference ROI selected for ROI in ROI.')
-                self.logger.warning('First select a reference ROI')
-                self.press = None
-                self.rect_roiInRoi = None
-                return
-            imgNo = self.slider_imgNo.value()
-            xr, yr, wr, hr = self.df_rois.loc[ind, 'out_rois'][imgNo]
-        
-            # Clamp logic
-            x1 = x0 + width
-            y1 = y0 + height
-            x1 = max(xr, min(x1, xr + wr))
-            y1 = max(yr, min(y1, yr + hr))
-            width = x1 - x0
-            height = y1 - y0
-        
-            try:
-                self.rect_roiInRoi.set_width(width)
-                self.rect_roiInRoi.set_height(height)
-                self.rect_roiInRoi.set_xy((x0, y0))
-            except AttributeError:
-                self.press = None
-                return
-        
-            self.canvas.restore_region(self.backgrounds['track'])
-            self.ax_track.draw_artist(self.rect_roiInRoi)
-            self.canvas.blit(self.ax_track.bbox)
-
+        if event.inaxes != self.ax_nav:
+            return
+        x0, y0 = self.press
+        width = event.xdata - x0
+        height = event.ydata - y0
+        try:
+            self.rect.set_width(width)
+            self.rect.set_height(height)
+            self.rect.set_xy((x0, y0))
+        except AttributeError:
+            self.press = None
+        self.canvas.restore_region(self.backgrounds['nav'])
+        self.ax_nav.draw_artist(self.rect)
+        self.canvas.blit(self.ax_nav.bbox)
 
     def on_release(self, event):
         """Mouse-button-release handler: finalize the rectangle started by
-        on_press into a new ROI row (left click) or an additional init
-        frame/box on the selected ROI (right click), and add/update its
-        tree entry."""
+        on_press into a new ROI row (left click, Ref defaults to "Nav" -
+        see add_item_tree's Ref combo to make it a ROI-in-ROI afterward) or
+        an additional init frame/box on the selected ROI (right click), and
+        add/update its tree entry."""
         if self.press is None or event.inaxes is None:
             return
         x0, y0 = self.press
@@ -2152,29 +2484,18 @@ class Tab_Tracking_CV2(TabBase):
         if height==0:
             height = 1
         roi = (int(x0), int(y0), int(width), int(height))
-        
+
         # updating df roi
-        # new roi or roi in roi
         imgNo = self.slider_imgNo.value()
-        roiInRoi = False
-        if (event.inaxes == self.ax_nav):
-            ref = None
-            # new roi or extension
-            # self.add_item_tree(idx=idx, init=init, ref=ref)
-        elif (event.inaxes == self.ax_track):
-            selected_items = self.tree_objects.selectedItems()
-            if selected_items:
-                item = selected_items[0]
-                ref = item.text(1)
-            roiInRoi = True
-        
+        ref = None
+
         if event.button == 1: # left click
             new_row = True
             init = [imgNo]
             idx = 1
             while idx in self.df_rois.index:
                 idx += 1
-            
+
         elif event.button == 3: # right click
             new_row = False
             selected_items = self.tree_objects.selectedItems()
@@ -2186,50 +2507,18 @@ class Tab_Tracking_CV2(TabBase):
             init = ast.literal_eval(item.text(2))
             init.append(imgNo)
             idx = int(item.text(1))
-        
-# =============================================================================
-#         # addition of init to roiInRoi should be made with correct ref
-#         if pd.isna(self.df_rois.loc[idx, 'ref']): 
-#             self.press = None
-#             return
-# =============================================================================
-        
-        # plotting
+
         self.rect = None
-        if roiInRoi:
-            # self.patches_axTrack.append(t)
-            # self.canvas.restore_region(self.backgrounds['track'])
-            t = self.ax_track.text(x0, y0-15, str(idx), horizontalalignment='center',
-                                   verticalalignment='center', color='red', fontsize=6)
-            self.patches_axTrack.append(t)
-            self.backgrounds['track'] = self.canvas.copy_from_bbox(self.ax_track.bbox)
-            self.canvas.restore_region(self.backgrounds['track'])
-            self.ax_track.draw_artist(t)
-            self.canvas.blit(self.ax_track.bbox)
-            self.rect_roiInRoi = None
-            
-# =============================================================================
-#         t = self.ax_nav.text(x0 + width/2, y0-15, str(idx), horizontalalignment='center', 
-#                              verticalalignment='center', color='red', fontsize=12)
-#         self.patches_axNav.append(t)
-#         self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
-#         self.canvas.restore_region(self.backgrounds['nav'])
-#         self.ax_nav.draw_artist(t)
-#         self.canvas.blit(self.ax_nav.bbox)
-# =============================================================================
-            
         if new_row:
             self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
-                                                   ref, None, None, None, None]
+                                                   ref, None, None, None, None, None, None, None]
             self.add_item_tree(idx=idx, init=init, end=None, ref=ref)
 
         else:
-            # self.df_rois['init'] = self.df_rois['init'].astype(object)
             self.df_rois.at[idx, 'init'] = init
             self.df_rois.at[idx, 'in_rois'].append(roi)
-            # print(self.df_rois.at[idx, 'in_rois'])
             item.setText(2, str(init))
-        
+
         self.press = None
         self.update_canvas(imgNo)
 
@@ -2261,17 +2550,15 @@ class Tab_Tracking_CV2(TabBase):
             self.update_scalebar('reciprocal')
 #%%
     def add_item_tree(self, idx, init=[0], end=None, ref=None, use=1):
-        """Add one row to tree_objects for ROI `idx`, with its end-frame
-        spinbox and Duplicate/Delete buttons wired up."""
+        """Add one column to tree_objects for ROI `idx`, with its end-frame
+        spinbox, Blob checkbox and Duplicate/Delete buttons wired up."""
         cols = {col: i for i,col in enumerate(self.cols_tree)}
-        item = qtw.QTreeWidgetItem()
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item = self.tree_objects.addTopLevelItem()
         item.setCheckState(cols['use'], Qt.Checked if use else Qt.Unchecked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['init'], f"{init}")
-        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
-
-        self.tree_objects.addTopLevelItem(item)
+        item.setCheckState(cols['blob'],
+                            Qt.Checked if self._blob_enabled_for(idx) else Qt.Unchecked)
 
         # end frame
         spinbox = qtw.QSpinBox()
@@ -2281,13 +2568,20 @@ class Tab_Tracking_CV2(TabBase):
         spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
         # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
         
-        # ref
-        if ref is None:
-            item.setText(cols['ref'], "Nav")
-        else:
-            item.setText(cols['ref'], f"{ref}")
-        self.tree_objects.addTopLevelItem(item)
-        
+        # ref - a combo (not plain text) so ROI-in-ROI is set directly here
+        # instead of a separate mouse gesture (see on_press/on_release):
+        # draw any ROI normally, then pick its reference ROI from this
+        # combo. _refresh_ref_combos() (called below) populates its actual
+        # options (every OTHER currently-listed ROI's index) and selects
+        # `ref` - both need the full row list to exist first.
+        combo_ref = qtw.QComboBox()
+        combo_ref.setToolTip(
+            "Reference ROI this one is defined relative to (\"ROI-in-ROI\") - "
+            "its box is kept inside the reference's own current box automatically. "
+            '"Nav" (default) means it isn\'t a ROI-in-ROI.')
+        self.tree_objects.setItemWidget(item, cols['ref'], combo_ref)
+        combo_ref.currentIndexChanged.connect(lambda *_: self._on_ref_changed(idx, combo_ref))
+
         # tracked
         cancel_icon = self.style().standardIcon(self.style().SP_DialogCancelButton)
         item.setIcon(cols['trk'], cancel_icon)
@@ -2299,7 +2593,7 @@ class Tab_Tracking_CV2(TabBase):
         
         # duplicate
         duplicate_button = qtw.QPushButton('Dup')
-        duplicate_button.setFixedSize(30, 30)
+        duplicate_button.setFixedSize(48, 30)
         duplicate_button.setToolTip('Duplicate this item (deep-copies everything) into a new one')
 
         def duplicate_row():
@@ -2358,6 +2652,7 @@ class Tab_Tracking_CV2(TabBase):
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
             # print(self.df_rois)
+            self._refresh_ref_combos()
             self.update_canvas()
             self.logger.info('Deleted ROI %s.', deleted_idx)
 
@@ -2374,19 +2669,140 @@ class Tab_Tracking_CV2(TabBase):
         container.setLayout(layout)
 
         self.tree_objects.setItemWidget(item, cols['del'], container)
-    
-    def on_item_check_changed(self, item, column):
-        use_col = self.cols_tree.index('use')  # or `cols['use']` if accessible
-        idx_col = self.cols_tree.index('idx')
-        idx = int(item.text(idx_col))
-        if item.checkState(use_col) == Qt.Checked:
-            self.df_rois.at[idx, 'use'] = 1
-        else:
-            self.df_rois.at[idx, 'use'] = 0
-            
-    
+
+        # ref/ref combo depend on the full row list existing first
+        # (excluding-self options, and this row's own initial selection).
+        if ref is not None:
+            self.df_rois.at[idx, 'ref'] = ref
+        self._refresh_ref_combos()
+
+    def on_item_check_changed(self, item):
+        """tree_objects.itemChanged handler - unlike QTreeWidget's own
+        itemChanged(item, column), a real QTableWidgetItem's own signal
+        only carries the cell itself; its row/column give which property
+        (self.cols_tree[item.row()]) and which ROI-column this cell
+        belongs to."""
+        row = item.row()
+        if row >= len(self.cols_tree):
+            return  # some other cell (e.g. the row-0 anchor) changed, not a checkbox row
+        key = self.cols_tree[row]
+        if key not in ('use', 'blob'):
+            return
+        idx_item = self.tree_objects.item(self.cols_tree.index('idx'), item.column())
+        if idx_item is None or not idx_item.text():
+            return
+        idx = int(idx_item.text())
+        checked = item.checkState() == Qt.Checked
+        if key == 'use':
+            self.df_rois.at[idx, 'use'] = 1 if checked else 0
+        else:  # 'blob'
+            self._set_blob_enabled(idx, checked)
+            self.update_canvas()
+
+
     def on_spinboxEnd_changed(self, idx, value):
         self.df_rois.at[idx, 'end'] = value
+
+    def _refresh_ref_combos(self):
+        """Repopulate every row's Ref combo with every OTHER currently-
+        listed ROI's index (plus "Nav") and reselect that row's own
+        `df_rois.ref` - called whenever the object list itself changes
+        (a ROI added/duplicated/deleted), since a row's own valid Ref
+        choices depend on which other rows currently exist. Signals are
+        blocked while rebuilding so this never itself triggers
+        _on_ref_changed."""
+        cols = {col: i for i, col in enumerate(self.cols_tree)}
+        for i in range(self.tree_objects.topLevelItemCount()):
+            item = self.tree_objects.topLevelItem(i)
+            combo = self.tree_objects.itemWidget(item, cols['ref'])
+            if combo is None:
+                continue
+            idx = int(item.text(cols['idx']))
+            if idx not in self.df_rois.index:
+                continue
+            current_ref = self.df_rois.at[idx, 'ref']
+            target = None if pd.isna(current_ref) else int(current_ref)
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem('Nav', None)
+            for other_idx in self.df_rois.index:
+                if other_idx != idx:
+                    combo.addItem(str(other_idx), other_idx)
+            found = combo.findData(target)
+            combo.setCurrentIndex(found if found >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _roi_current_rect(self, idx, imgNo):
+        """This ROI's own representative (y, x, w, h) rectangle "as of"
+        frame `imgNo`, for Ref validation/clamping - out_rois[imgNo] if
+        already tracked and defined there, else its most recently drawn
+        in_rois entry (typically the box the user just finished drawing).
+        None if this ROI has no geometry at all yet (shouldn't normally
+        happen - every row gets at least one in_rois entry when created)."""
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if not np.all(pd.isna(out_rois)) and imgNo < len(out_rois):
+            roi = out_rois[imgNo]
+            if roi is not None and np.any(roi):
+                return tuple(int(v) for v in roi)
+        in_rois = self.df_rois.at[idx, 'in_rois']
+        if in_rois:
+            return tuple(int(v) for v in in_rois[-1])
+        return None
+
+    def _apply_roi_rect(self, idx, imgNo, rect):
+        """Write a (possibly Ref-clamped) rectangle back into whichever
+        source currently defines ROI `idx`'s geometry at `imgNo` - see
+        _roi_current_rect, the same resolution order."""
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if not np.all(pd.isna(out_rois)) and imgNo < len(out_rois):
+            out_rois[imgNo] = np.array(rect)
+        else:
+            in_rois = self.df_rois.at[idx, 'in_rois']
+            if in_rois:
+                in_rois[-1] = rect
+
+    @staticmethod
+    def _clamp_rect_to_reference(rect, ref_rect):
+        """`rect` resized (if larger than `ref_rect`) and repositioned so it
+        fits entirely inside `ref_rect` - both (y, x, w, h) tuples. A no-op
+        if `rect` already fits."""
+        x, y, w, h = rect
+        xr, yr, wr, hr = ref_rect
+        w = min(w, wr)
+        h = min(h, hr)
+        x = max(xr, min(x, xr + wr - w))
+        y = max(yr, min(y, yr + hr - h))
+        return (int(x), int(y), int(w), int(h))
+
+    def _on_ref_changed(self, idx, combo):
+        """Ref combo changed for ROI `idx`: clamp its current-frame
+        rectangle to fit inside the newly chosen reference ROI's own
+        current-frame rectangle (resizing/moving it if it doesn't already),
+        then commit the new Ref - see _clamp_rect_to_reference. Rejected
+        (combo reverted) if either ROI has no drawn geometry at all yet."""
+        new_ref = combo.currentData()
+        current_ref = self.df_rois.at[idx, 'ref']
+        current_ref = None if pd.isna(current_ref) else int(current_ref)
+        if new_ref == current_ref:
+            return
+        if new_ref is not None:
+            imgNo = self.slider_imgNo.value()
+            child_rect = self._roi_current_rect(idx, imgNo)
+            ref_rect = self._roi_current_rect(new_ref, imgNo)
+            if child_rect is None or ref_rect is None:
+                qtw.QMessageBox.warning(self, 'No Geometry',
+                    "Can't set this ROI's Ref - it or the reference ROI has no "
+                    'drawn box yet.')
+                self._refresh_ref_combos()  # revert the combo to its actual current value
+                return
+            clamped = self._clamp_rect_to_reference(child_rect, ref_rect)
+            if clamped != child_rect:
+                self._apply_roi_rect(idx, imgNo, clamped)
+                self.logger.info(
+                    'ROI %d resized/moved to fit inside reference ROI %d (%s -> %s).',
+                    idx, new_ref, child_rect, clamped)
+        self.df_rois.at[idx, 'ref'] = new_ref
+        self.update_canvas()
         
     def toggle_tree_icon(self, row_index: int, col, status):
         item = self.tree_objects.topLevelItem(row_index)
@@ -2438,7 +2854,7 @@ class Tab_Tracking_CV2(TabBase):
             idx_max = 0
         for i, obj in enumerate(objects):
             self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
-                                           'None', None, None, None, None]
+                                           'None', None, None, None, None, None, None, None]
             # self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
             #                                        ref, None, None, None]
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
@@ -2550,6 +2966,10 @@ class Tab_Tracking_CV2(TabBase):
         st = min(self.df_rois.loc[index, 'init'])
         end = self.df_rois.loc[index, 'end']
         self.df_rois.at[index, 'out_rois'][st:end] = result
+        # A re-track moves/resizes this ROI's crop every frame - any
+        # cached Blob Selection auto-follow centroid (see
+        # _resolve_blob_mask) was only ever valid relative to the OLD crop.
+        self._blob_centroid_cache.pop(index, None)
         self.toggle_tree_icon(self.df_rois.index.get_loc(index), 'trk', True)
         self.update_progress_bar(counter_now, self.tracking_counter_end)
         if counter_now == self.tracking_counter_end:
@@ -2562,9 +2982,25 @@ class Tab_Tracking_CV2(TabBase):
             for idx in df.index:
                 try:
                     ref = int(self.df_rois.loc[idx].ref)
-                    rois_ref = self.df_rois[self.df_rois.index == ref].out_rois.to_numpy()
-                    rois_pre = self.df_rois.loc[idx, 'out_rois'].to_numpy()
-                    self.df_rois.at[idx, 'out_rois'] = tr.translate_roiInRoi(rois_pre, rois_ref, fwd=False)
+                    # Both are already plain (N, 4) numpy arrays (see
+                    # get_tracking_results' own np.zeros(...) assignment
+                    # above) - .at[] gives that directly; the previous
+                    # .to_numpy() calls here were left over from an earlier
+                    # version where these were pandas Series, and had
+                    # started raising (out_rois has no .to_numpy() of its
+                    # own) once that stopped being true.
+                    rois_ref = self.df_rois.at[ref, 'out_rois']
+                    rois_pre = self.df_rois.at[idx, 'out_rois']
+                    translated = tr.translate_roiInRoi(rois_pre, rois_ref, fwd=False)
+                    # Each frame was tracked independently for this ROI and
+                    # its reference, so the translated-back box can drift
+                    # outside the reference's own current box on some
+                    # frames even though it fit at assignment time (see
+                    # _on_ref_changed) - clamp every frame the same way.
+                    self.df_rois.at[idx, 'out_rois'] = [
+                        self._clamp_rect_to_reference(
+                            tuple(int(v) for v in roi), tuple(int(v) for v in rois_ref[i]))
+                        for i, roi in enumerate(translated)]
                 except Exception:
                     self.logger.warning(
                         'Re-translating ROI-in-ROI coordinates for ROI %s failed; '
@@ -2613,53 +3049,56 @@ class Tab_Tracking_CV2(TabBase):
             return
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
-        blur_kernel = int(self.combo_blur.currentText())
+        blur_sigma = self.spinbox_blur.value()
         default_mask_stack = tr.create_masks(self.nav_imgs, out_rois, thresh_method,
-                                             thresh_offset, blur_kernel)
+                                             thresh_offset, blur_sigma)
         mask_stack = self.df_rois.at[idx, 'mask']
         if np.all(pd.isna(mask_stack)):
             mask_stack = default_mask_stack
-        edge_settings = {
-            'enabled': self.checkbox_edgeOnly.isChecked(),
-            'kernel': self.spinbox_edgeKernel.value(),
-            'revert': self.checkbox_revertMask.isChecked(),
-            'directional': self.checkbox_edgeDirectional.isChecked(),
-            'direction': self.spinbox_edgeDirection.value()}
+        edge_settings = self._edge_settings_for(idx)
         thresh_settings = {
-            'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_kernel}
+            'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_sigma}
         mesh_settings = self._mesh_settings_for(idx)
-        dialog = MaskEditDialog(self, mask_stack, bg_stack=self.nav_imgs,
+        dilate_erode_settings = self._dilate_erode_settings_for(idx)
+        # Contrast-only (no denoise) - MaskEditDialog applies its own
+        # Denoise box fresh on top of this, seeded from box_contrast's own
+        # current state below, so its preview starts out looking the same
+        # as self.nav_imgs (which already has that denoise baked in)
+        # without double-applying it - see MaskEditDialog's class docstring.
+        bg_stack_contrast_only = io.convert_to_8bit(self.s, **self.box_contrast.get_kwargs()).data
+        dialog = MaskEditDialog(self, mask_stack, bg_stack=bg_stack_contrast_only,
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
                                 default_mask_stack=default_mask_stack, edge_settings=edge_settings,
                                 thresh_settings=thresh_settings, mesh_settings=mesh_settings,
+                                dilate_erode_settings=dilate_erode_settings,
+                                denoise_state=self.box_contrast.box_denoise.get_state(),
                                 recompute_thresh_fn=lambda method, offset, blur:
                                     tr.create_masks(self.nav_imgs, out_rois, method, offset, blur))
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_rois.at[idx, 'mask'] = dialog.get_mask_stack()
-            # Mesh is per-ROI (unlike Edge Detection/Threshold, which live
-            # on this tab's own controls - see _apply_dialog_settings_to_ui)
-            # - it round-trips straight into this ROI's own column instead.
+            # Mesh/Dilate-Erode/Edge Detection are all per-ROI (no main-tab
+            # equivalent to sync against anymore - see _apply_dialog_settings_to_ui,
+            # which now only has Threshold left to sync) - they round-trip
+            # straight into this ROI's own columns instead.
             self.df_rois.at[idx, 'mesh'] = dialog.get_mesh_settings()
+            self.df_rois.at[idx, 'dilate_erode'] = dialog.get_dilate_erode_settings()
+            self.df_rois.at[idx, 'edge'] = dialog.get_edge_settings()
             self._apply_dialog_settings_to_ui(dialog)
             self.logger.info('Fine-tuned mask saved for ROI %d.', idx)
             self.update_canvas()
 
     def _apply_dialog_settings_to_ui(self, dialog):
-        """Sync MaskEditDialog's Edge Detection and Threshold box values
-        back into this tab's own main controls on Save && Close, so
-        whatever was left set there (not just the returned mask itself) is
-        what "Extract!"/the live preview use next, instead of silently
-        reverting to whatever was set before the dialog was opened."""
-        edge = dialog.get_edge_settings()
-        self.checkbox_edgeOnly.setChecked(edge['enabled'])
-        self.spinbox_edgeKernel.setValue(edge['kernel'])
-        self.checkbox_revertMask.setChecked(edge['revert'])
-        self.checkbox_edgeDirectional.setChecked(edge['directional'])
-        self.spinbox_edgeDirection.setValue(edge['direction'])
+        """Sync MaskEditDialog's Threshold box values back into this tab's
+        own main controls on Save && Close, so whatever was left set there
+        is what "Extract!"/the live preview use next, instead of silently
+        reverting to whatever was set before the dialog was opened. Edge
+        Detection/Dilate-Erode/Mesh have no main-tab equivalent anymore (all
+        three are per-ROI, set only via the dialog's own Segments feature -
+        see open_fine_tune_mask_dialog, which round-trips them directly)."""
         thresh = dialog.get_thresh_settings()
         if thresh is not None:
             self.combo_thresh_method.setCurrentText(thresh['method'])
-            self.combo_blur.setCurrentText(str(thresh['blur']))
+            self.spinbox_blur.setValue(thresh['blur'])
             self.slider_thresh.setValue(thresh['offset_raw'])
 
     def resolve_4d_files(self, path_4d):
@@ -2736,16 +3175,14 @@ class Tab_Tracking_CV2(TabBase):
                 return
 
         dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText())
-        blur_kernel = int(self.combo_blur.currentText())
+        blur_sigma = self.spinbox_blur.value()
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
-        edge_only = self.checkbox_edgeOnly.isChecked()
         for ind in self.df_rois[self.df_rois.use == 1].index:
             masks = tr.create_masks(
                 self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
-                thresh_method, thresh_offset, blur_kernel)
-            mesh = self._mesh_settings_for(ind)
-            if edge_only or (mesh and mesh.get('enabled') and mesh.get('cells')):
+                thresh_method, thresh_offset, blur_sigma)
+            if self._has_active_postprocessing(ind):
                 # Applied per-frame - erode_mask_edge/mesh_restrict_mask are
                 # single-2D-mask transforms, and this stack is (N frames, H, W).
                 masks = np.stack([self.apply_edge_mask(m, ind, i) for i, m in enumerate(masks)])
@@ -3022,9 +3459,9 @@ class Tab_Tracking_CV2(TabBase):
 
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
-        blur_kernel = int(self.combo_blur.currentText())
+        blur_sigma = self.spinbox_blur.value()
         mask = tr.create_masks(self.nav_imgs[i_fr:i_fr + 1], out_rois[i_fr:i_fr + 1],
-                               thresh_method, thresh_offset, blur_kernel)[0]
+                               thresh_method, thresh_offset, blur_sigma)[0]
         mask = self.apply_edge_mask(mask, idx, i_fr)
 
         self.logger.info('Extracting DP for ROI %d, frame %d (current-frame check)...', idx, i_fr)
@@ -3082,6 +3519,17 @@ class Tab_Tracking_CV2(TabBase):
 
     def reset_thresh(self):
         self.slider_thresh.setValue(100)
+        self.update_canvas()
+
+    def _on_threshold_control_changed(self, *_args):
+        """Threshold Method/ROI Blur/Deviation changed: these all change
+        what's actually IN every ROI's raw threshold mask, which any
+        cached Blob Selection auto-follow centroid (see
+        _resolve_blob_mask) was only ever valid relative to - drop the
+        whole cache (every ROI, not just the selected one) rather than
+        risk a stale trail silently picking the wrong blob under the new
+        settings."""
+        self._blob_centroid_cache.clear()
         self.update_canvas()
 
     def on_makePets2_toggled(self, state):
@@ -3167,26 +3615,22 @@ class Tab_Tracking_CV2(TabBase):
             path_save_roi = os.path.join(path_save, f'roi No {idx}')
             os.mkdir(path_save_roi)
             df = self.df_rois.loc[idx, ['use', 'init', 'in_rois', 'end', 'ref']]
-            df['thresh'] = [('blur kernel', self.combo_blur.currentText()),
+            df['thresh'] = [('blur sigma', self.spinbox_blur.value()),
                             ('thresh method', self.combo_thresh_method.currentText()),
                             ('thresh offset', self.slider_thresh.value())]
-            df['edge_detection'] = [('enabled', self.checkbox_edgeOnly.isChecked()),
-                                    ('kernel_size', self.spinbox_edgeKernel.value()),
-                                    ('directional', self.checkbox_edgeDirectional.isChecked()),
-                                    ('direction_deg', self.spinbox_edgeDirection.value()),
-                                    ('revert', self.checkbox_revertMask.isChecked())]
-            # Per-ROI (unlike edge_detection above, which is a tab-wide
-            # setting) - see MaskEditDialog/get_mesh_settings(). Recorded
-            # here so a saved analysis remembers exactly what mesh
-            # restriction (if any) was actually used for this ROI's
-            # extraction, not just edge detection.
-            mesh = self._mesh_settings_for(idx) or {}
-            df['mesh'] = [('enabled', mesh.get('enabled', False)),
-                          ('angle_deg', mesh.get('angle', 0)),
-                          ('cell_size', mesh.get('cell_size', 20)),
-                          ('cells', mesh.get('cells', [])),
-                          ('scope', mesh.get('scope', 'all')),
-                          ('frame_idx', mesh.get('frame_idx'))]
+            # Edge Detection/Dilate-Erode/Mesh are all per-ROI Segments (see
+            # MaskEditDialog's class docstring/get_edge_settings()/
+            # get_dilate_erode_settings()/get_mesh_settings()), and Blob
+            # Selection (see _blob_settings_for/_split_blob_segment) is
+            # Segments-shaped the same way despite living on the main tab
+            # instead - each is a `{'segments': [...]}` dict already fully
+            # describing exactly what was used for every frame range of
+            # this ROI's extraction, so it's recorded here as-is rather
+            # than flattened to one set of values.
+            df['edge_detection'] = self._edge_settings_for(idx) or {'segments': []}
+            df['mesh'] = self._mesh_settings_for(idx) or {'segments': []}
+            df['dilate_erode'] = self._dilate_erode_settings_for(idx) or {'segments': []}
+            df['blob'] = self._blob_settings_for(idx) or {'segments': []}
             df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
@@ -3349,16 +3793,12 @@ class Tab_Tracking_CV2(TabBase):
             # Contrast
             'contrast': self.box_contrast.get_state(),
             'clip_dp': self.clip_dp.get_state(),
-            # Threshold / edge detection / tracking settings
+            # Threshold / tracking settings - Edge Detection/Dilate-Erode/
+            # Mesh have no main-tab widgets to copy anymore (all per-ROI
+            # Segments, already riding along inside df_rois_rows below).
             'combo_thresh_method': self.combo_thresh_method.currentText(),
-            'combo_blur': self.combo_blur.currentText(),
+            'spinbox_blur': self.spinbox_blur.value(),
             'slider_thresh': self.slider_thresh.value(),
-            'edgeOnly': self.checkbox_edgeOnly.isChecked(),
-            'edgeDirectional': self.checkbox_edgeDirectional.isChecked(),
-            'revertMask': self.checkbox_revertMask.isChecked(),
-            'edgeKernel': self.spinbox_edgeKernel.value(),
-            'edgeDirection': self.spinbox_edgeDirection.value(),
-            'combo_blur_track': self.combo_blur_track.currentText(),
             'combo_trackMethod': self.combo_trackMethod.currentText(),
             'spinbox_threadNo': self.spinbox_threadNo.value(),
             'spinbox_fps': self.spinbox_fps.value(),
@@ -3375,10 +3815,10 @@ class Tab_Tracking_CV2(TabBase):
         touches so the tab looks right immediately - see that method's
         docstring. No-op on None/empty.
 
-        Several restored widgets (checkbox_makePets2, combo_blur_track,
-        combo_thresh_method/combo_blur/slider_thresh/edge-detection
-        controls) are wired to handlers that open a dialog, re-blur
-        nav_imgs from scratch, or just redraw - all skippable here since
+        Several restored widgets (checkbox_makePets2,
+        combo_thresh_method/spinbox_blur/slider_thresh/edge-detection
+        controls) are wired to handlers that open a dialog, recompute
+        something from scratch, or just redraw - all skippable here since
         the already-computed/copied results are applied directly, so
         those widgets are set with signals blocked."""
         if not state:
@@ -3424,14 +3864,11 @@ class Tab_Tracking_CV2(TabBase):
 
         shape_x, shape_y = self.nav_imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
-        self.img_display['track'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['dp'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['nav'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
-        self.img_display['track'].set_clim(vmin=self.nav_imgs.min(), vmax=self.nav_imgs.max())
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
-        for ax in (self.ax_nav, self.ax_track):
-            ax.set_xlim(0, shape_y)
-            ax.set_ylim(shape_x, 0)
+        self.ax_nav.set_xlim(0, shape_y)
+        self.ax_nav.set_ylim(shape_x, 0)
         self.toolbar.update()
         self.toolbar.push_current()
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
@@ -3439,20 +3876,16 @@ class Tab_Tracking_CV2(TabBase):
         self.button_track.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
 
-        # Threshold / edge detection / tracking settings - signals blocked
-        # so setting them doesn't trigger a redundant re-blur/dialog/redraw
-        # (see docstring); the already-copied nav_imgs/df_rois already
-        # reflect these settings' effect.
+        # Threshold / tracking settings - signals blocked so setting them
+        # doesn't trigger a redundant re-blur/dialog/redraw (see docstring);
+        # the already-copied nav_imgs/df_rois already reflect these
+        # settings' effect. Edge Detection/Dilate-Erode/Mesh ride along
+        # inside df_rois_rows below (per-ROI Segments, no main-tab widgets
+        # to restore here).
         for wid, value, setter in (
             (self.combo_thresh_method, state['combo_thresh_method'], 'setCurrentText'),
-            (self.combo_blur, state['combo_blur'], 'setCurrentText'),
+            (self.spinbox_blur, state['spinbox_blur'], 'setValue'),
             (self.slider_thresh, state['slider_thresh'], 'setValue'),
-            (self.checkbox_edgeOnly, state['edgeOnly'], 'setChecked'),
-            (self.checkbox_edgeDirectional, state['edgeDirectional'], 'setChecked'),
-            (self.checkbox_revertMask, state['revertMask'], 'setChecked'),
-            (self.spinbox_edgeKernel, state['edgeKernel'], 'setValue'),
-            (self.spinbox_edgeDirection, state['edgeDirection'], 'setValue'),
-            (self.combo_blur_track, state['combo_blur_track'], 'setCurrentText'),
             (self.combo_trackMethod, state['combo_trackMethod'], 'setCurrentText'),
             (self.spinbox_threadNo, state['spinbox_threadNo'], 'setValue'),
             (self.spinbox_fps, state['spinbox_fps'], 'setValue'),
@@ -3462,7 +3895,6 @@ class Tab_Tracking_CV2(TabBase):
             wid.blockSignals(True)
             getattr(wid, setter)(value)
             wid.blockSignals(False)
-        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self.set_threadNo(state['spinbox_threadNo'])
         self.pets2_params = deepcopy(state['pets2_params'])
 

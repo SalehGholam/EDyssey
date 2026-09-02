@@ -59,15 +59,16 @@ from PyQt5.QtGui import QIcon, QCursor, QPixmap
 import matplotlib.pyplot as plt
 plt.style.use('dark_background')
 
-# Version is a plain "last updated" timestamp (year.month.day.hourminute,
-# local time, zero-padded) rather than a semantic x.y.z number - update
-# this whenever a user-facing change is made anywhere in the app, so
-# Help > About always reflects how current the running build actually is.
-# A plain source constant (not computed at build/run time) so it's visible
-# directly in the repo on GitHub, not just at runtime. Shown only in the
-# About dialog (Help >
-#  About EDyssey).
-APP_VERSION = '1.1.260829'
+# Semantic-versioning-shaped, but the 3rd/4th parts are a build timestamp
+# rather than counts: MAJOR.MINOR.YYYYMMDD.HHMM (local time, zero-padded) -
+# MAJOR.MINOR is bumped by hand for real milestones (this is 2.0), the
+# date/time update on every user-facing change anywhere in the app, so
+# Help > About always reflects how current the running build actually is,
+# without needing a separate build/release process to compute it. A plain
+# source constant (not computed at run time) so it's visible directly in
+# the repo on GitHub, not just at runtime. Shown only in the About dialog
+# (Help > About EDyssey).
+APP_VERSION = '2.0.20260902.1625'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -238,6 +239,11 @@ class MainWindow(qtw.QMainWindow):
         action_display_size.triggered.connect(self.show_display_size_dialog)
 
         menu_help = self.menuBar().addMenu('&Help')
+        action_sam2_setup = menu_help.addAction('Set Up SAM2...')
+        action_sam2_setup.setToolTip(
+            'Install torch/sam2 for the SAM2 tab - not needed with the offline installer')
+        action_sam2_setup.triggered.connect(self.show_sam2_setup_dialog)
+        menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
 
@@ -311,10 +317,38 @@ class MainWindow(qtw.QMainWindow):
             self._all_tabs.remove(widget)
         widget.deleteLater()
 
+    def show_sam2_setup_dialog(self):
+        """Help > Set Up SAM2... - see ui_tabs/sam2_setup_dialog.py. Imported
+        lazily so a plain menu click doesn't cost anything at startup."""
+        from ui_tabs.sam2_setup_dialog import SAM2SetupDialog
+        SAM2SetupDialog(self).exec_()
+
     def show_about_dialog(self):
+        """Help > About EDyssey - QMessageBox.about() renders this as rich
+        text (Qt auto-detects the HTML), and its label has clickable-link
+        support on by default, so the mailto:/https: links below open the
+        user's mail client/browser directly. Links get an explicit light
+        blue (Qt's default link blue is too dark to read against this
+        dialog's own dark/black background - inherited from the app's
+        overall dark palette)."""
+        link = 'style="color: #6db3ff;"'
         qtw.QMessageBox.about(self, 'About EDyssey',
-            f'EDyssey\nVersion {APP_VERSION}\n\n'
-            '4D-STEM and 4D-STEM Tomography analysis toolkit.')
+            '<h3>EDyssey</h3>'
+            f'<p>Version {APP_VERSION}</p>'
+            '<p>4D-STEM and 4D-STEM Tomography analysis toolkit.</p>'
+            '<p>Developed by Saleh Gholam at the EMAT group, University of Antwerp.<br>'
+            f'Contact: <a href="mailto:saleh.gholam@uantwerpen.be" {link}>saleh.gholam@uantwerpen.be</a><br>'
+            f'Software: <a href="https://github.com/SalehGholam/EDyssey" {link}>'
+            'github.com/SalehGholam/EDyssey</a><br>'
+            f'Paper: <a href="https://arxiv.org/abs/2602.09768" {link}>arxiv.org/abs/2602.09768</a></p>'
+            '<p>&copy; 2024&ndash;2026 Saleh Gholam. Released as open-source software - '
+            'see the GitHub repository for license terms.</p>'
+            '<p style="font-size: small; color: gray;">Built with NumPy, PyQt5, HyperSpy, '
+            'Dask, OpenCV (opencv-contrib-python), Matplotlib, matplotlib-scalebar, '
+            'scikit-image, PyWavelets, SciPy, pandas, Pillow, tifffile, h5py, tqdm, PyTorch, '
+            "and Meta AI's Segment Anything 2 (SAM2), plus eventem/pacbed for .tpx3 loading - "
+            'each remains the property of its respective authors under its own '
+            'open-source license.</p>')
 
     def show_display_size_dialog(self):
         """Open (or re-raise, if already open) the singleton Display Size

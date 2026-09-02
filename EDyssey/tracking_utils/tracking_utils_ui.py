@@ -714,7 +714,7 @@ def check_threshold(img, dev=0.1, step=0.05):
             ax[i_t, i_r].set_title(f'{r:.02f}')
         ax[i_t,0].set_ylabel(lbls[i_t])
 
-def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kernel=1):
+def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_sigma=0):
     """Create per-frame binary segmentation masks from navigation images and ROIs.
 
     For each frame, crops the image to the ROI, optionally blurs it, applies a threshold,
@@ -725,7 +725,8 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
         rois: Array of shape (N, 4) with per-frame (y, x, h, w) ROI coordinates.
         thresh_method: Thresholding algorithm — `'otsu'`, `'li'`, `'yen'`, or `'mean'`.
         thresh_offset: Multiplicative scale applied to the computed threshold.
-        blur_kernel: Gaussian blur kernel size. 1 means no blur.
+        blur_sigma: Gaussian blur sigma (same convention as the "Adjust
+            Contrast" Denoise box's own Gaussian Blur method). 0 means no blur.
 
     Returns:
         Boolean numpy.ndarray of shape (N, H, W).
@@ -736,13 +737,13 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_kern
     'yen': threshold_yen,
     'mean': threshold_mean}
     threshold_func = threshold_methods[thresh_method]
-    
+
     masks = np.zeros(navImgs.shape, dtype=navImgs.dtype)
     for i, img in enumerate(navImgs):
         y,x,h,w = rois[i]
-        if blur_kernel != 1:
+        if blur_sigma > 0:
             img = io.convert_img_to_8bit(img)
-            img = io.gaussian_blur(img, blur_kernel)
+            img = gaussian_filter(img, sigma=blur_sigma)
         masks[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
         th = io.threshold_ignore_zero(threshold_func, img[x:x+w, y:y+h])
         th *= thresh_offset

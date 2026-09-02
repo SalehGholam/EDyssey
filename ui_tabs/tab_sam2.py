@@ -38,6 +38,7 @@ from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob
                        HDF5_EVENTEM_LABEL)
 from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
+from .transposed_object_table import TransposedObjectTable
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
 from .sam2_auto_detector_widget import SAM2AutoDetectorWidget
@@ -66,6 +67,14 @@ class Tab_SAM2(TabBase):
         # parts of a redraw; update_canvas() freezes it after the first
         # real draw, once subplot spacing has settled.
         self._layout_frozen = False
+        # Cached "clean" background (everything except the nav/seg image
+        # data and their point/mask overlays) used to blit the cheap
+        # denoise/contrast preview refresh instead of a full canvas redraw -
+        # see _blit_current_frame_display(). None means "needs (re)capture";
+        # invalidated by update_canvas() (covers everything this fast path
+        # doesn't itself touch) and the couple of other full-figure redraws
+        # outside it (on_scroll's zoom, add_scalebar).
+        self._denoise_bg = None
 
         self._stderr_buffer = ProcessStderrBuffer()
         logical_processors = os.cpu_count()
@@ -413,56 +422,101 @@ class Tab_SAM2(TabBase):
 
         self._ribbon_group_end(layout_ribbon, layout_box_experiment, 'Input Parameters', stretch=0)
         
-        #%% Edge Detection / Extract 
-        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0)
-        #### edge detection
-        layout_edgeDetection_row1 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_edgeDetection_row1)
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
-        self.checkbox_edgeOnly.setToolTip('Reduce the mask to just its outline')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeOnly)
-        self.checkbox_edgeOnly.stateChanged.connect(lambda: self.update_canvas())
-        self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        self.checkbox_edgeDirectional.setToolTip(
-            'Keep only the edge facing one direction (angle below)')
-        layout_edgeDetection_row1.addWidget(self.checkbox_edgeDirectional)
-        self.checkbox_edgeDirectional.stateChanged.connect(self._on_edge_directional_toggled)
-        self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
-        self.checkbox_revertMask.setToolTip(
-            'With Edge Detection: keep the interior, cut the edge band (inverse)')
-        layout_edgeDetection_row1.addWidget(self.checkbox_revertMask)
-        self.checkbox_revertMask.stateChanged.connect(lambda: self.update_canvas())
+        #%% Tracking / Extract
+        # Edge Detection used to live here as a tab-wide control - it's now
+        # per-object, set only from the Fine-Tune Mask dialog's Segments
+        # feature (same as Mesh/Dilate-Erode already were - see
+        # apply_edge_mask/_edge_settings_for). Tracking - moved here from
+        # the bottom of the left object-list panel (below tree_objects),
+        # directly above Extract in the same stacked ribbon column, per
+        # user request.
+        # Fixed width (rather than sizing to content) - matches ROI
+        # Tracker's own Threshold/Tracking/Extract column so the two tabs'
+        # ribbons don't visibly shift width against each other.
+        self.box_3ded, layout_box_3ded = self._ribbon_group_start(layout_ribbon, stretch=0, width=320)
 
-        layout_edgeDetection_row2 = qtw.QHBoxLayout()
-        layout_box_3ded.addLayout(layout_edgeDetection_row2)
-        label_edgeKernel = qtw.QLabel('Kernel')
-        layout_edgeDetection_row2.addWidget(label_edgeKernel)
-        self.spinbox_edgeKernel = qtw.QSpinBox()
-        self.spinbox_edgeKernel.setRange(1, 99)
-        self.spinbox_edgeKernel.setValue(3)
-        self.spinbox_edgeKernel.setToolTip('Erosion kernel size (pixels) - larger = wider edge band')
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeKernel)
-        self.spinbox_edgeKernel.valueChanged.connect(lambda: self.update_canvas())
-        self._ribbon_inline_separator(layout_edgeDetection_row2)
-        label_edgeDirection = qtw.QLabel('Angle (°)')
-        layout_edgeDetection_row2.addWidget(label_edgeDirection)
-        self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
-        self.spinbox_edgeDirection.setRange(-360, 360)
-        self.spinbox_edgeDirection.setDecimals(1)
-        self.spinbox_edgeDirection.setSingleStep(5)
-        self.spinbox_edgeDirection.setValue(0)
-        self.spinbox_edgeDirection.setDisabled(True)
-        self.spinbox_edgeDirection.setToolTip(
-            '0°=right, 90°=down, 180°=left, 270°=up (clockwise)')
-        layout_edgeDetection_row2.addWidget(self.spinbox_edgeDirection)
-        self.spinbox_edgeDirection.valueChanged.connect(lambda: self.update_canvas())
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Edge Detection', stretch=False)
+        #%% Tracking (first sub-section in this combined column)
+        layout_box_tracking = layout_box_3ded
+        layout_sam_buttons_1 = qtw.QHBoxLayout()
+        layout_box_tracking.addLayout(layout_sam_buttons_1)
+        layout_sam_buttons_2 = qtw.QHBoxLayout()
+        layout_box_tracking.addLayout(layout_sam_buttons_2)
 
-        sep_3ded = qtw.QFrame()
-        sep_3ded.setFrameShape(qtw.QFrame.HLine)
-        sep_3ded.setFrameShadow(qtw.QFrame.Sunken)
-        layout_box_3ded.addWidget(sep_3ded)
-        #### Extract
+        # image
+        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
+        # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_img)
+        # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
+        self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
+        self.button_runSeg_img.setDisabled(True)
+
+        # num
+        layout_stack = qtw.QVBoxLayout()
+        layout_sam_buttons_2.addLayout(layout_stack)
+        layout_stack_top = qtw.QHBoxLayout()
+        layout_stack.addLayout(layout_stack_top)
+
+        label_stackNum = qtw.QLabel('Stack Num')
+        label_stackNum.setToolTip('Frames per SAM2 stack - lower = less GPU memory, more processes')
+        layout_stack_top.addWidget(label_stackNum)
+        self.spinbox_stackNum = qtw.QSpinBox()
+        self.spinbox_stackNum.setMaximumWidth(80)
+        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack')
+        layout_stack_top.addWidget(self.spinbox_stackNum)
+        self.spinbox_stackNum.setSingleStep(25)
+
+        # Stack navigation buttons (jump to a stack's first frame) - stacked
+        # below the Stack Num row itself, in the same column, rather than
+        # under the slider beside the canvas (moved here per user request).
+        layout_stack_nav = qtw.QHBoxLayout()
+        layout_stack.addLayout(layout_stack_nav)
+        label_stacks_nav = qtw.QLabel('Stacks:')
+        label_stacks_nav.setToolTip('Jump to a stack\'s first frame - each stack needs at least one point')
+        layout_stack_nav.addWidget(label_stacks_nav)
+
+        self._stack_scroll = qtw.QScrollArea()
+        self._stack_scroll.setWidgetResizable(True)
+        self._stack_scroll.setFixedHeight(36)
+        self._stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._stack_scroll.setFrameShape(qtw.QFrame.NoFrame)
+        layout_stack_nav.addWidget(self._stack_scroll)
+
+        self._stack_buttons_widget = qtw.QWidget()
+        self._stack_buttons_layout = qtw.QHBoxLayout(self._stack_buttons_widget)
+        self._stack_buttons_layout.setContentsMargins(2, 2, 2, 2)
+        self._stack_buttons_layout.setSpacing(3)
+        self._stack_scroll.setWidget(self._stack_buttons_widget)
+
+        self.label_stack = qtw.QLabel('')
+        layout_box_tracking.addWidget(self.label_stack)
+        self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
+
+        # clip
+        self.button_runSeg_clip = qtw.QPushButton('Track', self)
+        # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
+        layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
+        self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
+        self.button_runSeg_clip.setEnabled(False)
+
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
+        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
+        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+
+        for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
+            wid.setDisabled(True)
+        for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
+            wid.setDisabled(True)
+        self._ribbon_group_end(layout_ribbon, layout_box_tracking, 'Tracking', separator=False, stretch=False)
+
+        sep_extract = qtw.QFrame()
+        sep_extract.setFrameShape(qtw.QFrame.HLine)
+        sep_extract.setFrameShadow(qtw.QFrame.Sunken)
+        layout_box_3ded.addWidget(sep_extract)
+
+        #%% Extract
         layout_threadNum = qtw.QHBoxLayout()
         layout_box_3ded.addLayout(layout_threadNum)
 
@@ -532,19 +586,37 @@ class Tab_SAM2(TabBase):
         self.button_cancel.clicked.connect(self.cancel_running_work)
         layout_ribbon_final.addWidget(self.button_cancel)
         self.disable_3ded_widgets(True)
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract', separator=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract')
         layout_ribbon.addStretch(1)
 
-        #%% Display Contrast (top) + Feature Handling (below it) - moved out
+        #%% Adjust Contrast (top) + Feature Handling (below it) - moved out
         # of the ribbon into one stacked column beside the canvas, same
         # position as the Navigator tab's file list (see the #%% canvas
         # section below for where this widget is actually placed).
         widget_featurePanel = qtw.QWidget()
+        # Fixed (not just an initial splitter size) - a child widget's own
+        # minimum-size floor (e.g. tree_objects.setMinimumWidth below) would
+        # otherwise let this pane grow past 220px on a squeezed window,
+        # independently of whatever floor the other 3 tabs' own left panes
+        # happen to have, so the 4 tabs' panes could drift to different
+        # actual widths even though every tab starts from the same 220.
+        widget_featurePanel.setFixedWidth(220)
         layout_featurePanel = qtw.QVBoxLayout(widget_featurePanel)
         layout_featurePanel.setContentsMargins(2, 2, 2, 2)
 
         self.box_contrast = ContrastScalingBox()
         self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        # Denoise-only changes are decoupled from the full-stack rescale
+        # above (some methods are too slow to re-run on every frame for
+        # every parameter tweak) - see _on_denoise_preview_changed/
+        # _apply_denoise_to_all_frames, and box_contrast's own docstring.
+        self.box_contrast.denoisePreviewChanged.connect(self._on_denoise_preview_changed)
+        self.box_contrast.denoiseApplyAllRequested.connect(self._apply_denoise_to_all_frames)
+        self.box_contrast.checkMethodsRequested.connect(self._show_denoise_check_methods)
+        # True once a Denoise change has been previewed on the current frame
+        # only, but not yet (re)applied to the rest of the stack - see
+        # _on_denoise_preview_changed/_on_slider_imgNo_changed.
+        self._denoise_dirty = False
         layout_featurePanel.addWidget(self.box_contrast)
 
         # Auto Detector / Reset Objects - sit above the object list, same
@@ -571,95 +643,25 @@ class Tab_SAM2(TabBase):
         # tree - stretches to fill the rest of this column's height now that
         # it sits beside the (tall) canvas, rather than being capped to fit
         # inside a short ribbon column.
-        self.tree_objects = qtw.QTreeWidget()
-        layout_featurePanel.addWidget(self.tree_objects, 1)
+        # Transposed (see TransposedObjectTable): property names run down
+        # the fixed first column instead of across the top, and each
+        # tracked object is one column instead of one row, so adding an
+        # object adds a column - still called tree_objects (not literally a
+        # QTreeWidget anymore) since renaming the many existing references
+        # below wasn't worth it.
         self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "dup", "del"]
-        self.tree_objects.setColumnCount(len(self.cols_tree))
-        self.tree_objects.setHeaderLabels(
-            ["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Duplicate", "Delete"])
-        # Wide enough for their content: dup/del hold a 30px button, end
+        row_labels = ["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Duplicate", "Delete"]
+        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels)
+        layout_featurePanel.addWidget(self.tree_objects, 1)
+        # Tall enough for their content: dup/del hold a 30px button, end
         # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
-        col_widths = {'use': 35, 'idx': 30, 'fr_idx': 50, 'end': 60,
-                      'trk': 60, 'ext': 65, 'dup': 45, 'del': 45}
+        row_heights = {'use': 24, 'idx': 24, 'fr_idx': 24, 'end': 28,
+                       'trk': 24, 'ext': 24, 'dup': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
-            self.tree_objects.setColumnWidth(i, col_widths[col])
+            self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.setMinimumWidth(200)
-        self.tree_objects.setSelectionMode(qtw.QTreeWidget.SingleSelection)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
-
-        #%% run sam2
-        layout_sam_buttons_1 = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(layout_sam_buttons_1)
-        layout_sam_buttons_2 = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(layout_sam_buttons_2)
-
-        # image
-        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
-        # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons_1.addWidget(self.button_runSeg_img)
-        # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
-        self.button_runSeg_img.clicked.connect(self.initiate_image_segmentation)
-        self.button_runSeg_img.setDisabled(True)
-
-        # num
-        layout_stack = qtw.QVBoxLayout()
-        layout_sam_buttons_2.addLayout(layout_stack)
-        layout_stack_top = qtw.QHBoxLayout()
-        layout_stack.addLayout(layout_stack_top)
-
-        label_stackNum = qtw.QLabel('Stack Num')
-        label_stackNum.setToolTip('Frames per SAM2 stack - lower = less GPU memory, more processes')
-        layout_stack_top.addWidget(label_stackNum)
-        self.spinbox_stackNum = qtw.QSpinBox()
-        self.spinbox_stackNum.setMaximumWidth(80)
-        self.spinbox_stackNum.setToolTip('Frames per SAM2 stack')
-        layout_stack_top.addWidget(self.spinbox_stackNum)
-        self.spinbox_stackNum.setSingleStep(25)
-
-        # Stack navigation buttons (jump to a stack's first frame) - stacked
-        # below the Stack Num row itself, in the same column, rather than
-        # under the slider beside the canvas (moved here per user request).
-        layout_stack_nav = qtw.QHBoxLayout()
-        layout_stack.addLayout(layout_stack_nav)
-        label_stacks_nav = qtw.QLabel('Stacks:')
-        label_stacks_nav.setToolTip('Jump to a stack\'s first frame - each stack needs at least one point')
-        layout_stack_nav.addWidget(label_stacks_nav)
-
-        self._stack_scroll = qtw.QScrollArea()
-        self._stack_scroll.setWidgetResizable(True)
-        self._stack_scroll.setFixedHeight(36)
-        self._stack_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._stack_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._stack_scroll.setFrameShape(qtw.QFrame.NoFrame)
-        layout_stack_nav.addWidget(self._stack_scroll)
-
-        self._stack_buttons_widget = qtw.QWidget()
-        self._stack_buttons_layout = qtw.QHBoxLayout(self._stack_buttons_widget)
-        self._stack_buttons_layout.setContentsMargins(2, 2, 2, 2)
-        self._stack_buttons_layout.setSpacing(3)
-        self._stack_scroll.setWidget(self._stack_buttons_widget)
-
-        self.label_stack = qtw.QLabel('')
-        layout_featurePanel.addWidget(self.label_stack)
-        self.spinbox_stackNum.valueChanged.connect(self.update_stack_guide)
-
-        # clip
-        self.button_runSeg_clip = qtw.QPushButton('Track', self)
-        # self.button_runSeg_clip.setFixedSize(button_w, button_h_lrg)
-        layout_sam_buttons_1.addWidget(self.button_runSeg_clip)
-        self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
-        self.button_runSeg_clip.setEnabled(False)
-
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
-        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
-        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
-
-        for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
-            wid.setDisabled(True)
-        for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
-            wid.setDisabled(True)
+        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -773,7 +775,21 @@ class Tab_SAM2(TabBase):
         
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
-        
+
+        # Prev/Next sit together, right before the slider itself, rather
+        # than flanking it on both sides.
+        self.button_prevFrame = qtw.QPushButton('◀')
+        self.button_prevFrame.setFixedWidth(28)
+        self.button_prevFrame.setToolTip('Previous frame')
+        self.button_prevFrame.clicked.connect(lambda: self._step_frame(-1))
+        layout_slider.addWidget(self.button_prevFrame)
+
+        self.button_nextFrame = qtw.QPushButton('▶')
+        self.button_nextFrame.setFixedWidth(28)
+        self.button_nextFrame.setToolTip('Next frame')
+        self.button_nextFrame.clicked.connect(lambda: self._step_frame(1))
+        layout_slider.addWidget(self.button_nextFrame)
+
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
@@ -802,7 +818,7 @@ class Tab_SAM2(TabBase):
         layout_slider.addWidget(self.button_frame_end)
 
         # self.update_canvas(0)
-        self.slider_imgNo.valueChanged.connect(self.update_canvas)
+        self.slider_imgNo.valueChanged.connect(self._on_slider_imgNo_changed)
 
         self.tree_objects.itemSelectionChanged.connect(self.update_stack_guide)
         # Kept alive (not shown) purely for its view-stack bookkeeping
@@ -1021,70 +1037,93 @@ class Tab_SAM2(TabBase):
         mesh = self.df_obj.at[obj_id, 'mesh']
         return mesh if isinstance(mesh, dict) else None
 
+    def _dilate_erode_settings_for(self, obj_id):
+        """This object's Dilate/Erode segments (see MaskEditDialog/
+        get_dilate_erode_settings - `{'segments': [...]}`), or None if it
+        has none set / obj_id is None. Per-object, set only from the
+        Fine-Tune Mask dialog - no main-tab control (same as Mesh, and,
+        since the Segments feature, Edge Detection too - see
+        _edge_settings_for)."""
+        if obj_id is None:
+            return None
+        dilate_erode = self.df_obj.at[obj_id, 'dilate_erode']
+        return dilate_erode if isinstance(dilate_erode, dict) else None
+
+    def _edge_settings_for(self, obj_id):
+        """This object's Edge Detection segments (see MaskEditDialog/
+        get_edge_settings - `{'segments': [...]}`), or None if it has none
+        set / obj_id is None. Per-object (like Mesh/Dilate-Erode) - Edge
+        Detection used to be a single tab-wide setting before the Fine-Tune
+        Mask dialog's Segments feature; now it's only ever set there, one
+        range at a time, same as the other two."""
+        if obj_id is None:
+            return None
+        edge = self.df_obj.at[obj_id, 'edge']
+        return edge if isinstance(edge, dict) else None
+
+    def _has_active_postprocessing(self, obj_id):
+        """Whether object `obj_id` has ANY segment (see MaskEditDialog's
+        Segments feature) with Dilate/Erode, Edge Detection, or Mesh
+        actually enabled - lets apply_edge_mask_stack skip its per-frame
+        work entirely for an object with nothing to do there."""
+        def _any_enabled(settings, extra=lambda s: True):
+            segs = (settings or {}).get('segments') or []
+            return any(s.get('enabled') and extra(s) for s in segs)
+        return (_any_enabled(self._edge_settings_for(obj_id))
+               or _any_enabled(self._dilate_erode_settings_for(obj_id), lambda s: s.get('kernel', 0) != 0)
+               or _any_enabled(self._mesh_settings_for(obj_id), lambda s: s.get('cells')))
+
     def apply_edge_mask(self, mask, obj_id=None, frame_idx=None):
-        """Reduce a single 2-D mask to just its edge/outline when "Edge
-        Only" is checked (see io.erode_mask_edge), then - if `obj_id` is
-        given and that object has a Mesh restriction set (see
-        MaskEditDialog) that applies to `frame_idx` (every frame, or just
-        the one frame the Mesh box's "This Frame Only" scope names) -
-        restrict it to the selected mesh cell(s), relative to the object's
-        own position on THIS frame (see io.mesh_restrict_mask/
-        io.mask_centroid, and MaskEditDialog._effective_mask's identical
-        convention) so a tracked object's motion across frames doesn't
-        throw off which part of it the selection actually covers. A no-op
-        otherwise. SAM2 masks are always kept raw in self.df_obj (see
-        handle_finished_sam/handle_finished_image_sam) so this can be
-        applied fresh - and re-applied live whenever "Edge Only"/the kernel
-        size/the mesh selection changes - as a view at display/extraction/
-        save time, instead of destructively baking either into the stored
-        mask (which would make it impossible to undo by unchecking/
-        re-editing it)."""
-        mesh = self._mesh_settings_for(obj_id)
-        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells')
-                       and (mesh.get('scope', 'all') == 'all' or mesh.get('frame_idx') == frame_idx))
+        """Grow/shrink a single 2-D mask uniformly when `obj_id`'s
+        Dilate/Erode setting for `frame_idx` (see MaskEditDialog's
+        Segments - resolved via io.segment_for_frame) is enabled (see
+        io.dilate_erode_mask), then reduce it to just its edge/outline when
+        that frame's Edge Detection segment is enabled (see
+        io.erode_mask_edge), then - if `obj_id` is given and that frame's
+        Mesh segment has a restriction set - restrict it to the selected
+        mesh cell(s), relative to the object's own position on THIS frame
+        (see io.mesh_restrict_mask/io.mask_centroid, and
+        MaskEditDialog._effective_mask's identical convention) so a
+        tracked object's motion across frames doesn't throw off which part
+        of it the selection actually covers. A no-op otherwise. SAM2 masks
+        are always kept raw in self.df_obj (see handle_finished_sam/
+        handle_finished_image_sam) so this can be applied fresh - and
+        re-applied live whenever any segment's settings change - as a view
+        at display/extraction/save time, instead of destructively baking
+        any of them into the stored mask (which would make it impossible
+        to undo by unchecking/re-editing it)."""
+        mesh_segments = (self._mesh_settings_for(obj_id) or {}).get('segments')
+        mesh = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
+        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells'))
         origin = io.mask_centroid(mask) if mesh_on else None
-        if self.checkbox_edgeOnly.isChecked():
-            direction = (self.spinbox_edgeDirection.value()
-                        if self.checkbox_edgeDirectional.isChecked() else None)
-            mask = io.erode_mask_edge(mask, self.spinbox_edgeKernel.value(), direction=direction,
-                                       revert=self.checkbox_revertMask.isChecked())
+
+        de_segments = (self._dilate_erode_settings_for(obj_id) or {}).get('segments')
+        de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
+        if de and de.get('enabled') and de.get('kernel', 0) != 0:
+            mask = io.dilate_erode_mask(mask, de['kernel'])
+
+        edge_segments = (self._edge_settings_for(obj_id) or {}).get('segments')
+        edge = io.segment_for_frame(edge_segments, frame_idx) if edge_segments else None
+        if edge and edge.get('enabled'):
+            direction = edge.get('direction') if edge.get('directional') else None
+            mask = io.erode_mask_edge(mask, edge.get('kernel', 3), direction=direction,
+                                      revert=edge.get('revert', False))
+
         if mesh_on:
             mask = io.mesh_restrict_mask(mask, mesh.get('angle', 0), mesh.get('cell_size', 20),
-                                         [tuple(c) for c in mesh['cells']], origin=origin)
+                                         [tuple(c) for c in mesh['cells']], origin=origin,
+                                         lines_only=mesh.get('lines_only', False))
         return mask
 
     def apply_edge_mask_stack(self, mask_stack, obj_id=None):
         """`apply_edge_mask`, applied per-frame to a (N, H, W) mask stack -
-        each frame gets its own object-relative mesh origin, and (if the
-        Mesh box's scope is "This Frame Only") only the one frame it names
-        is actually restricted."""
-        edge_on = self.checkbox_edgeOnly.isChecked()
-        mesh = self._mesh_settings_for(obj_id)
-        mesh_enabled = bool(mesh and mesh.get('enabled') and mesh.get('cells'))
-        if not edge_on and not mesh_enabled:
+        each frame resolves its own segment (see io.segment_for_frame) for
+        Dilate/Erode, Edge Detection, and Mesh independently, so a stack
+        whose settings vary partway through gets each frame's own range
+        applied correctly."""
+        if not self._has_active_postprocessing(obj_id):
             return mask_stack
-        mesh_scope_all = mesh_enabled and mesh.get('scope', 'all') == 'all'
-        mesh_frame_idx = mesh.get('frame_idx') if mesh_enabled else None
-        kernel = self.spinbox_edgeKernel.value()
-        direction = (self.spinbox_edgeDirection.value()
-                    if self.checkbox_edgeDirectional.isChecked() else None)
-        revert = self.checkbox_revertMask.isChecked()
-        out = []
-        for i, m in enumerate(mask_stack):
-            mesh_on = mesh_enabled and (mesh_scope_all or mesh_frame_idx == i)
-            origin = io.mask_centroid(m) if mesh_on else None
-            if edge_on:
-                m = io.erode_mask_edge(m, kernel, direction=direction, revert=revert)
-            if mesh_on:
-                m = io.mesh_restrict_mask(m, mesh.get('angle', 0), mesh.get('cell_size', 20),
-                                          [tuple(c) for c in mesh['cells']], origin=origin)
-            out.append(m)
-        return np.stack(out)
-
-    def _on_edge_directional_toggled(self):
-        """Enable the edge-angle spinbox only while "Directional" is checked, then redraw."""
-        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
-        self.update_canvas()
+        return np.stack([self.apply_edge_mask(m, obj_id, i) for i, m in enumerate(mask_stack)])
 
     def browse_metadata_file(self):
         start_dir = self.lineEdit_dir_4d.text()
@@ -1404,7 +1443,7 @@ class Tab_SAM2(TabBase):
         shape_x, shape_y = self.imgs[0].shape
         self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
         # Displayed (and SAM2-fed) from imgs_8bit, not the raw imgs - so the
-        # "Display Contrast" method/parameters actually take visible effect.
+        # "Adjust Contrast" method/parameters actually take visible effect.
         self.img_display['nav'].set_clim(vmin=self.imgs_8bit.min(), vmax=self.imgs_8bit.max())
         self.img_display['seg'].set_extent([0, shape_y, shape_x, 0])
         self.img_display['seg_mask'].set_extent([0, shape_y, shape_x, 0])
@@ -1433,33 +1472,149 @@ class Tab_SAM2(TabBase):
         self.add_scalebar()
 
     def rescale_nav_signal(self):
-        """Retune contrast without reloading the signal from disk: the
-        currently-displayed frame is rescaled immediately (cheap, instant
-        feedback), while the full stack (used for SAM2/tracking, and to
-        keep every other frame in sync) rescales in the background - a
-        long stack no longer blocks/lags the GUI on every settings tweak.
-        Rapid retuning cancels (i.e. discards the result of) any
-        still-running previous background rescale - see
-        ContrastScalingBox.rescale_async."""
+        """Contrast settings changed: the currently-displayed frame is
+        rescaled immediately (cheap, instant feedback), while the full
+        stack (used for SAM2/tracking, and to keep every other frame in
+        sync) rescales in the background - a long stack no longer blocks/
+        lags the GUI on every settings tweak. Rapid retuning cancels (i.e.
+        discards the result of) any still-running previous background
+        rescale - see ContrastScalingBox.rescale_async. Also used as
+        _apply_denoise_to_all_frames's own worker - both end up wanting
+        exactly this same full-stack-refresh-from-current-settings."""
         if not hasattr(self, 's_navSignal'):
             return
-        imgNo = self.slider_imgNo.value()
+        self._refresh_current_frame_display()
+        self.box_contrast.set_denoise_apply_all_busy(True)
+        self.progress_bar.setRange(0, len(self.imgs))
+        self.progress_bar.setValue(0)
+        self.box_contrast.rescale_async(self.s_navSignal, self.threadpool, self.logger,
+                                        on_progress=self.update_progress_bar,
+                                        on_done=self._on_nav_signal_rescaled,
+                                        on_error=self._on_nav_signal_rescale_failed)
+
+    def _refresh_current_frame_display(self, imgNo=None):
+        """Rescale (contrast + denoise, current settings) and redraw just
+        the currently-displayed frame - cheap, so safe to call on every
+        Denoise parameter tweak (see _on_denoise_preview_changed) or frame
+        navigation (see _on_slider_imgNo_changed) without waiting for a full
+        background stack rescale.
+
+        Blits just the nav/seg image data (_blit_current_frame_display)
+        instead of routing through update_canvas's full draw - update_canvas
+        resolves the selected object, masks, points, and DP fresh every
+        call, none of which a Denoise parameter tweak can actually change,
+        so running its full (non-blitted) draw on every single spinbox
+        nudge made retuning a slow method noticeably laggy."""
+        if not hasattr(self, 's_navSignal'):
+            return
+        if imgNo is None:
+            imgNo = self.slider_imgNo.value()
         frame_8bit = self.box_contrast.rescale_frame(self.imgs[imgNo])
         self.imgs_8bit[imgNo] = frame_8bit
+        self.img_display['nav'].set_data(frame_8bit)
         self.img_display['nav'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
-        self.update_canvas()
-        self.canvas.draw_idle()
+        self.img_display['seg'].set_data(frame_8bit)
+        self.img_display['seg'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
+        self._blit_current_frame_display()
 
-        self.box_contrast.rescale_async(self.s_navSignal, self.threadpool, self.logger,
-                                        on_done=self._on_nav_signal_rescaled)
+    def _blit_current_frame_display(self):
+        """Blit just the nav/seg image artists (plus their existing point/
+        mask overlays, redrawn on top so repainting the image doesn't erase
+        them - draw_artist() overwrites raw pixels in its axes' region
+        regardless of the other artists baked into the restored background)
+        onto the canvas - see TabBase._blit_canvas. The point/mask overlays
+        themselves are untouched by a denoise/contrast tweak, but still need
+        to be included here (not just left baked into the cached
+        background) since they're drawn on top of the very same axes the
+        image artists just overwrote."""
+        artists = ([self.img_display['nav'], self.img_display['seg'],
+                    self.img_display['seg_mask']] + self.scatter_plots)
+        self._blit_canvas(
+            self.canvas, self.figure, '_denoise_bg', artists,
+            hide_for_background=[self.img_display['nav'], self.img_display['seg']])
+
+    def _on_denoise_preview_changed(self):
+        """box_contrast's Denoise method/parameter changed: refresh just
+        the current frame (cheap) - the rest of the stack is intentionally
+        left as-is (some denoise methods are too slow to re-run on every
+        frame for every tweak) until "Apply to All Images" is clicked (see
+        _apply_denoise_to_all_frames) or a contrast change triggers a full
+        refresh anyway (rescale_nav_signal). Marks the stack "dirty" so
+        navigating to a different frame in the meantime also gets a fresh
+        preview instead of showing that frame's old, differently-denoised
+        pixels - see _on_slider_imgNo_changed."""
+        self._denoise_dirty = True
+        self._refresh_current_frame_display()
+
+    def _apply_denoise_to_all_frames(self):
+        """box_contrast's "Apply to All Images" button: run the full
+        contrast+denoise pipeline across the whole stack now, on demand -
+        exactly what rescale_nav_signal already does for a contrast change,
+        just triggered explicitly instead.
+
+        Clears "dirty" right away, rather than waiting for the background
+        rescale to actually finish: the whole point of this button is to
+        make frame navigation fast again immediately, not just once a
+        possibly slow (large stack, slow method) background job eventually
+        completes - during that window _on_slider_imgNo_changed no longer
+        recomputes per-frame (which would otherwise keep contending with
+        the background job for CPU, defeating the point), so a frame
+        visited in that window may briefly show its pre-rescale pixels
+        until _on_nav_signal_rescaled's own refresh catches it up."""
+        self._denoise_dirty = False
+        self.rescale_nav_signal()
+
+    def _show_denoise_check_methods(self):
+        """box_contrast's "Check Methods..." button: compare every
+        denoising method on the currently-displayed raw frame."""
+        if not hasattr(self, 's_navSignal'):
+            qtw.QMessageBox.warning(self, 'No Signal Loaded',
+                'Load a signal first to compare denoising methods on it.')
+            return
+        imgNo = self.slider_imgNo.value()
+        self._check_methods_dlg = self.box_contrast.open_check_methods_dialog(
+            self.imgs[imgNo], parent=self)
 
     def _on_nav_signal_rescaled(self, s_8bit):
         """ContrastScalingBox.rescale_async callback: apply the fully-rescaled
-        8-bit stack once the background recompute finishes."""
+        8-bit stack once the background recompute finishes - every frame now
+        reflects the current Denoise settings too, so the stack is no
+        longer "dirty" (see _on_denoise_preview_changed)."""
+        self.box_contrast.set_denoise_apply_all_busy(False)
         self.imgs_8bit = s_8bit.data
+        self._denoise_dirty = False
         self.img_display['nav'].set_clim(vmin=self.imgs_8bit.min(), vmax=self.imgs_8bit.max())
         self.update_canvas()
         self.canvas.draw_idle()
+
+    def _on_nav_signal_rescale_failed(self, traceback_text):
+        """ContrastScalingBox.rescale_async's on_error callback: without
+        this, a failed full-stack rescale (e.g. Apply to All Images hitting
+        a denoise-method error) would vanish silently - the "dirty" flag
+        would stay False (cleared optimistically by
+        _apply_denoise_to_all_frames) forever, leaving every frame but the
+        one on screen at that moment permanently stuck showing pre-rescale
+        pixels with no way to tell it had failed. Re-dirtying falls back to
+        per-frame recompute on navigation (see _on_slider_imgNo_changed)
+        until the user retries."""
+        self.box_contrast.set_denoise_apply_all_busy(False)
+        self._denoise_dirty = True
+        self.logger.error('Full-stack contrast/denoise rescale failed:\n%s', traceback_text)
+        qtw.QMessageBox.warning(self, 'Rescale Failed',
+            f'Could not apply the current contrast/denoise settings to the '
+            f'full image stack:\n{traceback_text[-500:]}')
+
+    def _on_slider_imgNo_changed(self, imgNo):
+        """Frame slider moved: if the currently-configured Denoise settings
+        haven't been applied to the whole stack yet (see
+        _on_denoise_preview_changed/_apply_denoise_to_all_frames), refresh
+        just this now-visible frame first, so navigating around always
+        reflects the live-configured settings without eagerly recomputing
+        every other frame too."""
+        if self._denoise_dirty:
+            self._refresh_current_frame_display(imgNo)
+        else:
+            self.update_canvas(imgNo)
 
     def load_saved_analysis(self):
         """Restore a previously saved analysis folder (produced by
@@ -1566,7 +1721,7 @@ class Tab_SAM2(TabBase):
             # stand-in for it.
             self.df_obj.loc[idx] = [obj['use'], idx, obj['frame_idx'], obj['points'],
                                      obj['labels'], obj['end'], None, obj['mask'],
-                                     obj['mask'], obj['rois'], obj['dp'], None]
+                                     obj['mask'], obj['rois'], obj['dp'], None, None, None]
             self.add_item_tree(idx, obj['frame_idx'], obj['end'], obj['use'])
             row_index = self.df_obj.index.get_loc(idx)
             if obj['mask'] is not None:
@@ -1585,13 +1740,15 @@ class Tab_SAM2(TabBase):
         """(Re)create the empty per-object dataframe (df_obj) with its column
         schema, and reset the added-points history."""
         self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end',
-                        'single_mask', 'mask', 'mask_default', 'rois', 'dp', 'mesh']
+                        'single_mask', 'mask', 'mask_default', 'rois', 'dp', 'mesh',
+                        'dilate_erode', 'edge']
         self.df_obj = pd.DataFrame([], columns=self.cols_df)
         self.df_obj = self.df_obj.astype({'use': int, 'idx': int,'frame_idx': object,
                                           'points': object, 'labels': object,
                                           'end': int, 'single_mask': object,
                                           'dp': object,'mask':object, 'mask_default': object,
-                                          'rois':object, 'mesh': object})
+                                          'rois':object, 'mesh': object, 'dilate_erode': object,
+                                          'edge': object})
         self.initiate_adding_points()
         
     def reset_data(self):
@@ -1628,17 +1785,14 @@ class Tab_SAM2(TabBase):
                 self.tree_objects.takeTopLevelItem(i)
 #%% object tree and funcs
     def add_item_tree(self, idx, fr_idx=[0], end=None, use=1):
-        """Add a row to tree_objects for object `idx`: use checkbox, idx/frame
+        """Add a column to tree_objects for object `idx`: use checkbox, idx/frame
         labels, an end-frame spinbox, tracked/extracted status icons, and a
-        delete button; selects the new row."""
+        delete button; selects the new column."""
         cols = {col: i for i,col in enumerate(self.cols_tree)}
-        item = qtw.QTreeWidgetItem()
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item = self.tree_objects.addTopLevelItem()
         item.setCheckState(cols['use'], Qt.Checked if use else Qt.Unchecked)
         item.setText(cols['idx'], f"{idx}")
         item.setText(cols['fr_idx'], f"{fr_idx}")
-        self.tree_objects.itemChanged.connect(self.on_item_check_changed)
-        self.tree_objects.addTopLevelItem(item)
 
         spinbox = qtw.QSpinBox()
         spinbox.setRange(0, len(self.imgs))
@@ -1646,9 +1800,7 @@ class Tab_SAM2(TabBase):
         self.tree_objects.setItemWidget(item, cols['end'], spinbox)
         spinbox.valueChanged.connect(lambda value: self.on_spinboxEnd_changed(idx, value))
         # spinbox.valueChanged.connect(partial(self.on_spinbox_changed, item, idx))
-        
-        # self.tree_objects.addTopLevelItem(item)
-        
+
         cancel_icon = self.style().standardIcon(self.style().SP_DialogCancelButton)
         item.setIcon(cols['trk'], cancel_icon)
         item.setData(cols['trk'], Qt.UserRole, False)  # Store status boolean (False = not checked)
@@ -1657,7 +1809,7 @@ class Tab_SAM2(TabBase):
         item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
 
         duplicate_button = qtw.QPushButton('Dup')
-        duplicate_button.setFixedSize(30, 30)
+        duplicate_button.setFixedSize(48, 30)
         duplicate_button.setToolTip('Duplicate this object (points, masks, DPs) into a new row')
         duplicate_button.clicked.connect(
             lambda: self.duplicate_object(self.df_obj.index[self.tree_objects.indexOfTopLevelItem(item)]))
@@ -1775,50 +1927,47 @@ class Tab_SAM2(TabBase):
         default_mask_stack = self.df_obj.at[obj_id, 'mask_default']
         if np.all(pd.isna(default_mask_stack)):
             default_mask_stack = None
-        edge_settings = {
-            'enabled': self.checkbox_edgeOnly.isChecked(),
-            'kernel': self.spinbox_edgeKernel.value(),
-            'revert': self.checkbox_revertMask.isChecked(),
-            'directional': self.checkbox_edgeDirectional.isChecked(),
-            'direction': self.spinbox_edgeDirection.value()}
+        edge_settings = self._edge_settings_for(obj_id)
         mesh_settings = self._mesh_settings_for(obj_id)
-        dialog = MaskEditDialog(self, mask_stack, bg_stack=self.imgs_8bit,
+        dilate_erode_settings = self._dilate_erode_settings_for(obj_id)
+        # Contrast-only (no denoise) - MaskEditDialog applies its own
+        # Denoise box fresh on top of this, seeded from box_contrast's own
+        # current state below, so its preview starts out looking the same
+        # as self.imgs_8bit (which already has that denoise baked in)
+        # without double-applying it - see MaskEditDialog's class docstring.
+        bg_stack_contrast_only = io.convert_to_8bit(self.s_navSignal, **self.box_contrast.get_kwargs()).data
+        dialog = MaskEditDialog(self, mask_stack, bg_stack=bg_stack_contrast_only,
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
                                 default_mask_stack=default_mask_stack, edge_settings=edge_settings,
-                                mesh_settings=mesh_settings)
+                                mesh_settings=mesh_settings, dilate_erode_settings=dilate_erode_settings,
+                                denoise_state=self.box_contrast.box_denoise.get_state())
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_obj.at[obj_id, 'mask'] = dialog.get_mask_stack()
-            # Mesh is per-object (unlike Edge Detection, which lives on this
-            # tab's own controls - see _apply_dialog_settings_to_ui) - it
-            # round-trips straight into this object's own column instead.
+            # Mesh/Dilate-Erode/Edge Detection are all per-object (no
+            # main-tab equivalent to sync back to anymore - SAM2 masks
+            # aren't threshold-derived either, so unlike ROI Tracker's
+            # MaskEditDialog there's nothing left here that needs a
+            # _apply_dialog_settings_to_ui-style sync at all) - they
+            # round-trip straight into this object's own columns instead.
             self.df_obj.at[obj_id, 'mesh'] = dialog.get_mesh_settings()
-            self._apply_dialog_settings_to_ui(dialog)
+            self.df_obj.at[obj_id, 'dilate_erode'] = dialog.get_dilate_erode_settings()
+            self.df_obj.at[obj_id, 'edge'] = dialog.get_edge_settings()
             self.logger.info('Fine-tuned mask saved for object %d.', obj_id)
             self.update_canvas()
 
-    def _apply_dialog_settings_to_ui(self, dialog):
-        """Sync MaskEditDialog's Edge Detection box values back into this
-        tab's own main controls on Save && Close, so whatever was left set
-        there (not just the returned mask itself) is what the live preview
-        uses next, instead of silently reverting to whatever was set before
-        the dialog was opened. SAM2 masks aren't threshold-derived, so no
-        Threshold box is ever built here (get_thresh_settings() is None) -
-        see MaskEditDialog."""
-        edge = dialog.get_edge_settings()
-        self.checkbox_edgeOnly.setChecked(edge['enabled'])
-        self.spinbox_edgeKernel.setValue(edge['kernel'])
-        self.checkbox_revertMask.setChecked(edge['revert'])
-        self.checkbox_edgeDirectional.setChecked(edge['directional'])
-        self.spinbox_edgeDirection.setValue(edge['direction'])
-
-    def on_item_check_changed(self, item, column):
-        use_col = self.cols_tree.index('use')  # or `cols['use']` if accessible
-        idx_col = self.cols_tree.index('idx')
-        idx = int(item.text(idx_col))
-        if item.checkState(use_col) == Qt.Checked:
-            self.df_obj.at[idx, 'use'] = 1
-        else:
-            self.df_obj.at[idx, 'use'] = 0
+    def on_item_check_changed(self, item):
+        """tree_objects.itemChanged handler - unlike QTreeWidget's own
+        itemChanged(item, column), a real QTableWidgetItem's own signal
+        only carries the cell itself; its row/column give which property
+        (self.cols_tree[item.row()]) and which object-column this cell
+        belongs to."""
+        if item.row() != self.cols_tree.index('use'):
+            return  # some other cell changed, not the 'use' checkbox row
+        idx_item = self.tree_objects.item(self.cols_tree.index('idx'), item.column())
+        if idx_item is None or not idx_item.text():
+            return
+        idx = int(idx_item.text())
+        self.df_obj.at[idx, 'use'] = 1 if item.checkState() == Qt.Checked else 0
 #%% canvas
     def _on_ribbon_tool_changed(self, tool_id):
         self.logger.debug('Ribbon tool changed to %s', tool_id)
@@ -1896,7 +2045,7 @@ class Tab_SAM2(TabBase):
                 idx += 1
             fr_idx = [imgNo]
             self.df_obj.loc[idx] = [1, idx, fr_idx, [p], [label], len(self.imgs),
-                                    None, None, None, None, None, None]
+                                    None, None, None, None, None, None, None, None]
             self.add_item_tree(idx, fr_idx)
         else:
             selected_items = self.tree_objects.selectedItems()
@@ -2004,6 +2153,7 @@ class Tab_SAM2(TabBase):
         rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
         ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
         ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
+        self._denoise_bg = None  # view changed - see _blit_current_frame_display
         self.canvas.draw_idle()
 
     def delete_last_point(self):
@@ -2030,12 +2180,25 @@ class Tab_SAM2(TabBase):
     def jump_to_frame_no(self):
         num = int(self.lineEdit_imgNo.text())
         self.slider_imgNo.setValue(num)
-    
+
+    def _step_frame(self, delta):
+        """Previous/Next Frame buttons: move the slider by one frame,
+        clamped to its range - mirrors MaskEditDialog's own _step_frame."""
+        self.slider_imgNo.setValue(int(np.clip(
+            self.slider_imgNo.value() + delta,
+            self.slider_imgNo.minimum(), self.slider_imgNo.maximum())))
+
     def update_canvas(self, imgNo=None, obj_id=None):
         """Redraw the nav/segmentation/DP panels for `imgNo` (default: slider
         value) and `obj_id` (default: selected object): shows the nav frame,
         the object's mask (tracked or single-frame) and diffraction pattern
         if present, then draws the canvas."""
+        # Invalidates the cheap denoise-preview blit's cached background
+        # (see _blit_current_frame_display) - this full draw is about to
+        # change things (selected object, masks, points, DP, titles) that
+        # fast path doesn't itself redraw and would otherwise leave stale
+        # underneath freshly blitted image data on the next parameter tweak.
+        self._denoise_bg = None
         if imgNo is None:
             imgNo = self.slider_imgNo.value()
         if obj_id is None:
@@ -2123,6 +2286,9 @@ class Tab_SAM2(TabBase):
             self.ax_dp, self.lineEdit_scale_recip.text(), shape,
             center=self.dp_center, old_artists=getattr(self, '_dp_recip_circles', None))
 
+        # The scale bar/rings are static across frames like update_canvas's
+        # own titles/masks/etc. - see _blit_current_frame_display.
+        self._denoise_bg = None
         self.canvas.draw()
 
     def show_help_dialog(self):
@@ -2474,15 +2640,10 @@ class Tab_SAM2(TabBase):
         qtw.QMessageBox.warning(self, 'SAM2 Dependencies Not Installed',
             f'{message}\n\n'
             'SAM2 needs torch and the sam2 package installed, which this '
-            "app doesn't bundle. Run, from a command prompt with pip "
-            'available:\n\n'
-            'pip install --target "<install_dir>\\_internal" torch '
-            '--index-url https://download.pytorch.org/whl/cu121\n'
-            'pip install --target "<install_dir>\\_internal" '
-            'git+https://github.com/facebookresearch/sam2.git\n\n'
-            '(swap the --index-url per pytorch.org/get-started/locally for '
-            'your GPU, or omit it for CPU-only; "<install_dir>" is where '
-            'EDyssey.exe is installed). See INSTALL.md for details.')
+            "app doesn't bundle. Use Help > Set Up SAM2... in the menu bar "
+            'to install them - it runs the required pip commands for you '
+            'and shows the progress. See INSTALL.md for the manual steps if '
+            "you'd rather run them yourself.")
 
     def handle_finished_sam(self, process, idx, exit_code, exit_status):
         """SAM2 video-tracking subprocess completion handler: load the
@@ -2616,7 +2777,7 @@ class Tab_SAM2(TabBase):
                 idx += 1
             fr_idx = [obj['frame_idx']] * len(obj['points'])
             self.df_obj.loc[idx] = [1, idx, fr_idx, obj['points'], obj['labels'],
-                                    len(self.imgs), None, None, None, None, None, None]
+                                    len(self.imgs), None, None, None, None, None, None, None, None]
             self.add_item_tree(idx, fr_idx)
         self.update_canvas()
         self.canvas.draw()
@@ -3290,23 +3451,15 @@ class Tab_SAM2(TabBase):
 
             df = self.df_obj.loc[idx, ['use', 'idx', 'frame_idx', 'points', 'labels',
                                        'end']]
-            df['edge_detection'] = [('enabled', self.checkbox_edgeOnly.isChecked()),
-                                    ('kernel_size', self.spinbox_edgeKernel.value()),
-                                    ('directional', self.checkbox_edgeDirectional.isChecked()),
-                                    ('direction_deg', self.spinbox_edgeDirection.value()),
-                                    ('revert', self.checkbox_revertMask.isChecked())]
-            # Per-object (unlike edge_detection above, which is a tab-wide
-            # setting) - see MaskEditDialog/get_mesh_settings(). Recorded
-            # here so a saved analysis remembers exactly what mesh
-            # restriction (if any) was actually used for this object's
-            # extraction, not just edge detection.
-            mesh = self._mesh_settings_for(idx) or {}
-            df['mesh'] = [('enabled', mesh.get('enabled', False)),
-                          ('angle_deg', mesh.get('angle', 0)),
-                          ('cell_size', mesh.get('cell_size', 20)),
-                          ('cells', mesh.get('cells', [])),
-                          ('scope', mesh.get('scope', 'all')),
-                          ('frame_idx', mesh.get('frame_idx'))]
+            # Edge Detection/Dilate-Erode/Mesh are all per-object Segments
+            # (see MaskEditDialog's class docstring/get_edge_settings()/
+            # get_dilate_erode_settings()/get_mesh_settings()) - each is a
+            # `{'segments': [...]}` dict already fully describing exactly
+            # what was used for every frame range of this object's
+            # extraction, so it's recorded here as-is.
+            df['edge_detection'] = self._edge_settings_for(idx) or {'segments': []}
+            df['mesh'] = self._mesh_settings_for(idx) or {'segments': []}
+            df['dilate_erode'] = self._dilate_erode_settings_for(idx) or {'segments': []}
             df.to_json(os.path.join(path_save_objID, f'roi No {idx}.json'), orient='index', indent=4)
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
                 np.save(os.path.join(path_save_objID, 'rois.npy'),
@@ -3472,12 +3625,9 @@ class Tab_SAM2(TabBase):
             # Contrast
             'contrast': self.box_contrast.get_state(),
             'clip_dp': self.clip_dp.get_state(),
-            # Edge detection / extraction settings
-            'edgeOnly': self.checkbox_edgeOnly.isChecked(),
-            'edgeDirectional': self.checkbox_edgeDirectional.isChecked(),
-            'revertMask': self.checkbox_revertMask.isChecked(),
-            'edgeKernel': self.spinbox_edgeKernel.value(),
-            'edgeDirection': self.spinbox_edgeDirection.value(),
+            # Extraction settings - Edge Detection/Dilate-Erode/Mesh have no
+            # main-tab widgets to copy anymore (all per-object Segments,
+            # already riding along inside df_obj_rows below).
             'spinbox_threadNum': self.spinbox_threadNum.value(),
             'spinbox_fps': self.spinbox_fps.value(),
             'checkbox_autosave': self.checkbox_autosave.isChecked(),
@@ -3557,16 +3707,13 @@ class Tab_SAM2(TabBase):
         self.button_fineTuneMask.setEnabled(True)
         self.button_autoDetector.setEnabled(True)
 
-        # Edge detection / extraction settings - signals blocked so setting
-        # them doesn't trigger a redundant redraw/recompute/dialog (see
-        # docstring); the already-copied imgs/df_obj already reflect these
-        # settings' effect.
+        # Extraction settings - signals blocked so setting them doesn't
+        # trigger a redundant redraw/recompute/dialog (see docstring); the
+        # already-copied imgs/df_obj already reflect these settings'
+        # effect. Edge Detection/Dilate-Erode/Mesh ride along inside
+        # df_obj_rows below (per-object Segments, no main-tab widgets to
+        # restore here).
         for wid, value, setter in (
-            (self.checkbox_edgeOnly, state['edgeOnly'], 'setChecked'),
-            (self.checkbox_edgeDirectional, state['edgeDirectional'], 'setChecked'),
-            (self.checkbox_revertMask, state['revertMask'], 'setChecked'),
-            (self.spinbox_edgeKernel, state['edgeKernel'], 'setValue'),
-            (self.spinbox_edgeDirection, state['edgeDirection'], 'setValue'),
             (self.spinbox_threadNum, state['spinbox_threadNum'], 'setValue'),
             (self.spinbox_fps, state['spinbox_fps'], 'setValue'),
             (self.checkbox_autosave, state['checkbox_autosave'], 'setChecked'),
@@ -3575,7 +3722,6 @@ class Tab_SAM2(TabBase):
             wid.blockSignals(True)
             getattr(wid, setter)(value)
             wid.blockSignals(False)
-        self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked())
         self.pets2_params = deepcopy(state['pets2_params'])
 
         # Tracked/segmented objects - reconstructs the tree the same way

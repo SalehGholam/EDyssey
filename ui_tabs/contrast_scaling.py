@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Shared "Display Contrast" widget: lets the user pick and tune how a
-loaded navigation signal is contrast-stretched to 8-bit for display and
-downstream processing (tracking/SAM2), instead of every tab hand-rolling
-its own copy of the same combo box + parameter spinboxes.
+"""Shared "Adjust Contrast" widget: lets the user pick and tune how a loaded
+navigation signal is contrast-stretched to 8-bit for display and downstream
+processing (tracking/SAM2), instead of every tab hand-rolling its own copy
+of the same combo box + parameter spinboxes. Nests a DenoiseBox (see
+denoise_widget.py) below its own controls, applied on top of that stretch.
 
 Also centralizes *how* a full signal is rescaled once settings change: a
 single frame is rescaled synchronously (cheap, for instant visual feedback),
@@ -20,15 +21,27 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import pyqtSignal, Qt
 import EDyssey.io_utils as io
 from .worker_thread import WorkerThread_General
+from .denoise_widget import DenoiseBox, apply_denoise_to_array
 
 
 class ContrastScalingBox(qtw.QGroupBox):
-    """A 'Display Contrast' QGroupBox: a method combo (Percentile/Min-Max/
+    """An 'Adjust Contrast' QGroupBox: a method combo (Percentile/Min-Max/
     Std. Dev.) plus that method's tunable parameter(s), with irrelevant
-    parameter fields hidden. Emits `settingsChanged` whenever the method or
-    an active parameter changes (parameter changes only fire on
-    editingFinished, not per-keystroke, so retuning doesn't trigger a
-    recompute on every digit typed).
+    parameter fields hidden - plus a nested DenoiseBox (see
+    denoise_widget.py), applied on top of the contrast stretch.
+
+    Two separate change signals, deliberately not merged into one, since a
+    contrast change and a denoise change warrant different responses on a
+    multi-frame stack:
+    - `settingsChanged`: a *contrast* control changed (method/percentiles/
+      std-dev/clip sliders). Cheap - fire away, recompute the whole stack.
+    - `denoisePreviewChanged`: box_denoise's own method/parameter changed.
+      Some denoise methods are too slow to re-run on every frame for every
+      tweak, so this means "refresh just the currently-displayed frame",
+      NOT "recompute the whole stack" - see `denoiseApplyAllRequested`
+      (relayed from box_denoise's "Apply to All Images" button) for the
+      explicit, on-demand full-stack version, and rescale_async's own
+      `denoise_method`/`denoise_param` snapshot for how that's applied.
 
     Usage (synchronous, single frame - e.g. instant preview of the frame
     currently on screen):
@@ -39,6 +52,8 @@ class ContrastScalingBox(qtw.QGroupBox):
     Usage (asynchronous, full stack - e.g. after settingsChanged, to also
     keep tracking/SAM2 input up to date without blocking the GUI):
         self.box_contrast.settingsChanged.connect(self.rescale_nav_signal)
+        self.box_contrast.denoisePreviewChanged.connect(self.refresh_current_frame)
+        self.box_contrast.denoiseApplyAllRequested.connect(self.rescale_nav_signal)
         ...
         def rescale_nav_signal(self):
             self.box_contrast.rescale_async(
@@ -47,10 +62,20 @@ class ContrastScalingBox(qtw.QGroupBox):
         def _on_stack_rescaled(self, s_8bit):
             self.s_8bit = s_8bit
             ...
+
+    "Check Methods..." (box_denoise's own button): re-emitted here as this
+    box's own `checkMethodsRequested`, rather than doing anything itself -
+    this widget has no way to know which raw frame is "selected" in the
+    caller's own UI, so each tab connects that signal to its own slot,
+    which fetches the current raw frame and then calls
+    open_check_methods_dialog(raw_frame) back on this widget.
     """
     settingsChanged = pyqtSignal()
+    denoisePreviewChanged = pyqtSignal()
+    denoiseApplyAllRequested = pyqtSignal()
+    checkMethodsRequested = pyqtSignal()
 
-    def __init__(self, parent=None, title='Display Contrast'):
+    def __init__(self, parent=None, title='Adjust Contrast'):
         super().__init__(title, parent)
         layout_box = qtw.QVBoxLayout()
         self.setLayout(layout_box)
@@ -157,6 +182,20 @@ class ContrastScalingBox(qtw.QGroupBox):
 
         self._update_clip_labels()
 
+        #%% denoise - nested DenoiseBox, applied on top of the contrast
+        # stretch above (see rescale_frame/rescale_async). 'None' (its own
+        # default) is a no-op, so every existing caller of rescale_frame/
+        # rescale_async keeps working unchanged until the user opts in.
+        self.box_denoise = DenoiseBox()
+        layout_box.addWidget(self.box_denoise)
+        # NOT relayed into self.settingsChanged - see class docstring, these
+        # two get their own distinct signals instead so a caller can treat
+        # a denoise-only change (frame-only refresh) differently from a
+        # contrast change (full-stack refresh).
+        self.box_denoise.settingsChanged.connect(self.denoisePreviewChanged.emit)
+        self.box_denoise.applyAllRequested.connect(self.denoiseApplyAllRequested.emit)
+        self.box_denoise.checkMethodsRequested.connect(self.checkMethodsRequested.emit)
+
         self._update_param_visibility()
         self._job_id = 0  # bumped on every rescale_async() call; guards against stale results
 
@@ -214,6 +253,24 @@ class ContrastScalingBox(qtw.QGroupBox):
         for wid in (self.label_nstd, self.spinbox_nstd):
             wid.setVisible(method == 'std')
 
+    def set_denoise_apply_all_busy(self, is_busy):
+        """Passthrough to box_denoise.set_busy() - see there."""
+        self.box_denoise.set_busy(is_busy)
+
+    def apply_denoise(self, img_8bit):
+        """box_denoise's current method applied to a single uint8 2-D image
+        (already contrast-stretched, e.g. via rescale_frame) - a no-op when
+        the method is 'None'."""
+        return self.box_denoise.apply(img_8bit)
+
+    def open_check_methods_dialog(self, raw_img, parent=None):
+        """Contrast-stretch `raw_img` with this box's current settings, then
+        delegate to box_denoise.open_check_methods_dialog for the actual
+        comparison window - see that method for the full behavior/return
+        value."""
+        img_8bit = io.convert_img_to_8bit(raw_img, **self.get_kwargs())
+        return self.box_denoise.open_check_methods_dialog(img_8bit, parent=parent)
+
     def get_kwargs(self):
         """Current method + its tunable parameter(s), as kwargs ready for
         io.convert_to_8bit/convert_img_to_8bit."""
@@ -244,8 +301,8 @@ class ContrastScalingBox(qtw.QGroupBox):
         return desc
 
     def get_state(self):
-        """Full widget state (method/parameters + clip thresholds, plus the
-        clip sliders' own underlying data range) - restorable via
+        """Full widget state (method/parameters + clip thresholds + denoise,
+        plus the clip sliders' own underlying data range) - restorable via
         set_state(), e.g. for "Duplicate Current Tab" (see
         EDyssey_MainWindow.duplicate_current_tab)."""
         return {
@@ -257,6 +314,7 @@ class ContrastScalingBox(qtw.QGroupBox):
             'data_max': self._data_max,
             'clip_low': self.clip_low_value,
             'clip_high': self.clip_high_value,
+            'denoise': self.box_denoise.get_state(),
         }
 
     def set_state(self, state):
@@ -287,37 +345,76 @@ class ContrastScalingBox(qtw.QGroupBox):
         self.slider_clip_high.blockSignals(False)
         self._update_clip_labels()
         self._update_param_visibility()
+        # Old states (saved before Denoise existed) simply lack this key.
+        self.box_denoise.set_state(state.get('denoise'))
 
     def rescale_frame(self, raw_frame):
-        """Synchronously contrast-stretch a single 2-D frame with the
-        current settings - cheap, for instant visual feedback while the
-        (potentially much slower) full-stack rescale runs in the background
-        via rescale_async."""
-        return io.convert_img_to_8bit(raw_frame, **self.get_kwargs())
+        """Synchronously contrast-stretch (then denoise, if enabled) a
+        single 2-D frame with the current settings - cheap, for instant
+        visual feedback while the (potentially much slower) full-stack
+        rescale runs in the background via rescale_async."""
+        img_8bit = io.convert_img_to_8bit(raw_frame, **self.get_kwargs())
+        return self.apply_denoise(img_8bit)
 
-    def rescale_async(self, raw_signal, threadpool, logger=None, on_done=None, label='navigation signal'):
-        """Contrast-stretch the full `raw_signal` (a HyperSpy Signal2D) in a
-        background QThreadPool worker, current settings. Calling this again
-        before a previous call has finished supersedes it - `on_done` from
-        the stale call is simply never invoked, so results can't arrive out
-        of order and worker threads can't pile up from rapid retuning.
+    def rescale_async(self, raw_signal, threadpool, logger=None, on_done=None,
+                       on_error=None, on_progress=None, label='navigation signal'):
+        """Contrast-stretch (then denoise, if enabled) the full `raw_signal`
+        (a HyperSpy Signal2D) in a background QThreadPool worker, current
+        settings. Calling this again before a previous call has finished
+        supersedes it - `on_done`/`on_error`/`on_progress` from the stale
+        call is simply never invoked, so results can't arrive out of order
+        and worker threads can't pile up from rapid retuning.
 
         Args:
             raw_signal: HyperSpy Signal2D holding the untouched raw data.
             threadpool: QThreadPool to run the worker on.
-            logger: Optional logger for start/finish messages.
+            logger: Optional logger for start/finish/failure messages.
             on_done: Callable(s_8bit) invoked on the GUI thread once this
                 (still-current) call completes.
+            on_error: Optional callable(traceback_text) invoked on the GUI
+                thread if this (still-current) call raises - without this,
+                a failure (e.g. an incompatible denoise-method parameter)
+                would otherwise vanish silently at the QRunnable boundary,
+                leaving the caller's own "is a full-stack rescale still
+                pending" bookkeeping (e.g. a dirty flag) stuck as if the
+                call had never happened.
+            on_progress: Optional callable(current, total) invoked on the
+                GUI thread as denoising works through the stack frame by
+                frame - only fires when denoising is actually enabled (the
+                contrast-only stretch below is vectorized, not a per-frame
+                Python loop, so there's nothing incremental to report for
+                it). Meant for a caller-owned progress bar (e.g. a tab's
+                "Apply to All Images" button) - a slow per-frame method on a
+                long stack can otherwise look hung for a while.
             label: What's being rescaled, for the log message.
         """
         self._job_id += 1
         job_id = self._job_id
         kwargs = self.get_kwargs()
+        # Snapshot denoise settings here (GUI thread) rather than reading
+        # box_denoise's own combo/spinbox from inside _job() (background
+        # thread) - same reasoning as `kwargs` above.
+        denoise_method = self.box_denoise.get_method()
+        denoise_param = self.box_denoise.get_param()
         if logger is not None:
             logger.info('Rescaling %s contrast (%s)...', label, self.describe())
 
         def _job():
-            return io.convert_to_8bit(raw_signal, **kwargs)
+            s_8bit = io.convert_to_8bit(raw_signal, **kwargs)
+            if denoise_method != 'None':
+                data = s_8bit.data
+                if data.ndim >= 3:
+                    total = data.shape[0]
+                    for i in range(total):
+                        data[i] = apply_denoise_to_array(data[i], denoise_method, denoise_param)
+                        # `worker` is assigned below, after this closure is
+                        # defined, but not until it actually runs - fine,
+                        # since Python closures resolve free variables at
+                        # call time, and this only ever runs after that.
+                        worker.signals.progress.emit(i + 1, total)
+                else:
+                    s_8bit.data = apply_denoise_to_array(data, denoise_method, denoise_param)
+            return s_8bit
 
         def _on_result(result, index):
             if job_id != self._job_id:
@@ -327,6 +424,22 @@ class ContrastScalingBox(qtw.QGroupBox):
             if logger is not None:
                 logger.info('Contrast rescale applied to the full %s.', label)
 
+        def _on_error(traceback_text, index):
+            if job_id != self._job_id:
+                return  # superseded by a newer rescale_async() call - discard
+            if logger is not None:
+                logger.error('Rescaling %s failed:\n%s', label, traceback_text)
+            if on_error is not None:
+                on_error(traceback_text)
+
+        def _on_progress(current, total):
+            if job_id != self._job_id:
+                return  # superseded by a newer rescale_async() call - discard
+            if on_progress is not None:
+                on_progress(current, total)
+
         worker = WorkerThread_General(_job, 0)
         worker.signals.results.connect(_on_result)
+        worker.signals.error.connect(_on_error)
+        worker.signals.progress.connect(_on_progress)
         threadpool.start(worker)
