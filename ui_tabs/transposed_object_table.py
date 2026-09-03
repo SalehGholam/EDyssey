@@ -24,6 +24,7 @@ table itself was transposed - not a general-purpose abstraction, just this
 specific compatibility surface.
 """
 import PyQt5.QtWidgets as qtw
+import PyQt5.QtGui as qtg
 from PyQt5.QtCore import Qt
 
 
@@ -79,6 +80,9 @@ class _TransposedColumnItem:
     def setIcon(self, row, icon):
         self._cell(row).setIcon(icon)
 
+    def setToolTip(self, row, tip):
+        self._cell(row).setToolTip(tip)
+
     def setData(self, row, role, value):
         self._cell(row).setData(role, value)
 
@@ -107,12 +111,37 @@ class TransposedObjectTable(qtw.QTableWidget):
     """See module docstring. `row_keys` (e.g. ['use', 'idx', 'init', ...])
     fixes the row order (and is what `cols[...]` in each tab's own
     add_item_tree already builds an int-lookup dict from); `row_labels` are
-    the matching vertical-header captions shown in column 0."""
+    the matching vertical-header captions shown in column 0 - kept to
+    "Start"'s own length or shorter (see _HEADER_WIDTH_REF below) so the
+    row-title column never has to grow for one long word; `row_tooltips`
+    (optional, same length/order as row_labels) gives an abbreviated
+    label's full word as a hover tooltip, e.g. "Extr" -> "Extracted"."""
 
-    def __init__(self, row_keys, row_labels, parent=None):
+    # The row-title column's own width is capped to fit this exact string
+    # (not left to auto-size to whichever row_labels entry happens to be
+    # widest) - both tabs' own row_labels are kept at or under this length,
+    # with anything longer abbreviated + given a row_tooltips entry
+    # instead, so the two tabs' object lists also end up the same width.
+    _HEADER_WIDTH_REF = 'Start'
+
+    def __init__(self, row_keys, row_labels, row_tooltips=None, parent=None):
         super().__init__(parent)
         self.setRowCount(len(row_keys))
         self.setVerticalHeaderLabels(row_labels)
+        if row_tooltips:
+            for i, tip in enumerate(row_tooltips):
+                if not tip:
+                    continue
+                item = self.verticalHeaderItem(i)
+                if item is not None:
+                    item.setToolTip(tip)
+        metrics = qtg.QFontMetrics(self.verticalHeader().font())
+        # +14: the header section's own left/right text margins (Qt's
+        # default style padding around a header label) - without this the
+        # reference string itself would render right up against the
+        # column's edge, tighter than every other column in the table.
+        self.verticalHeader().setFixedWidth(
+            metrics.horizontalAdvance(self._HEADER_WIDTH_REF) + 14)
         self.horizontalHeader().setVisible(False)
         self.setSelectionBehavior(qtw.QAbstractItemView.SelectColumns)
         self.setSelectionMode(qtw.QAbstractItemView.SingleSelection)
@@ -133,7 +162,7 @@ class TransposedObjectTable(qtw.QTableWidget):
             self.setItem(0, col, anchor)
         return _TransposedColumnItem(self, anchor)
 
-    def addTopLevelItem(self, width=90):
+    def addTopLevelItem(self, width=55):
         """Unlike QTreeWidget's addTopLevelItem(item) (which takes an
         already-built item), this one BUILDS the new column itself and
         returns its item proxy directly - a QTableWidgetItem can't exist

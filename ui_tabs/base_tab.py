@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import EDyssey.io_utils as io
 from .logging_utils import get_tab_logger
 from .display_settings import DisplaySettings, PLOT_DEFINITIONS
+from .app_theme import AppTheme
 
 
 def compute_left_panel_width(base=440, min_width=420, max_width=480, fraction=0.22):
@@ -184,6 +185,13 @@ class TabBase(qtw.QWidget):
         # own init_widget() calls self.apply_display_settings() once at the
         # end of its own construction to pick up the current values too).
         DisplaySettings.instance().changed.connect(self.apply_display_settings)
+        # Same live-apply convention as DisplaySettings above, for the
+        # app-wide color theme (see app_theme.py) - re-colors this tab's
+        # own Figure/Axes; every ordinary Qt widget already re-colors
+        # itself automatically via the QApplication-wide stylesheet
+        # AppTheme.apply_qapp() sets, so there's nothing to do for those
+        # here (see apply_theme's own docstring).
+        AppTheme.instance().changed.connect(self.apply_theme)
 
     def _blit_canvas(self, canvas, figure, bg_attr, artists,
                      hide_for_background=(), titles_for_background=()):
@@ -351,6 +359,43 @@ class TabBase(qtw.QWidget):
         for key, figure in self._display_settings_figures():
             self._rescale_figure_fonts(figure, settings.plot_font_scale)
             self._apply_single_figure_scale(figure, settings.figure_size_scales.get(key, 1.0))
+
+    # -- App theme (Edit menu's Display Size dialog) -----------------------
+    def apply_theme(self):
+        """Re-color this tab's own Figure/Axes to match the current
+        matplotlib style (see AppTheme.apply_qapp, which always runs
+        plt.style.use() before this fires) - connected to AppTheme.changed
+        in __init__ above. Every ordinary Qt widget (buttons, labels,
+        panels, ...) already re-colors itself automatically the moment
+        AppTheme.apply_qapp() changes the QApplication-wide stylesheet,
+        with no help needed here - this is only for matplotlib, which
+        doesn't participate in Qt stylesheets at all and needs each
+        already-drawn Figure/Axes explicitly re-colored (rcParams only
+        affects artists created AFTER the style changed, not ones already
+        on screen). Reads the colors straight from rcParams (not
+        AppTheme's own palette) so the dark theme stays pixel-identical to
+        matplotlib's own 'dark_background' defaults this app always used,
+        rather than introducing a second, slightly different "app dark
+        gray" into the plots specifically. Generic/shared for every tab,
+        the same way as apply_display_settings above - reuses
+        _display_settings_figures() so it covers all 4 tabs without a
+        per-tab override."""
+        bg = plt.rcParams['figure.facecolor']
+        ax_bg = plt.rcParams['axes.facecolor']
+        fg = plt.rcParams['text.color']
+        for _key, figure in self._display_settings_figures():
+            figure.set_facecolor(bg)
+            for ax in figure.axes:
+                ax.set_facecolor(ax_bg)
+                ax.tick_params(colors=fg)
+                ax.title.set_color(fg)
+                ax.xaxis.label.set_color(fg)
+                ax.yaxis.label.set_color(fg)
+                for spine in ax.spines.values():
+                    spine.set_color(fg)
+            canvas = getattr(figure, 'canvas', None)
+            if canvas is not None:
+                canvas.draw_idle()
 
     def wrap_canvas_in_scroll(self, canvas):
         """Wrap `canvas` in a QScrollArea and return it, to add to a layout

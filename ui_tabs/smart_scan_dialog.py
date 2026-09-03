@@ -125,6 +125,32 @@ class SmartScanCheckDialog(qtw.QDialog):
         self.table.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.table)
 
+        # Per-role bulk controls - each of Detection/Acquisition/Pattern
+        # gets a dropdown with "Browse Folder..." (points that role at a
+        # different directory, then rescans from it - the folders
+        # constructor-supplied `pattern_dir`/`detection_dir` default to
+        # otherwise) and "Select Files..." (bypasses matching entirely for
+        # that one role: assigns hand-picked files straight onto the
+        # existing rows, in sorted order) - see _browse_role_dir/
+        # _select_role_files. "Set Angles..." is unrelated to any one role -
+        # a min/step formula for every row's angle at once, for datasets
+        # where the filenames/metadata don't carry it (see
+        # _set_angles_bulk), instead of double-clicking the Angle cell of
+        # every single row by hand.
+        row_bulk = qtw.QHBoxLayout()
+        layout.addLayout(row_bulk)
+        row_bulk.addWidget(qtw.QLabel('Bulk:'))
+        for key, label in (('detection', 'Detection'), ('acquisition', 'Acquisition'),
+                           ('pattern', 'Pattern')):
+            row_bulk.addWidget(self._make_role_menu_button(key, label))
+        self.button_setAngles = qtw.QPushButton('Set Angles...')
+        self.button_setAngles.setToolTip(
+            'Assign every row\'s angle at once from a start value + step (degrees/row), '
+            'instead of editing each one by hand')
+        self.button_setAngles.clicked.connect(self._set_angles_bulk)
+        row_bulk.addWidget(self.button_setAngles)
+        row_bulk.addStretch(1)
+
         row_buttons = qtw.QHBoxLayout()
         layout.addLayout(row_buttons)
         self.button_rescan = qtw.QPushButton('Rescan Folder')
@@ -272,24 +298,28 @@ class SmartScanCheckDialog(qtw.QDialog):
         self.rows.sort(key=lambda rw: (rw['angle'] is None, rw['angle']))
         self._populate_table()
 
-    def _browse_replacement(self, r, c):
-        """Prompt for a replacement file for row `r`, column `c`, with a file
-        filter chosen by which role (pattern/detection/acquisition) it is."""
-        key = _FILE_COLS[c]
+    def _start_dir_and_filter_for(self, key):
+        """(start_dir, file_filter) for `key` ('pattern_file'/
+        'detection_file'/'acquisition_file') - shared by _browse_replacement
+        (one row/column at a time) and _select_role_files (many rows of the
+        same role at once)."""
         if key == 'pattern_file':
-            start_dir = self.pattern_dir or self.data_dir
-            file_filter = 'Text files (*.txt)'
-        elif key == 'detection_file':
-            start_dir = self.detection_dir or self.data_dir
+            return self.pattern_dir or self.data_dir, 'Text files (*.txt)'
+        if key == 'detection_file':
             # Detection may be a same-format file (.tpx3, or occasionally
             # .mib/.hspy/.zspy too) or a separate HAADF image - offer both.
             haadf_pattern = ' '.join(f'*{ext}' for ext in io.DETECTION_EXTENSIONS)
             file_filter = (f'Detection files (*{self.data_ext} {haadf_pattern});;'
                            f'Data files (*{self.data_ext});;'
                            f'HAADF images ({haadf_pattern})')
-        else:
-            start_dir = self.data_dir
-            file_filter = f'Data files (*{self.data_ext})'
+            return self.detection_dir or self.data_dir, file_filter
+        return self.data_dir, f'Data files (*{self.data_ext})'
+
+    def _browse_replacement(self, r, c):
+        """Prompt for a replacement file for row `r`, column `c`, with a file
+        filter chosen by which role (pattern/detection/acquisition) it is."""
+        key = _FILE_COLS[c]
+        start_dir, file_filter = self._start_dir_and_filter_for(key)
         path, _ = qtw.QFileDialog.getOpenFileName(
             self, f'Select replacement for {_COLS[c]}', start_dir or '', file_filter)
         if not path:
@@ -298,6 +328,105 @@ class SmartScanCheckDialog(qtw.QDialog):
         self._recompute_status(r)
         self._refresh_row_display(r)
         self._update_summary()
+
+    #%% bulk per-role directory/file controls (see row_bulk in __init__)
+    def _make_role_menu_button(self, key, label):
+        """A QToolButton for one role (key: 'detection'/'acquisition'/
+        'pattern') with a dropdown of "Browse Folder..."/"Select Files..."
+        - see _browse_role_dir/_select_role_files."""
+        btn = qtw.QToolButton()
+        btn.setText(label)
+        btn.setPopupMode(qtw.QToolButton.InstantPopup)
+        menu = qtw.QMenu(btn)
+        action_dir = menu.addAction('Browse Folder...')
+        action_dir.setToolTip(f'Point {label} at a different folder, then rescan from it')
+        action_dir.triggered.connect(lambda: self._browse_role_dir(key))
+        action_files = menu.addAction('Select Files...')
+        action_files.setToolTip(
+            f'Hand-pick {label} files (sorted, assigned one-to-one onto the current rows in '
+            'order) instead of relying on automatic matching for this role')
+        action_files.triggered.connect(lambda: self._select_role_files(key))
+        btn.setMenu(menu)
+        return btn
+
+    _ROLE_FIELD = {'detection': 'detection_file', 'acquisition': 'acquisition_file',
+                  'pattern': 'pattern_file'}
+
+    def _browse_role_dir(self, key):
+        """"Browse Folder...": point `key`'s own source folder at a
+        different directory (self.data_dir for 'acquisition', same as
+        Rescan Folder's own data_dir) and rescan from it - a full rebuild
+        of self.rows, same as the Rescan Folder button, since a changed
+        acquisition folder in particular means a genuinely different
+        dataset to match from scratch."""
+        current = {'detection': self.detection_dir, 'acquisition': self.data_dir,
+                  'pattern': self.pattern_dir}[key]
+        directory = qtw.QFileDialog.getExistingDirectory(
+            self, f'Select {key.title()} Folder', current or self.data_dir or '')
+        if not directory:
+            return
+        if key == 'detection':
+            self.detection_dir = directory
+        elif key == 'acquisition':
+            self.data_dir = directory
+        else:
+            self.pattern_dir = directory
+        self.rescan()
+
+    def _select_role_files(self, key):
+        """"Select Files...": hand-pick one or more files for `key` and
+        assign them straight onto the existing rows, sorted by filename and
+        matched one-to-one in that order - a shortcut for a dataset whose
+        automatic per-row matching (io.match_tilt_files) got this role
+        wrong or missed it entirely across many rows at once, rather than
+        fixing each row's own cell by hand (see _browse_replacement)."""
+        if not self.rows:
+            qtw.QMessageBox.warning(self, 'No Rows',
+                'Rescan a folder first - there are no rows yet to assign files to.')
+            return
+        start_dir, file_filter = self._start_dir_and_filter_for(self._ROLE_FIELD[key])
+        paths, _ = qtw.QFileDialog.getOpenFileNames(
+            self, f'Select {key.title()} Files', start_dir or '', file_filter)
+        if not paths:
+            return
+        paths = sorted(paths)
+        n = min(len(paths), len(self.rows))
+        if len(paths) != len(self.rows):
+            qtw.QMessageBox.information(self, 'File Count Mismatch',
+                f'{len(paths)} file(s) selected but {len(self.rows)} row(s) exist - '
+                f'assigning the first {n}, in sorted order; any remaining row(s) are left '
+                'as they were.')
+        field = self._ROLE_FIELD[key]
+        for i in range(n):
+            self.rows[i][field] = paths[i]
+            self._recompute_status(i)
+        self._populate_table()
+
+    def _set_angles_bulk(self):
+        """"Set Angles...": assign every row's angle from `start + i*step`
+        (i = the row's current position, 0-based) in one shot, instead of
+        double-clicking each row's Angle cell by hand (_edit_angle) - for a
+        dataset whose filenames/metadata don't carry the angle at all, but
+        were acquired at an evenly-spaced tilt series the user knows by
+        heart. Deliberately does NOT re-sort rows afterward (unlike
+        _edit_angle, a single-row edit) - the row order the user is looking
+        at right now IS the sequence start/step describes; sorting could
+        silently reverse a negative step's own newly-assigned order."""
+        if not self.rows:
+            qtw.QMessageBox.warning(self, 'No Rows',
+                'Rescan a folder first - there are no rows yet to assign angles to.')
+            return
+        start, ok = qtw.QInputDialog.getDouble(
+            self, 'Set Angles', 'Start angle (degrees, row 1):', 0.0, -360, 360, 2)
+        if not ok:
+            return
+        step, ok = qtw.QInputDialog.getDouble(
+            self, 'Set Angles', 'Step (degrees/row):', 1.0, -360, 360, 2)
+        if not ok:
+            return
+        for i, row in enumerate(self.rows):
+            row['angle'] = start + i * step
+        self._populate_table()
 
     def _on_context_menu(self, pos):
         item = self.table.itemAt(pos)

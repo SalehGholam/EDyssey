@@ -166,6 +166,12 @@ class Pets2ParamsDialog(qtw.QDialog):
         cache = io.load_pets2_defaults()
         self._autotask_list = cache.get('autotask', [])
         self._keepautotasks = cache.get('keepautotasks', 'no')
+        # {ph: zero-arg getter} for every ADVANCED_FIELDS-backed value,
+        # whichever section its own widget actually lives in (Basic, for
+        # i_sigma - see below - or Advanced, for everything else built
+        # further down) - initialized once, up front, so get_params() can
+        # always read it regardless of build order.
+        self._advanced_edits = {}
 
         layout = qtw.QVBoxLayout(self)
         form = qtw.QFormLayout()
@@ -249,6 +255,32 @@ class Pets2ParamsDialog(qtw.QDialog):
             form.addRow(key, spin)
             setattr(self, f'spinbox_{ph}', spin)
 
+        # I/sigma - promoted out of the generic Advanced Parameters section
+        # into Basic (used often enough - peak search + camel plot
+        # threshold - that hiding it behind "Show Advanced Parameters"
+        # every time was annoying). Still driven by the exact same
+        # `io.ADVANCED_FIELDS`/`_advanced_edits`/get_params() plumbing as
+        # every other advanced field (see the ADVANCED_FIELDS loop below,
+        # which skips rebuilding this one key's own row there) - only WHERE
+        # its widget lives changed, not how it's read/written/cached.
+        _i_sigma_key, _i_sigma_default, _i_sigma_comment = next(
+            (key, default, comment) for key, ph, default, comment in io.ADVANCED_FIELDS
+            if ph == 'i_sigma')
+        row_i_sigma = qtw.QWidget()
+        row_i_sigma_layout = qtw.QHBoxLayout(row_i_sigma)
+        row_i_sigma_layout.setContentsMargins(0, 0, 0, 0)
+        row_i_sigma.setToolTip(_i_sigma_comment)
+        i_sigma_getters = []
+        for token in str(cache.get('i_sigma', _i_sigma_default)).split():
+            token_widget, getter = _make_token_widget(token)
+            token_widget.setToolTip(_i_sigma_comment)
+            row_i_sigma_layout.addWidget(token_widget)
+            i_sigma_getters.append(getter)
+        row_i_sigma_layout.addStretch(1)
+        form.addRow(_i_sigma_key, row_i_sigma)
+        self._advanced_edits['i_sigma'] = (lambda getters=i_sigma_getters:
+                                            ' '.join(g() for g in getters))
+
         row_center = qtw.QHBoxLayout()
         self.checkbox_center_auto = qtw.QCheckBox('Auto-detect')
         self.checkbox_center_auto.setChecked(center is None)
@@ -293,7 +325,6 @@ class Pets2ParamsDialog(qtw.QDialog):
         self.button_advanced.toggled.connect(self._toggle_advanced)
         layout.addWidget(self.button_advanced)
 
-        self._advanced_edits = {}
         advanced_container = qtw.QWidget()
         advanced_form = qtw.QFormLayout(advanced_container)
 
@@ -338,6 +369,8 @@ class Pets2ParamsDialog(qtw.QDialog):
         advanced_form.addRow('detector', self.combo_detector)
 
         for key, ph, default, comment in io.ADVANCED_FIELDS:
+            if ph == 'i_sigma':
+                continue  # promoted to Basic above - don't build it twice
             default_str = str(cache.get(ph, default))
             tokens = default_str.split()
             if len(tokens) > 1:

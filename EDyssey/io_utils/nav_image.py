@@ -17,7 +17,7 @@ from scipy.ndimage import center_of_mass, gaussian_filter
 from dask.diagnostics import ProgressBar
 import dask.array as da
 from .progress import redirect_console_to_logger, LoggingProgressBar
-from .loaders import get_scan_size, get_det_size
+from .loaders import get_scan_size, get_det_size, SCAN_SIZE_NOT_APPLICABLE
 
 # "Cover the whole detector" sentinel for an annular virtual detector's outer
 # radius, deliberately far larger than any real detector - used as a default/
@@ -290,7 +290,12 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     if dtype is None:
         dtype = os.path.splitext(fn)[-1]
-    if scanSize is None:
+    # .dm2/.dm3/.tif/.tiff have no scan dimension at all (see
+    # SCAN_SIZE_NOT_APPLICABLE) - get_scan_size() doesn't support them and
+    # would just raise; skip it entirely rather than calling it only to
+    # immediately discard whatever it returned (the branch below for these
+    # dtypes never even reads `scanSize`).
+    if scanSize is None and dtype not in SCAN_SIZE_NOT_APPLICABLE:
         scanSize = get_scan_size(fn, dtype)
 
     if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo']:
@@ -396,7 +401,12 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
     if dtype is None:
         dtype = os.path.splitext(fn)[-1]
-    if scanSize is None:
+    # See calculate_nav_img's identical guard above - these dtypes have no
+    # scan dimension for get_scan_size() to read, and this function raises
+    # its own clear "masks only apply to 4D-STEM data" error for them a few
+    # lines down anyway, which a get_scan_size() crash here would otherwise
+    # pre-empt with a confusing UnboundLocalError/ValueError instead.
+    if scanSize is None and dtype not in SCAN_SIZE_NOT_APPLICABLE:
         scanSize = get_scan_size(fn, dtype)
 
     if dtype == '.tpx3':

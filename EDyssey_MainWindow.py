@@ -55,9 +55,14 @@ from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2, EditSettingsDialog)
 from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler
+from ui_tabs.app_theme import AppTheme, THEME_LABELS
 from PyQt5.QtGui import QIcon, QCursor, QPixmap
-import matplotlib.pyplot as plt
-plt.style.use('dark_background')
+# Sets matplotlib's own style (dark_background/default) to match whichever
+# theme was last saved (see AppTheme) - the QApplication-wide stylesheet
+# for every other (Qt, not matplotlib) widget is applied once a
+# QApplication actually exists, in main()/__main__ below, since
+# apply_qapp() needs one to already be running.
+AppTheme.instance().apply_qapp()
 
 # Semantic-versioning-shaped, but the 3rd/4th parts are a build timestamp
 # rather than counts: MAJOR.MINOR.YYYYMMDD.HHMM (local time, zero-padded) -
@@ -69,7 +74,7 @@ plt.style.use('dark_background')
 # process to compute it. A plain source constant (not computed at run
 # time) so it's visible directly in the repo on GitHub, not just at
 # runtime. Shown only in the About dialog (Help > About EDyssey).
-APP_VERSION = '2.1.20260902.1731'
+APP_VERSION = '2.1.20260903.1426'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -147,74 +152,11 @@ class MainWindow(qtw.QMainWindow):
         # parameter panel of whichever tab is active can span the full
         # window height instead of being squeezed by a full-width log strip.
         self.setCentralWidget(central)
-        self.setStyleSheet("""
-            QMainWindow, QWidget {
-                background-color: #2b2b2b;
-                color: #f0f0f0;
-            }
-            QTabWidget::pane { border: 1px solid #555; }
-            QTabBar::tab {
-                background: #3c3c3c; color: #f0f0f0;
-                padding: 5px 12px; border: 1px solid #555;
-            }
-            QTabBar::tab:selected { background: #555; }
-            QGroupBox {
-                border: 1px solid #555; margin-top: 8px; color: #f0f0f0;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; color: #f0f0f0; }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                background-color: #3c3c3c; color: #f0f0f0;
-                border: 1px solid #555; padding: 2px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #3c3c3c; color: #f0f0f0;
-                selection-background-color: #4a86c8;
-            }
-            QPushButton {
-                background-color: #4a4a4a; color: #f0f0f0;
-                border: 1px solid #666; padding: 4px 8px;
-            }
-            QPushButton:hover { background-color: #5a5a5a; }
-            QPushButton:pressed { background-color: #3a3a3a; }
-            QPushButton:disabled { background-color: #3a3a3a; color: #777; }
-            QCheckBox { color: #f0f0f0; }
-            QLabel { color: #f0f0f0; }
-            QSlider::groove:horizontal { background: #3c3c3c; height: 4px; }
-            QSlider::handle:horizontal {
-                background: #888; width: 12px; margin: -4px 0; border-radius: 6px;
-            }
-            QProgressBar {
-                background-color: #3c3c3c; color: #f0f0f0;
-                border: 1px solid #555; text-align: center;
-            }
-            QProgressBar::chunk { background-color: #4a86c8; }
-            QListWidget, QTreeWidget, QTableWidget {
-                background-color: #2b2b2b; color: #f0f0f0;
-                border: 1px solid #555; alternate-background-color: #333;
-            }
-            QListWidget::item:selected, QTreeWidget::item:selected {
-                background-color: #4a86c8;
-            }
-            QHeaderView::section {
-                background-color: #3c3c3c; color: #f0f0f0;
-                border: 1px solid #555; padding: 2px;
-            }
-            QScrollBar:vertical { background: #3c3c3c; width: 12px; }
-            QScrollBar::handle:vertical { background: #666; min-height: 20px; }
-            QScrollBar:horizontal { background: #3c3c3c; height: 12px; }
-            QScrollBar::handle:horizontal { background: #666; min-width: 20px; }
-            QStatusBar { background-color: #2b2b2b; color: #888; }
-            QFrame[frameShape="4"], QFrame[frameShape="5"] { color: #555; }
-            QToolButton {
-                background-color: #2b2b2b; color: #f0f0f0;
-                border: 1px solid transparent;
-            }
-            QToolButton:hover { background-color: #3c3c3c; border: 1px solid #555; }
-            QToolButton:checked {
-                background-color: #4a86c8; border: 1px solid #7fb8ec;
-            }
-            QToolButton:checked:hover { background-color: #5a96d8; border: 1px solid #8fc8fc; }
-        """)
+        # Applies the whole-app QSS stylesheet (see app_theme.build_stylesheet)
+        # to the now-running QApplication - the module-level apply_qapp()
+        # call up top only managed matplotlib's own style, since no
+        # QApplication existed yet at that point.
+        AppTheme.instance().apply_qapp()
 
     def _build_menu(self):
         menu_file = self.menuBar().addMenu('&File')
@@ -239,6 +181,9 @@ class MainWindow(qtw.QMainWindow):
         action_display_size.setToolTip('Adjust ribbon/plot text and icon size, live, across every tab')
         action_display_size.triggered.connect(self.show_display_size_dialog)
 
+        menu_edit.addSeparator()
+        self._build_theme_menu(menu_edit)
+
         menu_help = self.menuBar().addMenu('&Help')
         action_sam2_setup = menu_help.addAction('Set Up SAM2...')
         action_sam2_setup.setToolTip(
@@ -247,6 +192,35 @@ class MainWindow(qtw.QMainWindow):
         menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
+
+    def _build_theme_menu(self, menu_edit):
+        """Edit > Color Theme - a checkable submenu, one radio-style entry
+        per AppTheme.PALETTES key, so the current theme is always visible
+        (checked) right in the menu bar, not just buried in the Display
+        Size dialog's own combo (which still exists too, and stays in sync
+        with this - both write through the same AppTheme.set_theme)."""
+        menu_theme = menu_edit.addMenu('Color Theme')
+        group = qtw.QActionGroup(self)
+        group.setExclusive(True)
+        self._theme_actions = {}
+        for key, label in THEME_LABELS.items():
+            action = menu_theme.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(key == AppTheme.instance().name)
+            action.triggered.connect(lambda _checked, k=key: AppTheme.instance().set_theme(k))
+            group.addAction(action)
+            self._theme_actions[key] = action
+        # AppTheme.instance() is a QObject with no parent, so it outlives
+        # this MainWindow's own construction - keep it self-subscribing
+        # here too (same convention as RibbonPanel/FrameFlagBar) so this
+        # menu re-checks the right entry if the theme changes from
+        # elsewhere (e.g. the Display Size dialog's own combo).
+        AppTheme.instance().changed.connect(self._sync_theme_menu)
+
+    def _sync_theme_menu(self):
+        current = AppTheme.instance().name
+        for key, action in self._theme_actions.items():
+            action.setChecked(key == current)
 
     def duplicate_current_tab(self):
         """Open a new tab of the same type as the currently active one,

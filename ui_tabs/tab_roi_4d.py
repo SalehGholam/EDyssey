@@ -30,6 +30,7 @@ from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
 from .base_tab import TabBase, resolve_hdf5_dtype, glob_ext_for_dtype, HDF5_EVENTEM_LABEL
 from .threshold_dialog import ThresholdDialog
+from .smart_scan_dialog import SmartScanCheckDialog
 from .worker_thread import ProcessStderrBuffer, WorkerThread_General
 from .worker_launch import worker_command
 from .ribbon import RibbonPanel, RibbonTool
@@ -85,6 +86,14 @@ class Tab_ROI_on_4D(TabBase):
         self.button_dir_navSignal.setFixedWidth(30)
         layout_file_entry.addWidget(self.button_dir_navSignal)
         self.button_dir_navSignal.clicked.connect(self.show_dialog)
+        # Without a trailing stretch, this row (all fixed-width widgets)
+        # has no anchor of its own - when this column's widest row (the
+        # Experiment Info grid further down, or the Smart Scan row above)
+        # needs more width than the ribbon has room for at full size, Qt's
+        # box-layout algorithm can shift this row's own content away from
+        # the left edge instead of leaving it pinned there (verified - the
+        # same happens to layout_smart without this too, see below).
+        layout_file_entry.addStretch(1)
         layout_exp.addLayout(layout_file_entry)
 
         # Smart-scan (pattern-file) acquisition support - lives here in
@@ -118,6 +127,28 @@ class Tab_ROI_on_4D(TabBase):
         self.button_browsePattern.setDisabled(True)
         layout_smart.addWidget(self.button_browsePattern)
         self.button_browsePattern.clicked.connect(self.browse_pattern_file)
+
+        # Same "Check Files..." review dialog the Navigator tab uses (see
+        # SmartScanCheckDialog) - scans the 4D Signal file's own folder,
+        # matching each file there to its own pattern file (same matching
+        # engine, io.match_tilt_files). Once confirmed, double-clicking a
+        # file in file_list_widget below (see _on_file_list_double_clicked)
+        # auto-fills its own matched pattern file and checks "Smart
+        # Scanned" - or leaves both alone for a file with no pattern match
+        # (a normal, non-smart-scanned 4D file) - instead of the user
+        # having to browse for the right pattern file and check the box by
+        # hand, every single file, every time.
+        self.button_checkFiles = qtw.QPushButton('Check Files...')
+        self.button_checkFiles.setToolTip(
+            'Review/confirm the automatic file <-> pattern-file match for every file in this '
+            "folder, so double-clicking one in the list below (left) loads it with the right "
+            'pattern file (and "Smart Scanned" checked) already applied')
+        self.button_checkFiles.clicked.connect(self.open_check_files_dialog)
+        layout_smart.addWidget(self.button_checkFiles)
+        self._smart_scan_rows = None  # set by open_check_files_dialog(); see _on_file_list_double_clicked
+        # See layout_file_entry's identical trailing stretch above/its own
+        # comment - same reasoning, this row needs its own left anchor too.
+        layout_smart.addStretch(1)
         layout_exp.addLayout(layout_smart)
 
         # Detector Size / Scan Size / Metadata / Scales each get their own
@@ -627,15 +658,22 @@ class Tab_ROI_on_4D(TabBase):
         layout_fileList.addWidget(self.combo_dtype)
         # Denoise (see denoise_widget.DenoiseBox): unlike ROI Tracker/SAM2
         # Tracker's own Adjust Contrast box, this tab has no full raw-to-8bit
-        # display pipeline to hook into - the Nav. Image stays displayed
-        # straight from self.navImg, contrast handled entirely by clip_nav's
-        # sliders (see update_canvas). So Denoise here doesn't touch the
-        # displayed image itself; it applies to the 8-bit copy of navImg fed
-        # into SAM2 segmentation (see segment_image), the one place this tab
-        # already builds one on demand - and "Check Methods..." compares
-        # every method on that same 8-bit copy for reference.
+        # display pipeline to hook into - self.navImg itself always stays
+        # the untouched raw data (ROI crop math, thresholding, SAM2
+        # segmentation input, and saved state all key off it directly), and
+        # contrast is handled entirely by clip_nav's sliders (see
+        # update_canvas). The Nav. Image panel's own display, though, shows
+        # a live-denoised preview (see _refresh_nav_denoise_preview/
+        # _denoised_nav_image) - normalized against navImg's own min/max
+        # rather than a fixed 8-bit range, so it stays meaningful under
+        # clip_nav's raw-value-calibrated vmin/vmax without needing to
+        # recalibrate those on every Denoise tweak. "Check Methods..." still
+        # compares every method on a separate, plain 8-bit copy (see
+        # _show_denoise_check_methods) - a reference/preview tool of its
+        # own, unrelated to what's now shown live here.
         self.box_denoise = DenoiseBox(show_apply_all=False)
         self.box_denoise.checkMethodsRequested.connect(self._show_denoise_check_methods)
+        self.box_denoise.settingsChanged.connect(self._refresh_nav_denoise_preview)
         layout_fileList.addWidget(self.box_denoise)
         self.file_list_widget = qtw.QListWidget()
         self.file_list_widget.setMinimumWidth(150)
@@ -900,7 +938,7 @@ class Tab_ROI_on_4D(TabBase):
         # unscanned positions - start the low threshold at the lowest
         # non-zero value instead, so those don't wash out real contrast.
         self.clip_nav.set_low(io.nonzero_display_min(self.navImg))
-        self.update_canvas('nav')
+        self._refresh_nav_denoise_preview()
         # Reset the view to the newly loaded image's full extent (in case
         # the user had already zoomed in on a previous signal, which
         # disables autoscale), then re-seed the toolbar's view stack so its
@@ -915,12 +953,52 @@ class Tab_ROI_on_4D(TabBase):
         self.button_clear_points.setEnabled(True)
         self.button_cancel.setDisabled(True)
 
+    def _denoised_nav_image(self):
+        """self.navImg run through box_denoise's current settings for
+        DISPLAY purposes only - self.navImg itself is never touched, so
+        everything else that keys off it (ROI crop math, thresholding,
+        SAM2 segmentation input, saved state) keeps seeing the raw data
+        regardless of Denoise. Normalized against navImg's OWN min/max
+        (unlike denoise_widget.apply_denoise_to_array/DenoiseBox.apply,
+        which round-trip through a fixed 0-255 uint8 range) so the result
+        stays in the same raw-count units clip_nav's own vmin/vmax are
+        already calibrated against - io.denoise_image's methods just need
+        roughly [0, 1]-scaled input for their default parameters to behave
+        sensibly (see its own docstring), not specifically 0-255. A no-op
+        (returns navImg unchanged) for method 'None' (the default) or a
+        flat (min == max) image."""
+        method = self.box_denoise.get_method()
+        if method == 'None':
+            return self.navImg
+        lo, hi = float(self.navImg.min()), float(self.navImg.max())
+        if hi <= lo:
+            return self.navImg
+        normalized = (self.navImg.astype(np.float64) - lo) / (hi - lo)
+        denoised = io.denoise_image(normalized, method, self.box_denoise.get_param())
+        return np.clip(denoised, 0, 1) * (hi - lo) + lo
+
+    def _refresh_nav_denoise_preview(self):
+        """box_denoise's Denoise method/parameter changed (see
+        settingsChanged), or self.navImg was just (re)computed/restored -
+        recompute the Nav. Image panel's own denoised preview (see
+        _denoised_nav_image) and redraw. Cached (self._nav_display_img)
+        rather than recomputed inside update_canvas('nav') itself - that
+        also runs on every clip_nav slider drag, and a slower method
+        (Non-Local Means, Bilateral) re-running on every one of those would
+        make simple contrast tweaks lag, not just an actual Denoise
+        change."""
+        if not hasattr(self, 'navImg'):
+            return
+        self._nav_display_img = self._denoised_nav_image()
+        self.update_canvas('nav')
+
     def show_dialog(self):
         file_filter = "supported signals (*.zspy *.hspy *.hdf5 *.h5 *.tpx3 *.mib *.blo *.pmf);;All Files (*)"
         path = qtw.QFileDialog.getOpenFileName(self, "Select 4D Signals Folder", '', file_filter)
         # if path and os.path.isdir(path[0]):
         if path:
             self.metadata_path_override = None  # new signal - re-derive comment.txt location
+            self._smart_scan_rows = None  # new folder - invalidate any previous Check Files scan
             self.lineEdit_dir_signal.setText(path[0])
 
     def _ext_filter_for_combo(self):
@@ -956,12 +1034,83 @@ class Tab_ROI_on_4D(TabBase):
 
     def _on_file_list_double_clicked(self, item):
         """Fill in the 4D Signal path from a file list double-click - same
-        end result as browsing to it via show_dialog(), then immediately run
-        "Compute Virtual Image" on it, same as clicking that button would."""
+        end result as browsing to it via show_dialog() - then immediately
+        run "Compute Virtual Image" on it, same as clicking that button
+        would. If "Check Files..." (open_check_files_dialog) has already
+        confirmed a match for this exact file, its own pattern file is
+        applied and "Smart Scanned" checked automatically first (or left
+        off, for a confirmed-normal file with no pattern match) - see
+        _apply_checked_file_match - instead of the user having to set
+        those by hand for every file. Dwell time isn't set here - it
+        already auto-fills from a comment.txt next to the file, if any,
+        via enable_dwellTime_spinbox (triggered by the lineEdit_dir_signal.
+        setText() below)."""
         directory = os.path.dirname(self.lineEdit_dir_signal.text())
         self.metadata_path_override = None  # new signal - re-derive comment.txt location
-        self.lineEdit_dir_signal.setText(os.path.join(directory, item.text()))
+        fn = os.path.join(directory, item.text())
+        self._apply_checked_file_match(fn)
+        self.lineEdit_dir_signal.setText(fn)
         self.compute_virtual_image()
+
+    def _apply_checked_file_match(self, fn):
+        """Look up `fn` in self._smart_scan_rows (see
+        open_check_files_dialog) by its own acquisition_file basename, and
+        apply its confirmed pattern file + "Smart Scanned" state - or
+        clear both if `fn` has no confirmed match (an unreviewed file) or
+        matched a row with no pattern file (a confirmed-normal, non-smart-
+        scanned file) - so a previous file's smart-scan state never lingers
+        onto this one."""
+        match = None
+        if self._smart_scan_rows:
+            target = os.path.basename(fn)
+            for row in self._smart_scan_rows:
+                acq = row.get('acquisition_file')
+                if acq and os.path.basename(acq) == target:
+                    match = row
+                    break
+        pattern_file = match.get('pattern_file') if match else None
+        if pattern_file:
+            self.checkbox_smartScan.setChecked(True)
+            self.lineEdit_patternFile.setText(pattern_file)
+        else:
+            self.checkbox_smartScan.setChecked(False)
+            self.lineEdit_patternFile.clear()
+
+    def open_check_files_dialog(self):
+        """Open the same SmartScanCheckDialog the Navigator tab uses (see
+        its own open_smart_scan_check_dialog), scanning the folder that
+        holds the currently-entered 4D Signal file (the same folder
+        file_list_widget itself lists - see refresh_file_list). Confirmed
+        rows are kept in self._smart_scan_rows for
+        _on_file_list_double_clicked/_apply_checked_file_match to use -
+        cleared whenever a new folder is picked (see show_dialog/browse
+        handlers, mirroring _smart_scan_rows' own reset elsewhere in the
+        app)."""
+        fn = self.lineEdit_dir_signal.text()
+        directory = os.path.dirname(fn) if fn else ''
+        if not os.path.isdir(directory):
+            qtw.QMessageBox.critical(self, 'No Folder',
+                'Select a 4D Signal file first - Check Files reviews every file in its folder.')
+            return
+        if self.combo_dtype.currentText() == 'All files':
+            dtype = None
+            for ext in io.DATA_EXTENSIONS:
+                if any(f.endswith(ext) for f in os.listdir(directory)):
+                    dtype = ext
+                    break
+        else:
+            dtype = resolve_hdf5_dtype(fn, self.combo_dtype.currentText())
+        if dtype not in io.DATA_EXTENSIONS:
+            qtw.QMessageBox.warning(self, 'Unsupported Format',
+                f'Smart-scan file matching currently supports {", ".join(io.DATA_EXTENSIONS)} '
+                'data only.')
+            return
+        dlg = SmartScanCheckDialog(self, directory, dtype, rows=self._smart_scan_rows)
+        if dlg.exec_() == qtw.QDialog.Accepted:
+            self._smart_scan_rows = dlg.rows
+            n_ok = sum(1 for row in dlg.rows if not row['excluded'])
+            self.logger.info('Check Files confirmed: %d / %d file(s) matched to a pattern file.',
+                             n_ok, len(dlg.rows))
 
     def enable_dwellTime_spinbox(self, txt):
         """Enable the scan-size/dwell-time widgets only for .tpx3 files
@@ -1403,8 +1552,15 @@ class Tab_ROI_on_4D(TabBase):
 
         elif ax == 'nav':
             vmin, vmax = self.clip_nav.values()
-            self.img_display['nav'].set_data(self.navImg)
-            shape_x, shape_y = self.navImg.shape
+            # The live-denoised preview (see _refresh_nav_denoise_preview),
+            # or plain navImg itself before that's ever run once (e.g. a
+            # stray early call) - both the same shape/units as navImg, so
+            # clip_nav's own vmin/vmax apply unchanged either way.
+            nav_display = getattr(self, '_nav_display_img', None)
+            if nav_display is None:
+                nav_display = self.navImg
+            self.img_display['nav'].set_data(nav_display)
+            shape_x, shape_y = nav_display.shape
             self.img_display['nav'].set_extent([0, shape_y, shape_x, 0])
             self.img_display['nav'].set_clim(vmin=vmin, vmax=vmax)
         
@@ -2056,7 +2212,7 @@ class Tab_ROI_on_4D(TabBase):
 
         # tab:orange stands out clearly against the viridis nav-image colormap,
         # unlike tab10's default blue (index 0), which blends into it.
-        color = np.array([*mcolors.to_rgb('tab:orange'), 0.5])
+        color = np.array([*mcolors.to_rgb('tab:orange'), 0.3])
         mask_image = mask.reshape(shape_y, shape_x, 1) * color.reshape(1, 1, -1)
         self.img_display['seg_mask'].set_data(mask_image)
         self.img_display['seg_mask'].set_extent([0, shape_x, shape_y, 0])
@@ -2213,7 +2369,7 @@ class Tab_ROI_on_4D(TabBase):
                 'Load a 4D signal first - the threshold is applied to its '
                 'navigation image.')
             return
-        dlg = ThresholdDialog(self, self.navImg, self.fn)
+        dlg = ThresholdDialog(self, self.navImg, self.fn, denoise_state=self.box_denoise.get_state())
         if dlg.exec_() == qtw.QDialog.Accepted:
             # Kept raw (un-eroded) - see _refresh_edge_mask().
             self.seg_mask = dlg.mask
@@ -2466,7 +2622,7 @@ class Tab_ROI_on_4D(TabBase):
         self._dp_center_fn = self.fn
         self.clip_nav.set_state(state['clip_nav'])
         self.box_denoise.set_state(state.get('denoise'))
-        self.update_canvas('nav')
+        self._refresh_nav_denoise_preview()
         shape_x, shape_y = self.navImg.shape
         self.ax_nav.set_xlim(0, shape_y)
         self.ax_nav.set_ylim(shape_x, 0)

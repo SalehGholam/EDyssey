@@ -22,6 +22,7 @@ import matplotlib
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QSize, QPointF, QRectF, pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
+from .app_theme import AppTheme
 
 _MPL_IMAGE_DIR = os.path.join(matplotlib.get_data_path(), 'images')
 _MPL_ICON_FILES = {
@@ -29,8 +30,15 @@ _MPL_ICON_FILES = {
     'zoom': 'zoom_to_rect.png',
     'home': 'home.png',
 }
-_ICON_COLOR = QColor('#f0f0f0')  # matches the app's light-on-dark theme
 _ICON_SIZE = 26
+
+
+def _icon_color():
+    """The current theme's own icon color (see app_theme.py) - a function,
+    not a module-level constant, so every drawn icon (re-)built after a
+    theme change picks up the new color instead of the one active when
+    this module was first imported."""
+    return QColor(AppTheme.instance().color('icon'))
 
 
 def _mpl_icon(key):
@@ -55,7 +63,7 @@ def _drawn_icon(kind, size):
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    pen = QPen(_ICON_COLOR)
+    pen = QPen(_icon_color())
     pen.setWidthF(1.8)
     painter.setPen(pen)
     margin = size * 0.18
@@ -73,15 +81,24 @@ def _drawn_icon(kind, size):
         d = r * 0.5
         painter.drawLine(QPointF(cx, cy - d), QPointF(cx, cy + d))
         painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
-    elif kind == 'remove_point':
-        # A counter-clockwise "undo" arrow - reads unambiguously as "undo/
-        # remove the last point placed". A previous design (a plain ring
-        # with one horizontal line through it, echoing add_point's "+"
-        # minus its vertical stroke) looked too much like a bare minus
-        # sign, easily mistaken for "add a NEGATIVE point" instead of
-        # "remove the last point" - add_point's own left/right-click
-        # already covers positive/negative, so this icon must read as
-        # neither.
+    elif kind in ('remove_point', 'undo', 'redo'):
+        # A counter-clockwise "undo" arrow ('remove_point'/'undo' - both
+        # read as "step back to the previous state", just in different
+        # contexts) - reads unambiguously as "undo/remove the last point
+        # placed" for remove_point specifically. A previous design (a
+        # plain ring with one horizontal line through it, echoing
+        # add_point's "+" minus its vertical stroke) looked too much like
+        # a bare minus sign, easily mistaken for "add a NEGATIVE point"
+        # instead of "remove the last point" - add_point's own left/right-
+        # click already covers positive/negative, so this icon must read
+        # as neither. 'redo' is this same arrow's exact horizontal mirror
+        # (via a painter transform, not separately re-derived geometry, so
+        # the two are guaranteed to read as consistent opposites) - "step
+        # forward again" through whatever undo just stepped back from.
+        if kind == 'redo':
+            painter.save()
+            painter.translate(size, 0)
+            painter.scale(-1, 1)
         r = size / 2 - margin
         rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
         # Qt angles are in 1/16th of a degree, counter-clockwise from the
@@ -100,6 +117,8 @@ def _drawn_icon(kind, size):
                      tip.y() + head_len * math.sin(tangent + head_angle))
         painter.drawLine(tip, p1)
         painter.drawLine(tip, p2)
+        if kind == 'redo':
+            painter.restore()
     elif kind == 'clear_roi':
         # A selection rectangle crossed out - "remove the current selection".
         painter.drawRect(QRectF(margin, margin, size - 2 * margin, size - 2 * margin))
@@ -110,7 +129,7 @@ def _drawn_icon(kind, size):
         # beam center, used for the reciprocal-space scale rings.
         r = size / 2 - margin
         painter.drawEllipse(QPointF(cx, cy), r, r)
-        painter.setBrush(_ICON_COLOR)
+        painter.setBrush(_icon_color())
         painter.drawEllipse(QPointF(cx, cy), r * 0.22, r * 0.22)
     elif kind == 'center_mask':
         # Concentric double ring + center "+" - the virtual detector's own
@@ -137,7 +156,7 @@ def _drawn_icon(kind, size):
         # paired with paint_out's hollow counterpart below (mask_edit_dialog
         # ribbon only).
         rect = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
-        painter.setBrush(_ICON_COLOR)
+        painter.setBrush(_icon_color())
         painter.drawRect(rect)
     elif kind == 'paint_out':
         # paint_in's hollow counterpart - "paint pixels OUT (remove from
@@ -187,7 +206,8 @@ def _drawn_icon(kind, size):
 
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
                       'center_recip', 'center_mask', 'hide_mask', 'help',
-                      'paint_in', 'paint_out', 'rect_in', 'rect_out'}
+                      'paint_in', 'paint_out', 'rect_in', 'rect_out',
+                      'undo', 'redo'}
 
 
 def build_icon(key, size=_ICON_SIZE):
@@ -252,6 +272,12 @@ class RibbonPanel(qtw.QWidget):
         super().__init__(parent)
         self._active_tool = None
         self._tool_buttons = {}
+        # Every non-separator button, any kind - lets a caller reach a
+        # specific button after construction (see get_button), e.g. to
+        # enable/disable an 'action' button depending on some external
+        # state (MaskEditDialog's Undo/Redo, greyed out while their own
+        # history stacks are empty).
+        self._buttons_by_id = {}
         self._icon_size = _ICON_SIZE
         self._orientation = orientation
         # Every non-separator button, with the icon key used to build it -
@@ -281,6 +307,7 @@ class RibbonPanel(qtw.QWidget):
             btn.setToolTip(tool.tooltip)
             layout.addWidget(btn)
             self._icon_buttons.append((btn, tool.icon))
+            self._buttons_by_id[tool.id] = btn
 
             if tool.kind == 'tool':
                 btn.setCheckable(True)
@@ -298,6 +325,12 @@ class RibbonPanel(qtw.QWidget):
 
         layout.addStretch(1)
         self._apply_icon_size()
+        # Subscribes itself, rather than relying on every one of this
+        # class's many construction sites (each main tab, MaskEditDialog,
+        # BlobSegmentationDialog, ...) to remember to wire this up - Qt
+        # auto-disconnects this once `self` is destroyed, so a closed
+        # dialog's own RibbonPanel doesn't linger as a stale subscriber.
+        AppTheme.instance().changed.connect(self.refresh_theme)
 
     def set_icon_size(self, size):
         """Re-render every button's icon at `size` px and resize the panel/
@@ -309,6 +342,17 @@ class RibbonPanel(qtw.QWidget):
         for btn, icon_key in self._icon_buttons:
             btn.setIcon(build_icon(icon_key, size))
         self._apply_icon_size()
+
+    def refresh_theme(self):
+        """Re-render every button's icon at the SAME size, picking up
+        AppTheme's current icon color (see _icon_color/build_icon) -
+        connected to AppTheme.changed above. The QToolButton chrome around
+        each icon (background/border/checked-state colors) already
+        re-colors itself for free via the QApplication-wide stylesheet
+        AppTheme.apply_qapp() sets; only the hand-drawn icon glyphs
+        themselves need rebuilding here."""
+        for btn, icon_key in self._icon_buttons:
+            btn.setIcon(build_icon(icon_key, self._icon_size))
 
     def _apply_icon_size(self):
         size = self._icon_size
@@ -332,6 +376,12 @@ class RibbonPanel(qtw.QWidget):
                 btn.setChecked(False)
         self._active_tool = tool_id if checked else None
         self.toolChanged.emit(self._active_tool)
+
+    def get_button(self, tool_id):
+        """The QToolButton for `tool_id` (any kind - 'tool', 'action', or
+        'toggle') - None if there's no such id (e.g. a typo, or a
+        separator, which has no id at all)."""
+        return self._buttons_by_id.get(tool_id)
 
     @property
     def active_tool(self):

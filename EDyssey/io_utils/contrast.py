@@ -310,6 +310,53 @@ def close_mask(mask, kernel_size):
     return cv2.morphologyEx(mask.astype('uint8'), cv2.MORPH_CLOSE, kernel).astype(bool)
 
 
+def flag_anomalous_mask_areas(areas, window=5, rel_threshold=0.5):
+    """Frame indices where a per-frame mask-area array looks anomalous - a
+    simple, tracker-agnostic heuristic for spotting frames worth a manual
+    look after tracking, shared by ROI Tracker/SAM2 Tracker (see
+    Tab_Tracking_CV2._compute_tracking_quality/Tab_SAM2's own identical
+    method - both just supply their own per-frame mask-area array, however
+    it was actually produced: threshold+Blob Selection for ROI Tracker,
+    SAM2's own segmentation directly for SAM2 Tracker).
+
+    Flags a frame if its own area is zero/NaN (nothing there at all - the
+    tracker lost the object, or the mask collapsed to nothing), or if it
+    deviates by more than `rel_threshold` from the median of the `window`
+    frames on either side (an abrupt area jump usually means the tracker
+    latched onto something else, or a threshold mask picked up a
+    neighboring particle/artifact instead of the tracked one). This is
+    deliberately a simple, conservative heuristic, not a statistical
+    model - meant to flag "worth a look", not "definitely wrong".
+
+    Args:
+        areas: 1-D array-like, one value per frame - mask pixel count
+            (NaN for a frame with nothing to compute it from, e.g. an
+            empty tracked box that frame).
+        window: How many frames on each side form the comparison
+            neighborhood for the relative-deviation check.
+        rel_threshold: Minimum relative deviation from the neighborhood's
+            own median, as a fraction (0.5 = 50%), to flag a frame.
+
+    Returns:
+        Sorted list of flagged frame indices (possibly empty).
+    """
+    areas = np.asarray(areas, dtype=float)
+    flagged = []
+    for i in range(len(areas)):
+        if not np.isfinite(areas[i]) or areas[i] == 0:
+            flagged.append(i)
+            continue
+        lo, hi = max(0, i - window), min(len(areas), i + window + 1)
+        neighborhood = [areas[j] for j in range(lo, hi)
+                        if j != i and np.isfinite(areas[j]) and areas[j] > 0]
+        if not neighborhood:
+            continue
+        med = float(np.median(neighborhood))
+        if med > 0 and abs(areas[i] - med) / med > rel_threshold:
+            flagged.append(i)
+    return flagged
+
+
 def mask_centroid(mask):
     """(x, y) center of mass of `mask` - the origin mesh_cell_ids/
     mesh_restrict_mask anchor their rotated grid to by default, so a mesh

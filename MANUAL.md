@@ -6,6 +6,22 @@ inspecting individual ROIs, tracking objects across a scan series (via
 classical computer vision or Meta's SAM2 AI segmentation model), and
 extracting per-object 3D electron diffraction (3DED) data.
 
+EDyssey implements the post-acquisition half of the 4D-STEM tomography
+workflow described in Gholam et al., *"A 4D-STEM Tomographic Framework
+Assisted by Object Tracking for Nanoparticle Structure Determination"*
+(arXiv:2602.09768): a tilt series of 4D-STEM scans (collected with fine
+tilt steps and a slightly convergent probe, e.g. via the `evenTem`
+acquisition suite) → per-scan navigation images → object tracking/
+segmentation of a ROI on those images (this app's ROI Tracker/SAM2 Tracker
+tabs) → per-object 3DED extraction, ready for data reduction/structure
+solution in PETS2 and Jana2020. This approach targets samples that
+challenge conventional 3D ED/CRED tracking - agglomerated or multi-domain
+particles, beam-sensitive samples needing minimal fluence, and particles
+as small as ~30 nm - and, because tracking happens post-acquisition
+instead of live at the microscope, lets you revisit particles or regions
+you didn't even notice during the session, straight from the saved
+tomogram.
+
 ## Launching
 
 See [INSTALL.md](INSTALL.md) for installing the app first (Windows
@@ -68,6 +84,17 @@ the front.
   Next to the app when running from source; `%LocalAppData%\EDyssey\logs`
   for an installed build, since the install location itself (particularly
   the default `Program Files`) isn't guaranteed to be writable.
+- **Adjust Contrast** (ROI Tracker / SAM2 Tracker, above the object list):
+  converts the raw navigation stack to 8-bit for display/tracking/SAM2
+  input, via Percentile, Min-Max, or Std. Dev. stretch, plus an optional
+  **Denoise** step (Gaussian Blur, Median Filter, Bilateral, Non-Local
+  Means, Total Variation, or Wavelet). A parameter tweak previews instantly
+  on the current frame; **Apply to All Images** runs it across the whole
+  stack. **Test Methods** compares every denoise method side by side on
+  the current frame, each with its own retunable parameter. ROI on 4D has
+  a standalone **Denoise** box (no separate contrast stretch) that live-
+  denoises the Nav. Image display and feeds the same denoised image into
+  SAM2 segmentation.
 - **Diagnostic console window**: the installer builds also open a plain
   black console window alongside the main app (pushed behind it on
   startup, so it won't cover anything - check the taskbar/Alt+Tab for
@@ -108,6 +135,11 @@ pattern.
 - Reciprocal-space beam-center finding/manual setting (see
   [CONTROLS.md](CONTROLS.md)), independent of the virtual-detector mask's
   own center.
+- **Denoise** (left panel, above the file list): live-denoises the Nav.
+  Image display and feeds the same denoised image into SAM2 segmentation -
+  see "Adjust Contrast"/"Denoise" under Common UI elements above.
+- Ribbon's **clear_roi** icon: removes the drawn ROI/box so diffraction-
+  pattern extraction goes back to using the full frame.
 - **Cancel** to stop a running computation.
 
 ### 2. Navigator
@@ -124,7 +156,12 @@ across CPU cores, count configurable) → the resulting navigation signal
 
 **Features:** select-all vs. manual file selection, virtual detectors (Sum
 or Variance mode), adjustable worker process count, adjustable output clip
-frame rate, **Stop** to cancel an in-progress calculation.
+frame rate, **Stop** to cancel an in-progress calculation. On one
+representative test file: **Compute Summed DP** (whole scan), **Summed DP
+from ROI** (ribbon's `select_roi` tool - restrict to a drawn scan-space
+region, `clear_roi` removes it), or **Summed DP from Threshold...**
+(restrict to a real-space-thresholded region instead) - all placing the
+same virtual-detector mask preview.
 
 ### 3. ROI Tracker
 
@@ -149,12 +186,35 @@ refine the per-frame mask shown in the "ROI with Threshold" panel →
   each one as a ROI, instead of drawing them by hand one at a time.
   **Reset Objects** next to it clears the object list.
 - Thresholding methods for mask generation: Li, Otsu, Yen, mean — with
-  adjustable blur kernel and threshold offset.
+  adjustable blur kernel and threshold offset. Restricting extraction to
+  the segmented mask (rather than the whole ROI box) improves
+  signal-to-noise by excluding contributions from the supporting
+  membrane/grid outside the particle.
 - **ROI-in-ROI**: track a smaller region relative to a reference ROI
   (e.g. a feature moving within a larger tracked object).
-- Per-object enable/disable, end-frame, and delete controls in the object
-  tree, with tracked/extracted status icons.
+- **Blob Selection** (a "Blob" column in the object list): for a ROI whose
+  threshold mask contains more than one particle, pick out just one to
+  track/extract. Checking it opens a segmentation dialog (also reachable
+  any time via **Blob Settings...**, below the object list) with a live
+  contour/number preview and a choice of method for splitting
+  touching/overlapping particles before one is picked: Connected
+  Components (no splitting, the default), Watershed - Shape, Watershed -
+  Intensity (Z-contrast), K-Means Clustering, or Gaussian Mixture (GMM) -
+  click a blob in the preview (or directly on the "ROI with Threshold"
+  panel) to choose it; with none chosen, the largest is used.
+- **Fine-Tune Mask...** (below the object list): manually edit a tracked
+  ROI's per-frame mask - see "Fine-Tune Mask dialog" below.
+- The object list is transposed (one column per ROI, property names down
+  the fixed left column) so adding a ROI adds a column instead of a row;
+  long row titles are abbreviated with a tooltip for the full word.
+- Per-object enable/disable, end-frame, reference, blob, and delete
+  controls in the object list, with tracked/extracted status icons.
 - Adjustable extraction thread count and **Autosave** on completion.
+- **Make \*.pts2**: writes a PETS2 project file into each ROI's saved
+  folder alongside the extracted 3DED data, pre-filled from the signal's
+  own metadata (voltage, exposure, Å⁻¹/px scale, beam center) - so
+  downstream data reduction/structure solution in PETS2 can start straight
+  from Save Results without manually setting up a project file first.
 - **Save Results** / **Load Saved Analysis** (see below).
 
 ### 4. SAM2 Tracker
@@ -180,11 +240,66 @@ Detector**, above the object list, the same way as ROI Tracker's → **Track**
 - Positive/negative point prompts, middle-click to delete the last point.
 - **Auto Detector** (above the object list) and **Reset Objects** next to
   it, same as ROI Tracker.
+- **Fine-Tune Mask...**: manually edit a tracked object's per-frame mask -
+  see "Fine-Tune Mask dialog" below (same dialog as ROI Tracker's, minus
+  Blob Selection - SAM2 already tracks each object as its own mask).
+- The object list is transposed (one column per object, property names
+  down the fixed left column), same as ROI Tracker's.
 - Per-object end-frame and stack-size (frames processed per SAM2 call)
   control.
 - **Stop** to cancel an in-progress tracking run.
 - Adjustable extraction thread count and **Autosave** on completion.
+- **Make \*.pts2** (see ROI Tracker above) - same PETS2 project-file export.
 - **Save Results** / **Load Saved Analysis** (see below).
+- **Help > Set Up SAM2...**: automates installing `torch`/`sam2` if this
+  tab's buttons show a "SAM2 Dependencies Not Installed" message (not
+  needed with the offline installer, which bundles them already).
+
+## Fine-Tune Mask dialog (ROI Tracker / SAM2 Tracker)
+
+Frame-by-frame manual editing of a tracked object's per-frame mask, opened
+via **Fine-Tune Mask...**. Every edit here is a live preview, never baked
+into the saved/extracted mask until you close the dialog - **Reset This
+Frame** / **Reset to Tracking** discard edits back to the original
+tracked/segmented result at any point.
+
+- **Paint**: `Ctrl`+click/drag to add/remove single pixels, `Shift`+drag
+  for a rectangular region - or arm the equivalent Paint In/Paint
+  Out/Rect In/Rect Out ribbon tool to do the same without holding a key.
+- **Grow/Shrink Mask**: D-pad buttons add/remove one row/column of pixels
+  on a side.
+- **Segments**: Dilate/Erode and Mesh each apply per frame-range
+  "segment" instead of to the whole stack at once - **Split Here**/
+  **Merge with Previous**/**Reset to Default** manage the boundaries,
+  shown as a colored bar under the frame slider.
+- **Dilate/Erode Mask**: grow/shrink the mask by a signed kernel size
+  (positive dilates, negative erodes); **Opening**/**Closing** kernel
+  sizes additionally remove small specks or fill small holes without
+  changing the mask's overall size.
+- **Edge Detection**: reduces the mask to its outline (optionally
+  one-sided via Directional + Angle) - applies to the whole stack, not
+  per-segment. Extracting 3DED from just a particle's edge instead of its
+  whole volume can improve data quality for thick particles (less
+  dynamical/multiple scattering along a shorter path length), and is
+  useful for edge/surface-specific structural questions - catalysts (bulk
+  vs. surface), core-shell structures, or following surface transformations
+  in an in-situ/ex-situ series.
+- **Mesh**: divides the mask into a rotated grid; click cell(s) to
+  restrict extraction to just those (**Lines Only** selects full-width
+  stripes instead of individual cells; **Center on Initial Mask** anchors
+  the grid to the object's starting position).
+- **Threshold** (ROI Tracker only, when the mask is threshold-derived):
+  rebuild the mask live from Method/Blur/Deviation - **Apply to All
+  Frames** propagates it to the whole stack.
+- **Find Tilt Axis**: estimates a tomography tilt series' tilt axis from
+  how this object's mask centroid moves across frames (PCA on the
+  centroid scatter, cross-checked by a candidate-angle sweep), drawn as a
+  dashed reference line - **Show Details...** opens the underlying
+  scatter/sweep plot. Assumes a single specimen tilting about one fixed
+  in-plane axis with little translational drift between frames.
+
+See the dialog's own **"?"** ribbon icon for the full mouse/keyboard
+reference.
 
 ## Saving & resuming analyses (ROI Tracker / SAM2 Tracker)
 

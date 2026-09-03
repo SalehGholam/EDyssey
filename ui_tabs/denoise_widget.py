@@ -16,6 +16,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import pyqtSignal, Qt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import EDyssey.io_utils as io
 
 
@@ -247,7 +248,19 @@ class DenoiseBox(qtw.QGroupBox):
         panel.setFixedWidth(190)
         panel.setWidget(panel_content)
         content_layout.addWidget(panel)
-        content_layout.addWidget(canvas, 1)
+
+        # Plain mpl toolbar (not the app's own RibbonPanel - this dialog has
+        # no custom mouse gestures of its own to arbitrate against, just
+        # comparison images) - Zoom/Pan let the user zoom in on fine detail
+        # to actually compare methods, not just eyeball thumbnail-sized
+        # subplots. All subplots share x/y axes (sharex/sharey above), so
+        # zooming/panning one zooms/pans every method's subplot together.
+        canvas_container = qtw.QWidget()
+        canvas_layout = qtw.QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.addWidget(NavigationToolbar(canvas, dlg))
+        canvas_layout.addWidget(canvas, 1)
+        content_layout.addWidget(canvas_container, 1)
 
         for ax, method in zip(axes[1:], methods):
             spec = io.DENOISE_PARAM_SPECS.get(method)

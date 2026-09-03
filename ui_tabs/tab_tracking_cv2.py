@@ -44,6 +44,7 @@ from .ribbon import RibbonPanel, RibbonTool
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
 from .blob_segmentation_dialog import BlobSegmentationDialog
+from .frame_flag_bar import FrameFlagBar
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 import gc
 from time import perf_counter
@@ -402,12 +403,16 @@ class Tab_Tracking_CV2(TabBase):
         layout_box_scanSize.addLayout(layout_loadSignal)
         self.button_loadNavigation = qtw.QPushButton('Load Signal')
         self.button_loadNavigation.setFixedSize(button_w, button_h_lrg*2)
-        layout_loadSignal.addWidget(self.button_loadNavigation)
+        # Centered (matches SAM2's identical row) - without this, the pair
+        # ends up left-anchored instead, its actual position then drifting
+        # against SAM2's own centered pair depending on how much wider this
+        # column happens to be than the two buttons combined.
+        layout_loadSignal.addWidget(self.button_loadNavigation, alignment=Qt.AlignCenter)
         self.button_loadNavigation.clicked.connect(self.load_navSignal)
 
         self.button_loadSavedAnalysis = qtw.QPushButton('Load Saved\nAnalysis')
         self.button_loadSavedAnalysis.setFixedSize(button_w, button_h_lrg*2)
-        layout_loadSignal.addWidget(self.button_loadSavedAnalysis)
+        layout_loadSignal.addWidget(self.button_loadSavedAnalysis, alignment=Qt.AlignCenter)
         self.button_loadSavedAnalysis.clicked.connect(self.load_saved_analysis)
 
         self._ribbon_group_end(layout_ribbon, layout_box_scanSize, 'Input Parameters', stretch=True)
@@ -491,12 +496,12 @@ class Tab_Tracking_CV2(TabBase):
         # stacked ribbon column, per user request.
         layout_box_tracking = layout_box_3ded
 
-        # One row: label + tracker-choice combo + the two buttons that act
-        # on the tracked result (Track!/Fine-Tune Mask...) - Blob Settings...
-        # used to live here too, but now lives in the left object-list panel
+        # One row: label + tracker-choice combo + the button that acts on
+        # the tracked result (Track!) - Fine-Tune Mask.../Blob Settings...
+        # used to live here too, but now live in the left object-list panel
         # instead, directly below the Auto Detector/Reset ROIs row (see
-        # button_blobSettings below) since it acts on a selected ROI from
-        # that panel, not on the tracker choice above it.
+        # button_fineTuneMask/button_blobSettings below) since they act on
+        # a selected ROI from that panel, not on the tracker choice above it.
         layout_tracking = qtw.QHBoxLayout()
         label_track = qtw.QLabel('Tracker')
         layout_tracking.addWidget(label_track)
@@ -514,13 +519,6 @@ class Tab_Tracking_CV2(TabBase):
         layout_tracking.addWidget(self.button_track)
         self.button_track.clicked.connect(self.track_rois)
         self.button_track.setDisabled(True)
-
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
-        self.button_fineTuneMask.setFixedHeight(button_h_lrg)
-        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
-        layout_tracking.addWidget(self.button_fineTuneMask)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
 
         layout_tracking.addStretch(1)
         layout_box_tracking.addLayout(layout_tracking)
@@ -568,6 +566,19 @@ class Tab_Tracking_CV2(TabBase):
         layout_saveOptions.addWidget(self.checkbox_makePets2)
         self.pets2_params = None
         self.checkbox_makePets2.stateChanged.connect(self.on_makePets2_toggled)
+
+        # Lets the user preview/adjust the PETS2 export parameters at any
+        # time - not just the one moment the checkbox is first checked
+        # (on_makePets2_toggled's own trigger) - e.g. to double-check them
+        # ahead of a run, or tweak something after the fact without having
+        # to uncheck-then-recheck the box to reopen the dialog.
+        self.button_checkPets2Options = qtw.QPushButton('Check Options...')
+        self.button_checkPets2Options.setToolTip(
+            'Open the PETS2 export parameters dialog to review/edit them, '
+            'without needing to uncheck and recheck "Make *.pts2"')
+        self.button_checkPets2Options.clicked.connect(
+            lambda: self._open_pets2_dialog(uncheck_on_cancel=False))
+        layout_saveOptions.addWidget(self.button_checkPets2Options)
 
         layout_saveOptions.addStretch()
 
@@ -646,11 +657,20 @@ class Tab_Tracking_CV2(TabBase):
         layout_featureTop.addWidget(self.button_reset_rois)
         self.button_reset_rois.clicked.connect(self.reset_rois)
 
-        # Acts on the selected ROI below (tree_objects), not on the tracker
-        # choice up in the ribbon - moved down here from the ribbon's
-        # Tracking group for that reason. Still governed by
-        # disable_3ded_widgets (see its own docstring) even though it's no
-        # longer one of box_3ded's own children.
+        # Both act on the selected ROI below (tree_objects), not on the
+        # tracker choice up in the ribbon - moved down here from the
+        # ribbon's Tracking group for that reason, and kept in the same row
+        # since both are "do something to the selected ROI's mask" actions.
+        # Still governed by disable_3ded_widgets (see its own docstring)
+        # even though neither is one of box_3ded's own children anymore.
+        row_maskActions = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(row_maskActions)
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
+        self.button_fineTuneMask.setToolTip('Manually edit the ROI\'s mask, frame by frame')
+        row_maskActions.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+
         self.button_blobSettings = qtw.QPushButton('Blob Settings...')
         self.button_blobSettings.setToolTip(
             "Configure the selected ROI's Blob Selection - which segmentation "
@@ -658,7 +678,7 @@ class Tab_Tracking_CV2(TabBase):
             "touching/overlapping particles), and which one's currently chosen. "
             'Also opens automatically the first time this ROI\'s "Blob" column '
             'checkbox is checked.')
-        layout_featurePanel.addWidget(self.button_blobSettings)
+        row_maskActions.addWidget(self.button_blobSettings)
         self.button_blobSettings.clicked.connect(self.open_blob_settings_dialog)
         self.button_blobSettings.setDisabled(True)
 
@@ -675,17 +695,47 @@ class Tab_Tracking_CV2(TabBase):
         # column instead of one row, so adding a ROI adds a column - still
         # called tree_objects (not literally a QTreeWidget anymore) since
         # renaming the many existing references below wasn't worth it.
-        self.cols_tree = ["use", "idx", "init", "end", "ref", "blob", "trk", "ext", "dup", "del"]
+        self.cols_tree = ["use", "idx", "init", "end", "ref", "blob", "trk", "ext",
+                          "qlty", "dup", "del"]
+        # Kept at or under "Start"'s own length (see TransposedObjectTable.
+        # _HEADER_WIDTH_REF) - the ones that don't fit unabbreviated get a
+        # row_tooltips entry with their full word instead.
         row_labels = ["Use", "Idx", "Start", "End", "Ref", "Blob",
-                     "Tracked", "Extracted", "Duplicate", "Delete"]
-        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels)
+                     "Track", "Extr", "Qlty", "Dup", "Del"]
+        row_tooltips = [None, None, None, None, None, None, "Tracked", "Extracted",
+                        "Tracking Quality - flagged (see the frame-flag bar under the "
+                        "slider) if any frame's mask area looks anomalous after "
+                        "tracking, e.g. the tracker may have lost the object",
+                        "Duplicate", "Delete"]
+        # Selected Object / All Active Objects - governs ax_mask (2) only:
+        # the nav overlay and DP panel still follow whichever object is
+        # actually selected in the table below, regardless of this choice
+        # (see update_canvas) - "All Active Objects" only changes what the
+        # mask panel itself shows, from one object's own cropped threshold
+        # view to every active ("Use" checked) object's mask composited
+        # onto the full frame, each in its own color with its index label
+        # at its centroid (see _draw_all_object_masks).
+        row_maskMode = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(row_maskMode)
+        self.radio_maskSelected = qtw.QRadioButton('Selected Object')
+        self.radio_maskSelected.setChecked(True)
+        self.radio_maskAll = qtw.QRadioButton('All Active Objects')
+        self._group_maskMode = qtw.QButtonGroup(self)
+        self._group_maskMode.addButton(self.radio_maskSelected)
+        self._group_maskMode.addButton(self.radio_maskAll)
+        row_maskMode.addWidget(self.radio_maskSelected)
+        row_maskMode.addWidget(self.radio_maskAll)
+        row_maskMode.addStretch(1)
+        self.radio_maskSelected.toggled.connect(self._on_mask_mode_changed)
+
+        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels, row_tooltips)
         layout_featurePanel.addWidget(self.tree_objects, 1)
         self.tree_objects.setMinimumWidth(200)
         # Tall enough for their content: dup/del hold a 48/30px button, end
         # holds a QSpinBox with up/down arrows, ref/blob hold a
         # QComboBox/QCheckBox.
         row_heights = {'use': 24, 'idx': 24, 'init': 24, 'end': 28, 'ref': 28, 'blob': 24,
-                       'trk': 24, 'ext': 24, 'dup': 34, 'del': 34}
+                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
@@ -704,6 +754,18 @@ class Tab_Tracking_CV2(TabBase):
         # update_canvas() call, tracked here so they can be removed again
         # without touching anything else on that axis.
         self._blob_overlay_artists = []
+        # Mask/label artists for the "All Active Objects" mask-panel mode
+        # (see _draw_all_object_masks) - cleared/rebuilt every call, same
+        # convention as _blob_overlay_artists just above.
+        self._all_mask_artists = []
+        self._ax_mask_full_shape_seen = None
+        # {idx: [flagged_frame_idx, ...]} - tracking-quality flags (see
+        # _compute_tracking_quality/frame_flag_bar.FrameFlagBar), recomputed
+        # fresh after every Track! run - deliberately NOT a df_rois column
+        # (or persisted in Save Results/Load Saved Analysis): purely a
+        # derived diagnostic, cheap to recompute, not part of this ROI's
+        # actual tracked/extracted data.
+        self._quality_flags = {}
         self.empty_main_dataframe()
 
         #%% canvas (below the ribbon, using the tab's full width)
@@ -880,6 +942,19 @@ class Tab_Tracking_CV2(TabBase):
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
 
+        # Frame-flag bar (see frame_flag_bar.FrameFlagBar/
+        # _compute_tracking_quality): a thin strip right under the frame
+        # navigation row, marking frames flagged as possibly mistracked for
+        # whichever ROI is currently selected - passive, click a mark to
+        # jump there. Not pixel-aligned to just slider_imgNo's own sub-
+        # width (that row also has Prev/Next/Start/Mid flanking it) -
+        # spans the full row instead, which reads fine as a status strip
+        # without needing a QGridLayout rework of an already-busy row.
+        self.frame_flag_bar = FrameFlagBar()
+        layout_canvas.addWidget(self.frame_flag_bar)
+        # frameClicked wired to slider_imgNo further below, once that
+        # widget actually exists (constructed later in this same row).
+
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
 
@@ -907,6 +982,7 @@ class Tab_Tracking_CV2(TabBase):
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
         layout_slider.addWidget(self.slider_imgNo)
+        self.frame_flag_bar.frameClicked.connect(self.slider_imgNo.setValue)
 
         self.button_frame_start = qtw.QPushButton('Start')
         self.button_frame_start.setFixedWidth(45)
@@ -1523,6 +1599,8 @@ class Tab_Tracking_CV2(TabBase):
         self.update_scalebar('real')
         self.update_scalebar('reciprocal')
         self.slider_imgNo.setRange(0, len(self.nav_imgs)-1)
+        self.frame_flag_bar.set_range(len(self.nav_imgs))
+        self._quality_flags = {}
         self.logger.info('No. of Images: %s', len(self.nav_imgs))
         
         self.button_reset_rois.setEnabled(True)
@@ -1657,6 +1735,14 @@ class Tab_Tracking_CV2(TabBase):
                 self.toggle_tree_icon(row_index, 'ext', True)
 
         self.disable_3ded_widgets(False)
+        # Select the first restored ROI, if any, so its tracking/mask/DP
+        # actually show up right away - update_canvas() only draws the
+        # currently-selected ROI's own results, and nothing in the tree is
+        # selected by default just from populating it above (add_item_tree
+        # doesn't select what it adds), so without this the loaded results
+        # sat in df_rois unseen until the user clicked a row themselves.
+        if rois:
+            self.tree_objects.setCurrentItem(self.tree_objects.topLevelItem(0))
         self.update_canvas(0)
         # Loaded DPs may have a different center than the placeholder - re-run
         # auto-centering now if enabled.
@@ -1678,11 +1764,13 @@ class Tab_Tracking_CV2(TabBase):
             if isinstance(wid, qtw.QLabel) or wid in (self.button_cancel, self.combo_trackMethod):
                 continue
             wid.setDisabled(state)
-        # button_blobSettings lives in the left object-list panel (see
-        # init_widget), not box_3ded, so the sweep above doesn't reach it -
-        # toggled explicitly here instead, same as everything else in this
-        # column (it acts on a selected ROI's tracked mask, so it shouldn't
-        # stay clickable mid-tracking/extraction either).
+        # button_fineTuneMask/button_blobSettings live in the left
+        # object-list panel (see init_widget), not box_3ded, so the sweep
+        # above doesn't reach them - toggled explicitly here instead, same
+        # as everything else in this column (they act on a selected ROI's
+        # tracked mask, so they shouldn't stay clickable mid-tracking/
+        # extraction either).
+        self.button_fineTuneMask.setDisabled(state)
         self.button_blobSettings.setDisabled(state)
     
     def disable_roiInRoi_widgets(self, state):
@@ -1710,6 +1798,7 @@ class Tab_Tracking_CV2(TabBase):
     def reset_rois(self):
         self.tree_objects.clear()
         self.empty_main_dataframe()
+        self._quality_flags = {}
         self.update_canvas()
         # Cached PETS2 params (esp. the per-study center/alpha start/step)
         # were computed for the ROI set just wiped out above - don't let them
@@ -1753,30 +1842,20 @@ class Tab_Tracking_CV2(TabBase):
         self.update_ax(img, 'nav', self.ax_nav, f'Nav Image No. {imgNo:d}')
         self.draw_rois_in(imgNo)
 
+        # Nav overlay + DP panel: always keyed on the table's own selection
+        # (idx), regardless of the Selected Object/All Active Objects
+        # toggle below - that toggle only changes what ax_mask (2) itself
+        # shows (see the mask-panel block further down).
         selected_items = self.tree_objects.selectedItems()
+        idx = None
         if selected_items:
             item = selected_items[0]
             idx = int(item.text(1))
-            # track
+            self.frame_flag_bar.set_flags(self._quality_flags.get(idx))
             if not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])):
                 self.draw_rois_out(imgNo)
-
-                # mask
-                roi = self.df_rois.loc[idx, 'out_rois'][imgNo]
-                if roi.any():
-                    img_mask, img_roi = self.threshold_img(
-                        img, self.df_rois.loc[idx, 'out_rois'][imgNo],
-                        self.combo_thresh_method.currentText(),
-                        self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
-                    self.update_ax_mask(img_roi, img_mask)
-                    self._draw_blob_overlay(idx, imgNo)
-                else:
-                    self.update_ax_mask(self.img_zero, self.img_zero)
-                    self._draw_blob_overlay(None, imgNo)
             else:
                 self._clear_tracked_roi_overlay()
-                self.update_ax_mask(self.img_zero, self.img_zero)
-                self._draw_blob_overlay(None, imgNo)
 
             # dp
             preview = self._current_frame_dp_preview
@@ -1795,6 +1874,24 @@ class Tab_Tracking_CV2(TabBase):
                     self.update_ax(self.img_zero, 'dp', self.ax_dp)
         else:
             self._clear_tracked_roi_overlay()
+            self.frame_flag_bar.set_flags(None)
+
+        # mask panel (ax_mask, (2)): "All Active Objects" ignores idx
+        # entirely - every use==1 object at once, regardless of selection.
+        # "Selected Object" needs idx to actually point at a tracked ROI,
+        # same conditions this used to gate directly on selected_items.
+        if self.radio_maskAll.isChecked():
+            self._draw_all_object_masks(img, imgNo)
+        elif idx is not None and not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])) \
+                and self.df_rois.loc[idx, 'out_rois'][imgNo].any():
+            img_mask, img_roi = self.threshold_img(
+                img, self.df_rois.loc[idx, 'out_rois'][imgNo],
+                self.combo_thresh_method.currentText(),
+                self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
+            self.update_ax_mask(img_roi, img_mask)
+            self._draw_blob_overlay(idx, imgNo)
+        else:
+            self.update_ax_mask(self.img_zero, self.img_zero)
             self._draw_blob_overlay(None, imgNo)
 
         # A single blit for the whole (single, 3-subplot) canvas here
@@ -1809,7 +1906,8 @@ class Tab_Tracking_CV2(TabBase):
         nav_artists = ([self.img_display['nav'], self.ax_nav.title]
                        + self.patches_axNav + self.patches_axTrack)
         extract_artists = ([self.img_display['img_mask'], self.img_display['mask'],
-                           self.img_display['dp']] + self._blob_overlay_artists)
+                           self.img_display['dp']] + self._blob_overlay_artists
+                          + self._all_mask_artists)
         self._blit_canvas(
             self.canvas, self.figure, '_bg', nav_artists + extract_artists,
             hide_for_background=[self.img_display['nav']] + extract_artists,
@@ -1964,6 +2062,18 @@ class Tab_Tracking_CV2(TabBase):
         """Update ax_mask's cropped ROI image and threshold-mask overlay,
         resetting the view to fit the crop only when its size actually
         changed since the last call."""
+        # Stale index-label artists from a previous "All Active Objects"
+        # mask-panel session (see _draw_all_object_masks) don't mean
+        # anything once back in this single-object view - clear them here
+        # rather than requiring every update_canvas() branch that lands on
+        # this method to remember to.
+        if self._all_mask_artists:
+            for artist in self._all_mask_artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    self.logger.debug('All-objects mask artist already removed.', exc_info=True)
+            self._all_mask_artists = []
         shape_x, shape_y = img_mask.shape
         self.img_display['img_mask'].set_data(img_roi)
         try:
@@ -1977,7 +2087,7 @@ class Tab_Tracking_CV2(TabBase):
         # the *whole* axis (mask=0 regions included, just a dim viridis(0)
         # purple), rather than only coloring where the mask is actually
         # True and leaving everything else fully see-through.
-        mask_color = np.array([*to_rgb('tab:orange'), 0.4])
+        mask_color = np.array([*to_rgb('tab:orange'), 0.15])
         mask_rgba = img_mask.reshape(shape_x, shape_y, 1) * mask_color.reshape(1, 1, -1)
         self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
@@ -2018,7 +2128,93 @@ class Tab_Tracking_CV2(TabBase):
         # Rendering is deferred to the single canvas.draw()/draw_idle() call
         # at the end of update_canvas(), rather than a blit here.
         # self.canvas.draw_idle()
-        
+
+    def _on_mask_mode_changed(self):
+        self.update_canvas()
+
+    def _draw_all_object_masks(self, img, imgNo):
+        """"All Active Objects" mask-panel mode (see the radio_maskAll/
+        radio_maskSelected toggle above tree_objects): composite every
+        active ("Use" checked) ROI's own threshold mask onto the FULL nav
+        frame at once - unlike the normal "Selected Object" view
+        (update_ax_mask), which shows just one object's own cropped
+        threshold view - each object in its own tab10 color, with its
+        index labeled at its own mask centroid. Ignores the table's own
+        selection entirely - every active object is shown regardless of
+        which one, if any, is currently selected."""
+        for artist in self._all_mask_artists:
+            try:
+                artist.remove()
+            except Exception:
+                self.logger.debug('All-objects mask artist already removed.', exc_info=True)
+        self._all_mask_artists = []
+        # A single-object overlay (Blob Selection's numbered contours)
+        # doesn't mean anything once several objects' masks are composited
+        # together - clear it rather than leaving a stale one from whatever
+        # was last selected in "Selected Object" mode.
+        for artist in self._blob_overlay_artists:
+            try:
+                artist.remove()
+            except Exception:
+                self.logger.debug('Blob overlay artist already removed.', exc_info=True)
+        self._blob_overlay_artists = []
+
+        shape = img.shape
+        composite = np.zeros((*shape, 4))
+        cmap = plt.get_cmap('tab10')
+        labels = []
+        for idx2 in self.df_rois[self.df_rois['use'] == 1].index:
+            out_rois = self.df_rois.loc[idx2, 'out_rois']
+            if np.all(pd.isna(out_rois)):
+                continue
+            roi = out_rois[imgNo]
+            if not roi.any():
+                continue
+            try:
+                img_mask, _ = self.threshold_img(
+                    img, roi, self.combo_thresh_method.currentText(),
+                    self.slider_thresh.value(), idx=idx2, frame_idx=imgNo)
+            except Exception:
+                continue
+            y, x, h, w = roi
+            full_mask = np.zeros(shape, dtype=bool)
+            full_mask[x:x + w, y:y + h] = img_mask
+            if not full_mask.any():
+                continue
+            color = np.array([*cmap(idx2 % 10)[:3], 0.28])
+            composite[full_mask] = color
+            cx, cy = io.mask_centroid(full_mask)
+            labels.append((idx2, cx, cy))
+
+        self.img_display['img_mask'].set_data(img)
+        try:
+            self.img_display['img_mask'].set_clim(vmin=img.min(), vmax=img.max())
+        except ValueError:
+            pass
+        self.img_display['img_mask'].set_extent([0, shape[1], shape[0], 0])
+        self.img_display['mask'].set_data(composite)
+        self.img_display['mask'].set_extent([0, shape[1], shape[0], 0])
+
+        for idx2, cx, cy in labels:
+            text = self.ax_mask.text(cx, cy, str(idx2), color='white', fontsize=9,
+                                     fontweight='bold', horizontalalignment='center',
+                                     verticalalignment='center')
+            self._all_mask_artists.append(text)
+
+        # Same reset-view-only-on-shape-change convention as update_ax_mask,
+        # tracked separately from its own _ax_mask_shape_seen (this mode
+        # shows the full frame, a different shape than any one object's own
+        # cropped ROI) - and invalidates the cached blit background for the
+        # same reason update_ax_mask does (see its own comment): a box
+        # resize only takes effect on a real canvas.draw().
+        if shape != self._ax_mask_full_shape_seen:
+            self.ax_mask.set_xlim(0, shape[1])
+            self.ax_mask.set_ylim(shape[0], 0)
+            self.ax_mask.set_aspect('equal', adjustable='box')
+            self._ax_mask_full_shape_seen = shape
+            self._ax_mask_shape_seen = None  # force update_ax_mask to reset too, next time
+            self._bg = None
+
     def update_scalebar(self, which):
         """Add/update the scale bar (which='real', on nav/mask) or the
         reciprocal-space rings (which='reciprocal', on the dp axis), based
@@ -2789,7 +2985,12 @@ class Tab_Tracking_CV2(TabBase):
         # extracted
         item.setIcon(cols['ext'], cancel_icon)
         item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
-        
+
+        # quality - left blank (no icon at all) rather than a false-looking
+        # "bad" cancel icon, until an actual quality check has run for this
+        # ROI (see _refresh_quality_icon/_compute_tracking_quality) -
+        # there's nothing to report yet before that.
+
         # duplicate
         duplicate_button = qtw.QPushButton('Dup')
         duplicate_button.setFixedSize(48, 30)
@@ -2851,6 +3052,7 @@ class Tab_Tracking_CV2(TabBase):
             self.tree_objects.takeTopLevelItem(index)
             self.df_rois = self.df_rois.drop(self.df_rois.index[index])
             # print(self.df_rois)
+            self._quality_flags.pop(deleted_idx, None)
             self._refresh_ref_combos()
             self.update_canvas()
             self.logger.info('Deleted ROI %s.', deleted_idx)
@@ -3024,6 +3226,49 @@ class Tab_Tracking_CV2(TabBase):
         item.setIcon(col, icon)
         item.setData(col, Qt.UserRole, status)
     
+    def _compute_tracking_quality(self, idx):
+        """Per-frame mask-area quality check for ROI `idx`, run right after
+        tracking (see get_tracking_results) - reuses the exact same
+        threshold+apply_edge_mask pipeline "ROI with Threshold" itself
+        shows live (Blob Selection, Dilate/Erode, Edge Detection, Mesh -
+        whatever's currently configured for this ROI included), so the
+        flagged frames reflect what would actually get extracted, not just
+        the raw tracked box. See io.flag_anomalous_mask_areas for the
+        flagging heuristic itself. Returns [] if this ROI isn't tracked at
+        all yet."""
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if np.all(pd.isna(out_rois)):
+            return []
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value()
+        areas = np.full(len(out_rois), np.nan)
+        for frame_idx, roi in enumerate(out_rois):
+            if roi is None or not np.any(roi):
+                continue
+            img_mask, _ = self.threshold_img(self.nav_imgs[frame_idx], roi, thresh_method,
+                                             thresh_offset, idx=idx, frame_idx=frame_idx)
+            areas[frame_idx] = img_mask.sum()
+        return io.flag_anomalous_mask_areas(areas)
+
+    def _refresh_quality_icon(self, idx):
+        """Set ROI `idx`'s "Qlty" column icon from self._quality_flags -
+        a warning icon if any frame is flagged, a plain check if none are
+        (still distinguishable from the blank/no-icon-yet state a ROI
+        starts in before its first quality check - see add_item_tree)."""
+        row_index = self.df_rois.index.get_loc(idx)
+        item = self.tree_objects.topLevelItem(row_index)
+        if item is None:
+            return
+        col = self.cols_tree.index('qlty')
+        flagged = self._quality_flags.get(idx) or []
+        icon = self.style().standardIcon(
+            self.style().SP_MessageBoxWarning if flagged else self.style().SP_DialogApplyButton)
+        item.setIcon(col, icon)
+        tip = (f'{len(flagged)} possibly mistracked frame(s): {", ".join(map(str, flagged[:20]))}'
+              + (f' (+{len(flagged) - 20} more)' if len(flagged) > 20 else '')) if flagged \
+            else 'No flagged frames'
+        item.setToolTip(col, tip)
+
     def get_checked_items(self):
         """Log (rather than return) the tree indices of all checked ROI
         rows."""
@@ -3215,6 +3460,18 @@ class Tab_Tracking_CV2(TabBase):
                         'Re-translating ROI-in-ROI coordinates for ROI %s failed; '
                         'its out_rois were left untranslated.', idx, exc_info=True)
                             
+            # Tracking-quality check (see _compute_tracking_quality) - every
+            # just-tracked ROI ('use'==1, the same set track_rois() itself
+            # tracked), run after the ROI-in-ROI re-translation above so it
+            # checks each ROI's FINAL out_rois, not the pre-translation ones.
+            flagged_summary = {}
+            for idx in self.df_rois[self.df_rois['use'] == 1].index:
+                flags = self._compute_tracking_quality(idx)
+                self._quality_flags[idx] = flags
+                self._refresh_quality_icon(idx)
+                if flags:
+                    flagged_summary[idx] = flags
+
             # self.slider_imgNo.setValue(0)
             # activating widgets
             self.slider_thresh.setEnabled(True)
@@ -3232,6 +3489,18 @@ class Tab_Tracking_CV2(TabBase):
             self.logger.info(
                 'CV2 tracking completed successfully for %d ROI(s) in %s.',
                 self.tracking_counter_end, io.format_duration_hms(duration))
+
+            if flagged_summary:
+                lines = [f'  ROI {idx}: {len(flags)} frame(s) '
+                        f'({", ".join(map(str, flags[:10]))}{", ..." if len(flags) > 10 else ""})'
+                        for idx, flags in flagged_summary.items()]
+                qtw.QMessageBox.warning(self, 'Tracking Quality Check',
+                    f'{len(flagged_summary)} of {self.tracking_counter_end} ROI(s) have '
+                    'possibly mistracked frames (an abrupt mask-area change, or the mask '
+                    'vanishing entirely):\n\n' + '\n'.join(lines) +
+                    '\n\nCheck them via the red marks on the frame-flag bar under the '
+                    'slider (click one to jump there), or the "Qlty" column in the object '
+                    'list.')
 
     def open_blob_settings_dialog(self):
         """"Blob Settings..." button: open _open_blob_segmentation_dialog
@@ -3277,6 +3546,30 @@ class Tab_Tracking_CV2(TabBase):
         mask_stack = self.df_rois.at[idx, 'mask']
         if np.all(pd.isna(mask_stack)):
             mask_stack = default_mask_stack
+        if self._blob_enabled_for(idx):
+            # Blob Selection, like Dilate/Erode/Edge Detection/Mesh, is
+            # never baked into the stored mask - it's applied fresh at
+            # display/extraction time everywhere else (update_canvas,
+            # extract_dp_current_frame, _draw_all_object_masks, all via
+            # apply_edge_mask), and Fine-Tune Mask needs the same
+            # treatment so it opens on just the selected blob rather than
+            # the raw, possibly-multi-blob threshold result (previously
+            # the whole ROI). _resolve_blob_mask is apply_edge_mask's own
+            # blob-only first step - not the full apply_edge_mask, since
+            # this dialog re-applies its own Dilate/Erode/Edge Detection/
+            # Mesh live from the settings seeded below; applying the whole
+            # pipeline here would double them. Order matters (auto-follow's
+            # own per-frame centroid cache - see _resolve_blob_mask), so
+            # both stacks are walked frame-by-frame in order;
+            # default_mask_stack (the "Reset to Tracking" target) gets the
+            # exact same treatment so resetting doesn't reintroduce the
+            # un-restricted mask through a different path.
+            mask_stack = mask_stack.copy()
+            default_mask_stack = default_mask_stack.copy()
+            for f in range(mask_stack.shape[0]):
+                mask_stack[f] = self._resolve_blob_mask(idx, f, mask_stack[f])
+            for f in range(default_mask_stack.shape[0]):
+                default_mask_stack[f] = self._resolve_blob_mask(idx, f, default_mask_stack[f])
         edge_settings = self._edge_settings_for(idx)
         thresh_settings = {
             'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_sigma}
@@ -3709,6 +4002,16 @@ class Tab_Tracking_CV2(TabBase):
         # would normally show, instead of this one-off result staying
         # plotted indefinitely.
         self._current_frame_dp_preview = {'idx': idx, 'i_fr': i_fr, 'dp': dp}
+        # Force the Clipping Thresholds to reset for this DP (see
+        # update_ax's own reset=not self._dp_clip_initialized convention) -
+        # normally left alone across a frame scrub so a manually-tuned
+        # threshold persists through an already-extracted DP stack, but a
+        # one-off current-frame check is a fresh, unrelated intensity range
+        # (could be a different ROI/frame entirely) that the OLD thresholds
+        # may not even overlap with (e.g. all-clipped-away or no visible
+        # clipping at all) - without this, "the DP loads but the thresholds
+        # don't update" is exactly what the user sees.
+        self._dp_clip_initialized = False
         self.update_canvas()
         # This is freshly-computed data the auto-centering circles have
         # never seen - re-run it now if enabled, same as after a full
@@ -3768,10 +4071,14 @@ class Tab_Tracking_CV2(TabBase):
         # the click first, so the dialog opens cleanly every time.
         QTimer.singleShot(0, self._open_pets2_dialog)
 
-    def _open_pets2_dialog(self):
+    def _open_pets2_dialog(self, uncheck_on_cancel=True):
         """Seed Pets2ParamsDialog from current metadata/settings (voltage,
-        exposure, Å^-1/px scale, dp center) and open it; unchecks 'Make
-        *.pts2' again if the user cancels."""
+        exposure, Å^-1/px scale, dp center) and open it. `uncheck_on_cancel`
+        (False when opened via button_checkPets2Options, which can be
+        clicked regardless of the checkbox's own state) unchecks 'Make
+        *.pts2' again if the user cancels - only makes sense when this
+        dialog is what's actually turning the feature on in the first
+        place (on_makePets2_toggled's own trigger)."""
         voltage_kv = None
         try:
             path_main = self.metadata_path_override or self.lineEdit_dir_4d.text()
@@ -3790,7 +4097,7 @@ class Tab_Tracking_CV2(TabBase):
                                     aperpixel=aperpixel, center=self.dp_center)
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.pets2_params = dialog.get_params()
-        else:
+        elif uncheck_on_cancel:
             self.checkbox_makePets2.setChecked(False)
 
     def save_results(self):
@@ -4094,6 +4401,13 @@ class Tab_Tracking_CV2(TabBase):
         self.toolbar.update()
         self.toolbar.push_current()
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
+        self.frame_flag_bar.set_range(len(self.nav_imgs))
+        # Not recomputed here (see _compute_tracking_quality) - a restored
+        # ROI just starts back at "not yet quality-checked" (the same
+        # blank-icon state a freshly-tracked one is in before its own
+        # check runs), same spirit as this being a derived diagnostic
+        # rather than persisted state (see its own init comment).
+        self._quality_flags = {}
         self.button_reset_rois.setEnabled(True)
         self.button_track.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)

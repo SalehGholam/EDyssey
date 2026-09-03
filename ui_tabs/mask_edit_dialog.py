@@ -8,7 +8,8 @@ open_fine_tune_mask_dialog())."""
 import numpy as np
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QColor, QIntValidator
+from PyQt5.QtGui import QPainter, QPen, QColor, QIntValidator, QKeySequence
+from PyQt5.QtWidgets import QShortcut
 import matplotlib.patches as patches
 from matplotlib.lines import Line2D
 from matplotlib.figure import Figure
@@ -19,7 +20,7 @@ import EDyssey.io_utils as io
 from .ribbon import RibbonPanel, RibbonTool
 from .denoise_widget import DenoiseBox
 
-_MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.45])  # translucent orange overlay
+_MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.28])  # translucent orange overlay
 _DIRECTIONS = [('Top', 270), ('Bottom', 90), ('Left', 180), ('Right', 0)]
 # Full reference for the "?" help button below the canvas (see
 # _show_help_dialog) - promoted from the old always-visible label_tip
@@ -35,6 +36,13 @@ _HELP_TEXT = (
     'key needed. Click the same button again, or another tool, to '
     'disarm/switch it. Same effect as the Ctrl/Shift shortcuts below, '
     'just without needing to hold a key.\n'
+    '  Undo / Redo  ->  step back/forward through mask edits (paint/rect '
+    'paint, D-pad grow/shrink, Reset This Frame, Threshold changes, Reset '
+    'to Tracking) - same as Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) below. Jumps '
+    'to whichever frame the undone/redone edit was on if it isn\'t already '
+    'on screen. Does NOT cover Dilate/Erode, Edge Detection, Mesh, or Blob '
+    'Selection - those are live previews only and never touch the saved '
+    'mask, so reversing them is just changing the control back.\n'
     '  Pan / Zoom (rectangle) / Home  ->  matplotlib\'s own pan/zoom-box/'
     'reset-view, same as the toolbar under the main tabs\' own canvases.\n'
     '  "?"  ->  this reference.\n'
@@ -61,20 +69,20 @@ _HELP_TEXT = (
     '\n'
     'Frame Navigation & Segments:\n'
     '  ◀ / ▶ step one frame at a time; "Go to:" jumps straight to a typed '
-    'frame number. Dilate/Erode and Mesh share one timeline of "segments" - '
-    'consecutive frame ranges, each with its own independent settings for '
-    'both - shown as the colored bar below the slider (click it to jump to '
-    'that frame; orange lines mark boundaries, the yellow line is the '
-    'current frame). "Split Here" breaks the current segment in two at this '
-    'frame - the first half keeps its settings, the new second half starts '
-    'back at plain defaults (both disabled); "Reset to Default" puts the '
-    'current segment back to that same untouched state without changing '
-    'its frame range; "Merge with Previous" removes the boundary at this '
-    'frame, folding it back into the previous segment (using the previous '
-    'segment\'s settings). ⏮/⏭ Segment jump to the previous/next segment\'s '
-    'start. Whichever segment covers the frame on screen is the one '
-    'Dilate/Erode\'s and Mesh\'s widgets show/edit - Edge Detection isn\'t '
-    'part of this timeline, see below.\n'
+    'frame number. Dilate/Erode, Edge Detection, and Mesh share one '
+    'timeline of "segments" - consecutive frame ranges, each with its own '
+    'fully independent settings for all three - shown as the colored bar '
+    'below the slider (click it to jump to that frame; orange lines mark '
+    'boundaries, the yellow line is the current frame). "Split Here" '
+    'breaks the current segment in two at this frame - the first half '
+    'keeps its settings, the new second half starts back at plain '
+    'defaults (all disabled); "Reset to Default" puts the current segment '
+    'back to that same untouched state without changing its frame range; '
+    '"Merge with Previous" removes the boundary at this frame, folding it '
+    'back into the previous segment (using the previous segment\'s '
+    'settings). ⏮/⏭ Segment jump to the previous/next segment\'s start. '
+    'Whichever segment covers the frame on screen is the one Dilate/'
+    'Erode\'s, Edge Detection\'s, and Mesh\'s widgets show/edit.\n'
     '\n'
     'Dilate / Erode Mask:\n'
     '  Live preview only - never changes the returned mask. Grows or '
@@ -90,10 +98,9 @@ _HELP_TEXT = (
     'Edge Detection:\n'
     '  Live preview only - never changes the returned mask. Reduces the '
     'mask to its outline (optionally one-sided via "Directional" + Angle). '
-    'Applies to the whole stack at once, not scoped to the current segment '
-    'like Dilate/Erode and Mesh - anchored to whatever settings the object '
-    'already had before this session, so splitting/editing other segments '
-    'never changes what Edge Detection itself does.\n'
+    'Scoped to the current segment, like Dilate/Erode and Mesh (see Frame '
+    'Navigation & Segments above) - each segment has its own independent '
+    'Edge Detection settings.\n'
     '\n'
     'Mesh:\n'
     '  Divides the mask into a rotated grid; left-click cell(s) to '
@@ -280,32 +287,18 @@ class MaskEditDialog(qtw.QDialog):
     tab's own current Denoise state, via ContrastScalingBox.box_denoise.
     get_state()) so the preview starts out looking the same either way.
 
-    Dilate/Erode and Mesh share one timeline of "segments" (self._segments -
-    see _build_initial_segments) instead of one fixed setting (or a single
-    this-frame/all-frames toggle) for the whole stack: the frame range is
-    divided into consecutive ranges, each with its own independent settings
-    for both boxes at once, navigable/editable via the frame-navigation row
+    Dilate/Erode, Edge Detection, and Mesh all share one timeline of
+    "segments" (self._segments - see _build_initial_segments) instead of one
+    fixed setting for the whole stack: the frame range is divided into
+    consecutive ranges, each with its own fully independent settings for all
+    three boxes at once, navigable/editable via the frame-navigation row
     (prev/next frame, prev/next segment, jump-to-frame, the segment bar,
     Split/Merge) below the canvas. Whichever segment covers the frame
-    currently on screen is the one Dilate/Erode's and Mesh's widgets show/
-    edit; get_dilate_erode_settings()/get_mesh_settings() each return their
-    own `{'segments': [...]}` view of that same shared timeline for the
-    caller to persist per-object and use during real extraction.
-
-    Edge Detection is deliberately NOT part of that shared timeline - it's
-    one dialog-wide value instead, anchored to whatever the object's own
-    Edge Detection settings already were before this session started (its
-    `edge_settings` argument - typically the caller's own currently-saved
-    per-object value). For more consistent analyses: splitting/editing
-    Dilate/Erode or Mesh into more segments never changes what Edge
-    Detection itself does, and it's applied uniformly to the whole stack
-    rather than potentially drifting per frame range - see
-    _write_widgets_to_current_segment (writes it into every segment at
-    once) and __init__'s post-_build_initial_segments normalization (in
-    case `edge_settings` was itself already segments-shaped from before
-    this decoupling existed). get_edge_settings() still returns the same
-    `{'segments': [...]}` shape as before for the caller, just with exactly
-    one segment spanning the whole stack.
+    currently on screen is the one Dilate/Erode's, Edge Detection's, and
+    Mesh's widgets show/edit; get_dilate_erode_settings()/get_edge_settings()/
+    get_mesh_settings() each return their own `{'segments': [...]}` view of
+    that same shared timeline for the caller to persist per-object and use
+    during real extraction.
     """
 
     def __init__(self, parent, mask_stack, bg_stack=None, start_frame=0, logger=None,
@@ -320,17 +313,18 @@ class MaskEditDialog(qtw.QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint
                             | Qt.WindowMinimizeButtonHint)
         screen = qtw.QApplication.primaryScreen()
+        # Two-column layout (options on the left, canvas+slider+segments on
+        # the right - see the layout construction below) needs real width
+        # alongside the height-driven, roughly-square canvas, unlike the
+        # old single-column arrangement this replaced.
+        self._LEFT_PANEL_WIDTH = 360
         if screen is not None:
             avail = screen.availableGeometry()
             h = int(avail.height() * 0.85)
-            # Single-column layout (canvas stacked over compact control
-            # rows) never needs anywhere near full screen width - tie it to
-            # the height instead so this reads as a tall, roughly square
-            # window rather than a wide, mostly-empty one.
-            w = min(int(avail.width() * 0.55), max(h, 700))
+            w = min(int(avail.width() * 0.85), h + self._LEFT_PANEL_WIDTH + 60)
             self.resize(w, h)
         else:
-            self.resize(800, 900)
+            self.resize(1160, 900)
         self.logger = logger
         # (thresh_method, thresh_offset, blur_kernel) -> (N, H, W) bool mask
         # stack, re-thresholding the ROI/nav-image data this mask came from
@@ -361,7 +355,31 @@ class MaskEditDialog(qtw.QDialog):
         self._pixel_paint_value = None  # True/False while Ctrl+drag-painting pixels
         self._roi_drag = None  # (x0, y0, value) while Shift+drag-drawing a ROI
         self._roi_rect_artist = None
+
+        # Undo/redo history for destructive mask_stack edits - paint/rect
+        # paint, D-pad grow/shrink, Reset This Frame, Threshold (live and
+        # Apply to All Frames), Reset to Tracking - see _push_undo/_do_undo/
+        # _do_redo. NOT for the non-destructive live-preview controls
+        # (Dilate/Erode, Edge Detection, Mesh, Blob Selection where
+        # applicable): those never touch mask_stack itself, so they're
+        # already fully reversible just by changing the control back.
+        # Each entry is (frame_idx, prev_array) - frame_idx is the single
+        # frame prev_array replaces, or None for a whole-stack snapshot.
+        # Capped so a long editing session can't grow this unboundedly -
+        # each entry can be a full (H, W) or (N, H, W) boolean array.
+        self._UNDO_MAX_DEPTH = 50
+        self._undo_stack = []
+        self._redo_stack = []
+        self._threshold_undo_frame = None  # see _threshold_live_update
         self._roi_bg = None
+
+        # See _on_frame_changed's own comment - coalesces the expensive
+        # per-frame redraw (denoise + mask recompute) so dragging the frame
+        # slider doesn't run it once per intermediate value.
+        self._frame_redraw_timer = QTimer(self)
+        self._frame_redraw_timer.setSingleShot(True)
+        self._frame_redraw_timer.setInterval(20)
+        self._frame_redraw_timer.timeout.connect(self._redraw_frame_content)
 
         # Segments: the shared Dilate/Erode + Mesh timeline (Edge Detection
         # is NOT per-segment - see below) - see _build_initial_segments/
@@ -371,20 +389,6 @@ class MaskEditDialog(qtw.QDialog):
         # *that* segment's settings.
         self._segments = _build_initial_segments(
             self.n_frames, dilate_erode_settings, edge_settings, mesh_settings)
-        # Edge Detection is a single dialog-wide value anchored to whatever
-        # the object's own settings already were before this session (the
-        # frame-0/default entry - i.e. exactly what the main tab last had
-        # saved for it) - for consistent analyses, later splitting/editing
-        # Dilate/Erode or Mesh into more segments must never change how
-        # Edge Detection itself looks. A caller reopening a session that
-        # (from before this decoupling existed) had genuinely different
-        # edge_settings per range would otherwise show a different one
-        # depending on which segment happens to be current - collapse to
-        # the first/default entry here so it's unambiguous from the start.
-        if self._segments:
-            default_edge = self._segments[0]['edge']
-            for seg in self._segments:
-                seg['edge'] = dict(default_edge)
         self._current_segment_idx = 0
         for i, seg in enumerate(self._segments):
             if seg['start'] <= self.frame <= seg['end']:
@@ -403,7 +407,24 @@ class MaskEditDialog(qtw.QDialog):
         self._tilt_axis_line_artist = None
         self._tilt_axis_details_dlg = None  # keeps the non-modal details window alive
 
-        layout = qtw.QVBoxLayout(self)
+        # Top-level: a left (options) / right (canvas + slider + segments)
+        # split, with Save&&Close/Cancel spanning the full width at the
+        # very bottom - see the class docstring's layout note. `layout`
+        # (the right column) is what nearly every widget below still adds
+        # itself to, same as when this was the dialog's only column;
+        # `left_layout` is the new one, used only by the option groupboxes
+        # further down (Denoise, Grow/Shrink, Threshold, Edge Detection,
+        # Dilate/Erode, Mesh, Tilt Axis).
+        outer_layout = qtw.QVBoxLayout(self)
+        main_row = qtw.QHBoxLayout()
+        outer_layout.addLayout(main_row, 1)
+        left_panel = qtw.QWidget()
+        left_panel.setFixedWidth(self._LEFT_PANEL_WIDTH)
+        left_layout = qtw.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        main_row.addWidget(left_panel, 0)
+        layout = qtw.QVBoxLayout()
+        main_row.addLayout(layout, 1)
 
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
@@ -453,6 +474,10 @@ class MaskEditDialog(qtw.QDialog):
                       'drag on the canvas (same as Shift+Left-drag)', 'tool'),
             RibbonTool('rect_out', 'rect_out', 'Paint a rectangular region OUT - '
                       'drag on the canvas (same as Shift+Right-drag)', 'tool'),
+            RibbonTool('undo', 'undo', 'Undo the last mask edit (Ctrl+Z)',
+                      'action', self._do_undo),
+            RibbonTool('redo', 'redo', 'Redo the last undone mask edit (Ctrl+Y)',
+                      'action', self._do_redo),
             RibbonTool('sep1', kind='separator'),
             # Pan/Zoom are 'tool' kind (not 'action') like the paint/rect
             # tools above - checkable and mutually exclusive with every
@@ -474,6 +499,10 @@ class MaskEditDialog(qtw.QDialog):
                       'action', self._show_help_dialog),
         ], parent=self, orientation='horizontal')
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
+        QShortcut(QKeySequence('Ctrl+Z'), self, self._do_undo)
+        QShortcut(QKeySequence('Ctrl+Y'), self, self._do_redo)
+        QShortcut(QKeySequence('Ctrl+Shift+Z'), self, self._do_redo)
+        self._update_undo_redo_buttons()
         # Deferred (see _apply_ribbon_cursor's docstring) - reapplies the
         # ribbon cursor after mpl's own NavigationToolbar2 cursor-restore
         # logic (wrapped around every canvas.draw()) has already run.
@@ -600,8 +629,13 @@ class MaskEditDialog(qtw.QDialog):
         # opt-in path to the full centroid-scatter/angle-sweep plot, for
         # when the user actually wants to sanity-check the estimate itself,
         # in its own (non-modal) window rather than cluttering this one.
-        row_tilt = qtw.QHBoxLayout()
-        layout.addLayout(row_tilt)
+        # Tilt Axis is an "option" (a control the user clicks to run/toggle
+        # a preview), not a slider/segment - it lives in the left panel
+        # alongside the other option groupboxes below, not stacked under
+        # the canvas with the frame slider/segment bar.
+        box_tilt = qtw.QGroupBox('Tilt Axis')
+        left_layout.addWidget(box_tilt)
+        row_tilt = qtw.QVBoxLayout(box_tilt)
         self.button_findTiltAxis = qtw.QPushButton('Find Tilt Axis')
         self.button_findTiltAxis.setToolTip(
             "Estimate the tomography tilt axis from how this object's mask "
@@ -637,37 +671,37 @@ class MaskEditDialog(qtw.QDialog):
         # row_buttons (bottom, added straight to `layout` below) always both
         # fit, however many control groupboxes exist or however short the
         # screen is; only the controls in between ever need to scroll.
+        # The left panel (Denoise, Grow/Shrink Mask, Threshold, Edge
+        # Detection, Dilate/Erode, Mesh - one column, in that order) scrolls
+        # independently instead of being added to `outer_layout` directly
+        # (see the class docstring's layout note, item 0 of the originating
+        # request): a QDialog can't be resized smaller than the sum of its
+        # children's minimum size hints, and this many groupboxes stacked in
+        # one column can together exceed a smaller/laptop screen's available
+        # height, pushing row_buttons (Save && Close/Cancel) off-screen with
+        # no way to reach it. QScrollArea's own minimumSizeHint is small
+        # (frame + scrollbar allowance) regardless of how tall its contents
+        # are, so wrapping them here guarantees the canvas (right column)
+        # and row_buttons (bottom, spanning both columns) always both fit,
+        # however many groupboxes exist or however short the screen is;
+        # only the left panel's own controls ever need to scroll.
         scroll_controls = qtw.QScrollArea()
         scroll_controls.setWidgetResizable(True)
         scroll_controls.setFrameShape(qtw.QFrame.NoFrame)
-        scroll_controls.setMinimumHeight(160)
         scroll_content = qtw.QWidget()
-        scroll_layout = qtw.QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        grid_boxes = qtw.QVBoxLayout(scroll_content)
+        grid_boxes.setContentsMargins(0, 0, 0, 0)
+        grid_boxes.setSpacing(8)
         scroll_controls.setWidget(scroll_content)
-        layout.addWidget(scroll_controls)
+        left_layout.addWidget(scroll_controls, 1)
 
-        # Every control groupbox below (Grow/Shrink Mask, Threshold, Edge
-        # Detection, Dilate/Erode, Mesh) is placed into this shared 2-column
-        # grid instead of one after another - halves the vertical space they
-        # take up, which also helps keep row_buttons on-screen (see the
-        # QScrollArea note above). Row 0: Denoise | Grow/Shrink Mask. Row 1:
-        # Threshold, if this tab has one (spans both columns - its own row
-        # controls, unlike the others below, aren't naturally column-paired
-        # with anything). Row 2: Edge Detection (stacked above Dilate/
-        # Erode, in one shared column) | Mesh.
-        grid_boxes = qtw.QGridLayout()
-        grid_boxes.setHorizontalSpacing(8)
-        grid_boxes.setVerticalSpacing(8)
-        scroll_layout.addLayout(grid_boxes)
-
-        grid_boxes.addWidget(self.box_denoise, 0, 0)
+        grid_boxes.addWidget(self.box_denoise)
 
         #%% D-pad grow/shrink buttons - arranged spatially (top/left/right/
         # bottom of a 3x3 grid) instead of a plain list, arrows pointing away
         # from center = grow, toward center = shrink.
         box_directional = qtw.QGroupBox('Grow / Shrink Mask (1 px per click)')
-        grid_boxes.addWidget(box_directional, 0, 1)
+        grid_boxes.addWidget(box_directional)
         grid = qtw.QGridLayout()
         box_directional.setLayout(grid)
 
@@ -883,21 +917,15 @@ class MaskEditDialog(qtw.QDialog):
                        self.spinbox_openKernel.valueChanged, self.spinbox_closeKernel.valueChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
-        # Row 1: Threshold, if this tab has one, spanning both columns -
-        # its own controls aren't naturally paired with anything else here.
+        # Threshold, if this tab has one.
         if box_thresh is not None:
-            grid_boxes.addWidget(box_thresh, 1, 0, 1, 2)
+            grid_boxes.addWidget(box_thresh)
 
-        # Row 2, column 0: Edge Detection stacked directly above
-        # Dilate/Erode (in front of/left of Mesh - column 1, below) - both
-        # apply to the same mask, in that order (see _effective_mask), so
-        # reads more naturally grouped together than paired with Mesh.
-        box_edge_dilate = qtw.QWidget()
-        layout_edge_dilate = qtw.QVBoxLayout(box_edge_dilate)
-        layout_edge_dilate.setContentsMargins(0, 0, 0, 0)
-        layout_edge_dilate.addWidget(box_edge)
-        layout_edge_dilate.addWidget(box_dilate)
-        grid_boxes.addWidget(box_edge_dilate, 2, 0)
+        # Edge Detection directly above Dilate/Erode - both apply to the
+        # same mask, in that order (see _effective_mask), so reads more
+        # naturally grouped together.
+        grid_boxes.addWidget(box_edge)
+        grid_boxes.addWidget(box_dilate)
 
         #%% mesh - live preview only, like Edge Detection above, but the
         # selected cells (not just enabled/angle/cell size) are themselves
@@ -906,7 +934,7 @@ class MaskEditDialog(qtw.QDialog):
         # only makes sense relative to one specific object's mask), so this
         # dialog is the only place it's ever edited.
         box_mesh = qtw.QGroupBox('Mesh (restrict extraction to selected cell(s))')
-        grid_boxes.addWidget(box_mesh, 2, 1)
+        grid_boxes.addWidget(box_mesh)
         layout_mesh = qtw.QVBoxLayout()
         box_mesh.setLayout(layout_mesh)
 
@@ -979,8 +1007,12 @@ class MaskEditDialog(qtw.QDialog):
                        self.spinbox_meshCellSize.valueChanged, self.checkbox_meshCenterInitial.stateChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
+        # Full dialog width, below both columns - always reachable
+        # regardless of how tall the left panel's own scroll area gets (see
+        # its own comment above), same reasoning as before this dialog had
+        # two columns at all.
         row_buttons = qtw.QHBoxLayout()
-        layout.addLayout(row_buttons)
+        outer_layout.addLayout(row_buttons)
         self.button_resetFrame = qtw.QPushButton('Reset This Frame')
         self.button_resetFrame.setToolTip('Discard edits made to this frame only')
         self.button_resetFrame.clicked.connect(self._reset_frame)
@@ -1131,21 +1163,11 @@ class MaskEditDialog(qtw.QDialog):
                                'kernel': self.spinbox_dilateErode.value(),
                                'open_kernel': self.spinbox_openKernel.value(),
                                'close_kernel': self.spinbox_closeKernel.value()}
-        edge = {'enabled': self.checkbox_edgeOnly.isChecked(),
-                'kernel': self.spinbox_edgeKernel.value(),
-                'directional': self.checkbox_edgeDirectional.isChecked(),
-                'direction': self.spinbox_edgeDirection.value(),
-                'revert': self.checkbox_revertMask.isChecked()}
-        # Edge Detection is a single dialog-wide value, not per-segment like
-        # Dilate/Erode/Mesh - anchored to whatever the object's own settings
-        # already were before this session (see class docstring/_HELP_TEXT),
-        # so it doesn't drift depending on how many segments Dilate/Erode or
-        # Mesh end up split into. Every segment's own 'edge' entry is kept
-        # in sync here (not just the current one) so _load_segment_into_
-        # widgets shows the same value regardless of which segment happens
-        # to be current when it runs.
-        for s in self._segments:
-            s['edge'] = dict(edge)
+        seg['edge'] = {'enabled': self.checkbox_edgeOnly.isChecked(),
+                       'kernel': self.spinbox_edgeKernel.value(),
+                       'directional': self.checkbox_edgeDirectional.isChecked(),
+                       'direction': self.spinbox_edgeDirection.value(),
+                       'revert': self.checkbox_revertMask.isChecked()}
         seg['mesh'].update({'enabled': self.checkbox_meshEnabled.isChecked(),
                             'angle': self.spinbox_meshAngle.value(),
                             'cell_size': self.spinbox_meshCellSize.value(),
@@ -1210,17 +1232,14 @@ class MaskEditDialog(qtw.QDialog):
     def _split_segment_here(self):
         """"Split Here": break the current segment into two at self.frame.
         The first half keeps every setting the segment already had; the new
-        second half starts back at plain defaults for Dilate/Erode/Mesh
-        (both disabled) rather than inheriting a copy of the first half's
-        settings - a segment nobody has actually configured yet should read
-        as "untouched", not as a hidden duplicate of whatever segment it
-        was split off from. Use "Reset to Default" to put an already-
-        configured segment back to this same state. Edge Detection is
-        excluded from this reset - it isn't per-segment at all (see class
-        docstring/_write_widgets_to_current_segment), so the new segment
-        just inherits the one dialog-wide value like every other segment
-        does. A no-op if self.frame is already this segment's own start
-        (nothing to split)."""
+        second half starts back at plain defaults for Dilate/Erode/Edge
+        Detection/Mesh (all disabled) rather than inheriting a copy of the
+        first half's settings - a segment nobody has actually configured yet
+        should read as "untouched", not as a hidden duplicate of whatever
+        segment it was split off from. Use "Reset to Default" to put an
+        already-configured segment back to this same state. A no-op if
+        self.frame is already this segment's own start (nothing to
+        split)."""
         idx = self._current_segment_idx
         seg = self._segments[idx]
         if self.frame <= seg['start']:
@@ -1228,7 +1247,7 @@ class MaskEditDialog(qtw.QDialog):
         new_seg = {
             'start': self.frame, 'end': seg['end'],
             'dilate_erode': _dilate_erode_fields(None),
-            'edge': dict(seg['edge']),
+            'edge': _edge_fields(None),
             'mesh': _mesh_fields(None),
         }
         seg['end'] = self.frame - 1
@@ -1239,15 +1258,14 @@ class MaskEditDialog(qtw.QDialog):
         self._update_segment_ui()
 
     def _reset_current_segment_to_default(self):
-        """"Reset to Default": put the current segment's Dilate/Erode/Mesh
-        settings back to plain defaults (both disabled) - the same state a
-        freshly-split, never-touched segment starts in (see
+        """"Reset to Default": put the current segment's Dilate/Erode/Edge
+        Detection/Mesh settings back to plain defaults (all disabled) - the
+        same state a freshly-split, never-touched segment starts in (see
         _split_segment_here) - without changing its frame range or touching
-        any other segment. Edge Detection is untouched here - it isn't
-        per-segment (see class docstring/_write_widgets_to_current_segment),
-        so there's nothing segment-scoped about it to reset."""
+        any other segment."""
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = _dilate_erode_fields(None)
+        seg['edge'] = _edge_fields(None)
         seg['mesh'] = _mesh_fields(None)
         self._load_segment_into_widgets()
         self._redraw_mask()
@@ -1547,9 +1565,28 @@ class MaskEditDialog(qtw.QDialog):
         self._sync_current_segment()
         self._update_frame_label()
         self._update_segment_ui()
+        self._cancel_drag()
+        self._threshold_undo_frame = None  # a new frame starts a fresh undo-coalescing group
+        # The actual redraw (re-denoising the background - can be genuinely
+        # slow for e.g. non-local-means - plus recomputing Dilate/Erode/Edge
+        # Detection/Mesh) is coalesced onto a short timer rather than run
+        # synchronously here: dragging the slider fires this once per pixel
+        # of travel, and re-running that whole pipeline on every single one
+        # of those intermediate values is what made dragging feel sluggish.
+        # Restarting the timer on every call means only the LAST frame
+        # value in a fast drag actually triggers the expensive work, a few
+        # ms after the drag settles - a plain click/single step still feels
+        # instant (the delay is imperceptibly short), while a fast drag no
+        # longer stalls trying to redraw every frame it passes through.
+        self._frame_redraw_timer.start()
+
+    def _redraw_frame_content(self):
+        """The actual per-frame redraw _on_frame_changed defers onto
+        self._frame_redraw_timer (see its own comment) - re-denoises the
+        background image, if any, then redraws the mask/mesh/tilt-axis
+        overlay on top."""
         if self.bg_stack is not None:
             self.img_bg.set_data(self._bg_frame(self.frame))
-        self._cancel_drag()
         self._redraw_mask()
 
     def _bg_frame(self, frame):
@@ -1576,16 +1613,79 @@ class MaskEditDialog(qtw.QDialog):
         self._check_methods_dlg = self.box_denoise.open_check_methods_dialog(
             self.bg_stack[self.frame], parent=self)
 
+    #%% undo/redo - see the history init in __init__ for what this does and
+    # does not cover.
+    def _push_undo(self, frame_idx):
+        """Snapshot mask_stack[frame_idx] (the whole stack if frame_idx is
+        None) onto the undo history, before a destructive edit overwrites
+        it - call this immediately before the mutation itself, not after.
+        Clears the redo branch (a fresh edit invalidates whatever was
+        undone before it) and refreshes the ribbon's Undo/Redo buttons."""
+        prev = self.mask_stack.copy() if frame_idx is None else self.mask_stack[frame_idx].copy()
+        self._undo_stack.append((frame_idx, prev))
+        if len(self._undo_stack) > self._UNDO_MAX_DEPTH:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+    def _apply_undo_entry(self, frame_idx, array, other_stack):
+        """Swap `array` into mask_stack at `frame_idx` (the whole stack if
+        None), pushing the piece it replaces onto `other_stack` (the
+        opposite history - redo's own stack when called from _do_undo, and
+        vice versa) - shared by _do_undo/_do_redo, which are otherwise
+        exact mirror images of each other. Jumps the frame slider to
+        `frame_idx` first if it isn't already the one on screen, so the
+        user actually sees what just got restored - that alone already
+        redraws (see _on_frame_changed), so this only calls _redraw_mask()
+        itself for a whole-stack entry or one that's already on screen."""
+        if frame_idx is None:
+            other_stack.append((None, self.mask_stack.copy()))
+            self.mask_stack = array
+        else:
+            other_stack.append((frame_idx, self.mask_stack[frame_idx].copy()))
+            self.mask_stack[frame_idx] = array
+            if frame_idx != self.frame:
+                self.slider_frame.setValue(frame_idx)
+                return
+        self._redraw_mask()
+
+    def _do_undo(self):
+        if not self._undo_stack:
+            return
+        frame_idx, array = self._undo_stack.pop()
+        self._apply_undo_entry(frame_idx, array, self._redo_stack)
+        self._threshold_undo_frame = None  # see _threshold_live_update
+        self._update_undo_redo_buttons()
+
+    def _do_redo(self):
+        if not self._redo_stack:
+            return
+        frame_idx, array = self._redo_stack.pop()
+        self._apply_undo_entry(frame_idx, array, self._undo_stack)
+        self._threshold_undo_frame = None
+        self._update_undo_redo_buttons()
+
+    def _update_undo_redo_buttons(self):
+        btn = self.ribbon.get_button('undo')
+        if btn is not None:
+            btn.setEnabled(bool(self._undo_stack))
+        btn = self.ribbon.get_button('redo')
+        if btn is not None:
+            btn.setEnabled(bool(self._redo_stack))
+
     def _grow_shrink(self, angle, grow):
+        self._push_undo(self.frame)
         self.mask_stack[self.frame] = io.shift_mask_edge(
             self.mask_stack[self.frame], angle, grow=grow)
         self._redraw_mask()
 
     def _reset_frame(self):
+        self._push_undo(self.frame)
         self.mask_stack[self.frame] = self._original_stack[self.frame].copy()
         self._redraw_mask()
 
     def _reset_to_tracking(self):
+        self._push_undo(None)
         source = self._default_stack if self._default_stack is not None else self._original_stack
         self.mask_stack = source.copy()
         self._redraw_mask()
@@ -1613,10 +1713,22 @@ class MaskEditDialog(qtw.QDialog):
         grow/shrink or erosion would). Silent on failure (e.g. a
         momentarily invalid combination while the user is still adjusting
         the slider) - Apply to All Frames below is the one action that
-        surfaces a real error dialog."""
+        surfaces a real error dialog.
+
+        Undo: a slider drag fires this many times in a row - snapshotting
+        every single one would flood the undo history with near-duplicates
+        for what's really one edit. self._threshold_undo_frame tracks
+        which frame already has a pending snapshot for the CURRENT
+        uninterrupted tweak; only the first call after that changes (i.e.
+        the frame itself changed - see _on_frame_changed) pushes a fresh
+        one, so one Ctrl+Z undoes the whole tweak, however many times the
+        slider fired along the way."""
         full = self._recompute_threshold_stack()
         if full is None:
             return
+        if self._threshold_undo_frame != self.frame:
+            self._push_undo(self.frame)
+            self._threshold_undo_frame = self.frame
         self.mask_stack[self.frame] = full[self.frame]
         self._redraw_mask()
 
@@ -1630,6 +1742,7 @@ class MaskEditDialog(qtw.QDialog):
             qtw.QMessageBox.critical(self, 'Threshold Failed',
                 'Could not recompute the mask with these threshold settings - see log for details.')
             return
+        self._push_undo(None)
         self.mask_stack = full
         self._redraw_mask()
 
@@ -1637,15 +1750,11 @@ class MaskEditDialog(qtw.QDialog):
         return self.mask_stack
 
     def get_edge_settings(self):
-        """Edge Detection's one dialog-wide value (see class docstring),
-        wrapped in the same `{'segments': [...]}` shape
-        get_dilate_erode_settings()/get_mesh_settings() use - a single
-        segment spanning the whole stack, since it isn't actually per-
-        segment. The caller round-trips this into its own per-object
-        dataframe column and resolves it per-frame at extraction time via
-        io.segment_for_frame, same as the other two."""
-        edge = self._segments[0]['edge'] if self._segments else _edge_fields(None)
-        return {'segments': [{'start': 0, 'end': self.n_frames - 1, **edge}]}
+        """The shared Segments timeline's own Edge Detection values, one
+        entry per segment - see get_dilate_erode_settings()/
+        get_mesh_settings()."""
+        return {'segments': [{'start': s['start'], 'end': s['end'], **s['edge']}
+                             for s in self._segments]}
 
     def get_thresh_settings(self):
         """Current Threshold box values, or None if this dialog was opened
@@ -1781,6 +1890,10 @@ class MaskEditDialog(qtw.QDialog):
             paint_value = None
         if paint_value is not None:
             self._pixel_paint_value = paint_value
+            # One undo entry per press-drag-release gesture, not per pixel
+            # touched along the way - snapshotted here (drag start), before
+            # _paint_pixel's own repeated mask_stack writes below.
+            self._push_undo(self.frame)
             self._paint_pixel(event)
             return
 
@@ -1844,5 +1957,6 @@ class MaskEditDialog(qtw.QDialog):
                 row0, row1 = max(row0, 0), min(row1 + 1, h)
                 col0, col1 = max(col0, 0), min(col1 + 1, w)
                 if row1 > row0 and col1 > col0:
+                    self._push_undo(self.frame)
                     self.mask_stack[self.frame, row0:row1, col0:col1] = value
         self._redraw_mask()

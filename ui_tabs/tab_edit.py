@@ -14,6 +14,7 @@ for how each of the other 4 tabs applies it.
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from .display_settings import DisplaySettings, PLOT_DEFINITIONS
+from .app_theme import AppTheme, PALETTES, THEME_LABELS
 
 
 class EditSettingsDialog(qtw.QDialog):
@@ -38,8 +39,30 @@ class EditSettingsDialog(qtw.QDialog):
             'returns to the same original values, regardless of anything saved since.')
         intro.setWordWrap(True)
         intro.setFixedWidth(420)
-        intro.setStyleSheet('color: #cccccc; padding: 6px;')
+        intro.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; padding: 6px;")
         self.layout.addWidget(intro)
+
+        # Theme - unlike everything below, applies immediately on
+        # selection (no separate Apply step): a live, easily-reversible
+        # preference rather than something worth previewing first, and
+        # AppTheme.set_theme() already persists it on its own (see
+        # app_theme.py). Every ordinary Qt widget across the whole app
+        # re-colors itself the moment this changes (the QApplication-wide
+        # stylesheet), including already-open dialogs - only the 4 main
+        # tabs' own plot backgrounds need this dialog's help at all (see
+        # TabBase.apply_theme, wired to AppTheme.changed).
+        theme_box = qtw.QGroupBox('Theme')
+        theme_layout = qtw.QHBoxLayout(theme_box)
+        theme_layout.addWidget(qtw.QLabel('Color Theme'))
+        self.combo_theme = qtw.QComboBox()
+        for key in PALETTES:
+            self.combo_theme.addItem(THEME_LABELS[key], key)
+        current = self.combo_theme.findData(AppTheme.instance().name)
+        self.combo_theme.setCurrentIndex(current if current >= 0 else 0)
+        self.combo_theme.currentIndexChanged.connect(self._on_theme_changed)
+        theme_layout.addWidget(self.combo_theme)
+        theme_layout.addStretch(1)
+        self.layout.addWidget(theme_box)
 
         form_box = qtw.QGroupBox('Ribbon')
         form = qtw.QFormLayout(form_box)
@@ -156,6 +179,11 @@ class EditSettingsDialog(qtw.QDialog):
         value = self.spinbox_allPlots.value()
         for slider, spinbox in self._plot_size_controls.values():
             self._sync(slider, spinbox, value)
+
+    def _on_theme_changed(self):
+        """Theme combo changed: switch live (see AppTheme.set_theme's own
+        docstring for exactly what re-colors and what doesn't)."""
+        AppTheme.instance().set_theme(self.combo_theme.currentData())
 
     def apply_values(self):
         """Push every control's current value to DisplaySettings at once -

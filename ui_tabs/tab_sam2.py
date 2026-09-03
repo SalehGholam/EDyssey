@@ -39,6 +39,7 @@ from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob
 from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .transposed_object_table import TransposedObjectTable
+from .frame_flag_bar import FrameFlagBar
 from .smart_scan_dialog import SmartScanCheckDialog
 from .mask_edit_dialog import MaskEditDialog
 from .sam2_auto_detector_widget import SAM2AutoDetectorWidget
@@ -499,12 +500,6 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_clip.clicked.connect(self.initiate_video_segmentation)
         self.button_runSeg_clip.setEnabled(False)
 
-        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...', self)
-        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
-        layout_sam_buttons_1.addWidget(self.button_fineTuneMask)
-        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
-        self.button_fineTuneMask.setDisabled(True)
-
         for wid in layout_sam_buttons_1.findChildren(qtw.QWidget):
             wid.setDisabled(True)
         for wid in layout_sam_buttons_2.findChildren(qtw.QWidget):
@@ -554,6 +549,19 @@ class Tab_SAM2(TabBase):
         self.pets2_params = None
         self.checkbox_makePets2.stateChanged.connect(self.on_makePets2_toggled)
 
+        # Lets the user preview/adjust the PETS2 export parameters at any
+        # time - not just the one moment the checkbox is first checked
+        # (on_makePets2_toggled's own trigger) - e.g. to double-check them
+        # ahead of a run, or tweak something after the fact without having
+        # to uncheck-then-recheck the box to reopen the dialog.
+        self.button_checkPets2Options = qtw.QPushButton('Check Options...')
+        self.button_checkPets2Options.setToolTip(
+            'Open the PETS2 export parameters dialog to review/edit them, '
+            'without needing to uncheck and recheck "Make *.pts2"')
+        self.button_checkPets2Options.clicked.connect(
+            lambda: self._open_pets2_dialog(uncheck_on_cancel=False))
+        layout_saveOptions.addWidget(self.button_checkPets2Options)
+
         layout_saveOptions.addStretch()
 
         #### Buttons
@@ -585,7 +593,9 @@ class Tab_SAM2(TabBase):
         self.button_cancel.setToolTip('Stop the running tracking/segmentation/extraction')
         self.button_cancel.clicked.connect(self.cancel_running_work)
         layout_ribbon_final.addWidget(self.button_cancel)
-        self.disable_3ded_widgets(True)
+        # disable_3ded_widgets(True) is called further down instead, right
+        # after button_fineTuneMask exists (see there) - it explicitly
+        # toggles that button too, which isn't built yet at this point.
         self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract')
         layout_ribbon.addStretch(1)
 
@@ -640,6 +650,28 @@ class Tab_SAM2(TabBase):
         layout_sam_top.addWidget(self.button_reset_objects)
         self.button_reset_objects.clicked.connect(self.reset_data)
 
+        # Own row, directly below Auto Detector/Reset Objects - acts on the
+        # selected object below (tree_objects), not on the tracker controls
+        # up in the ribbon, so it moved down here from the ribbon's
+        # Tracking group for that reason (mirrors ROI Tracker's identical
+        # Fine-Tune Mask.../Blob Settings... row in the same position -
+        # SAM2 has no Blob Selection feature of its own to pair it with).
+        # Still governed by disable_3ded_widgets/activate_3ded_widgets (see
+        # their own docstrings) even though it's no longer one of box_3ded's
+        # own children.
+        row_maskActions = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(row_maskActions)
+        self.button_fineTuneMask = qtw.QPushButton('Fine-Tune Mask...')
+        self.button_fineTuneMask.setToolTip('Manually edit the tracked mask, frame by frame')
+        row_maskActions.addWidget(self.button_fineTuneMask)
+        self.button_fineTuneMask.clicked.connect(self.open_fine_tune_mask_dialog)
+        self.button_fineTuneMask.setDisabled(True)
+
+        # Moved here (from right after the Extract ribbon group) - needs
+        # button_fineTuneMask to already exist, since disable_3ded_widgets
+        # toggles it explicitly too (see its own docstring).
+        self.disable_3ded_widgets(True)
+
         # tree - stretches to fill the rest of this column's height now that
         # it sits beside the (tall) canvas, rather than being capped to fit
         # inside a short ribbon column.
@@ -649,14 +681,44 @@ class Tab_SAM2(TabBase):
         # object adds a column - still called tree_objects (not literally a
         # QTreeWidget anymore) since renaming the many existing references
         # below wasn't worth it.
-        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "dup", "del"]
-        row_labels = ["Use", "Idx", "Frame", "End", "Tracked", "Extracted", "Duplicate", "Delete"]
-        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels)
+        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "qlty", "dup", "del"]
+        # Kept at or under "Start"'s own length (see TransposedObjectTable.
+        # _HEADER_WIDTH_REF, matching ROI Tracker's identical object list) -
+        # the ones that don't fit unabbreviated get a row_tooltips entry
+        # with their full word instead.
+        row_labels = ["Use", "Idx", "Frame", "End", "Track", "Extr", "Qlty", "Dup", "Del"]
+        row_tooltips = [None, None, None, None, "Tracked", "Extracted",
+                        "Tracking Quality - flagged (see the frame-flag bar under the "
+                        "slider) if any frame's mask area looks anomalous after tracking, "
+                        "e.g. the tracker may have lost the object",
+                        "Duplicate", "Delete"]
+        # Selected Object / All Active Objects - governs the Segmented
+        # panel's mask overlay only: the DP panel still follows whichever
+        # object is actually selected in the table below, regardless of
+        # this choice (see update_canvas) - "All Active Objects" only
+        # changes what the mask overlay itself shows, from one object's
+        # own mask to every active ("Use" checked) object's mask
+        # composited at once, each in its own color with its index label
+        # at its centroid (see _draw_all_object_masks).
+        row_maskMode = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(row_maskMode)
+        self.radio_maskSelected = qtw.QRadioButton('Selected Object')
+        self.radio_maskSelected.setChecked(True)
+        self.radio_maskAll = qtw.QRadioButton('All Active Objects')
+        self._group_maskMode = qtw.QButtonGroup(self)
+        self._group_maskMode.addButton(self.radio_maskSelected)
+        self._group_maskMode.addButton(self.radio_maskAll)
+        row_maskMode.addWidget(self.radio_maskSelected)
+        row_maskMode.addWidget(self.radio_maskAll)
+        row_maskMode.addStretch(1)
+        self.radio_maskSelected.toggled.connect(self._on_mask_mode_changed)
+
+        self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels, row_tooltips)
         layout_featurePanel.addWidget(self.tree_objects, 1)
         # Tall enough for their content: dup/del hold a 30px button, end
         # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
         row_heights = {'use': 24, 'idx': 24, 'fr_idx': 24, 'end': 28,
-                       'trk': 24, 'ext': 24, 'dup': 34, 'del': 34}
+                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.setMinimumWidth(200)
@@ -760,10 +822,27 @@ class Tab_SAM2(TabBase):
         self.press = None            # Mouse press coords, for the ribbon's "Remove points" box-select
         self._remove_points_rect = None
         self._remove_points_bg = None
+        # {obj_id: [flagged_frame_idx, ...]} - tracking-quality flags (see
+        # _compute_tracking_quality/frame_flag_bar.FrameFlagBar), recomputed
+        # fresh after every tracking run - deliberately NOT a df_obj column
+        # (or persisted in Save Results/Load Saved Analysis): purely a
+        # derived diagnostic, cheap to recompute, not part of this object's
+        # actual tracked/extracted data.
+        self._quality_flags = {}
+        # Index-label artists for the "All Active Objects" mask-overlay
+        # mode (see _draw_all_object_masks) - cleared/rebuilt every call.
+        self._all_mask_artists = []
         #%% slider
         layout_slider = qtw.QHBoxLayout()
         layout_canvas.addLayout(layout_slider)
-        
+
+        # Frame-flag bar (see frame_flag_bar.FrameFlagBar/
+        # _compute_tracking_quality) - same as ROI Tracker's identical one.
+        # frameClicked wired to slider_imgNo further below, once that
+        # widget actually exists (constructed later in this same row).
+        self.frame_flag_bar = FrameFlagBar()
+        layout_canvas.addWidget(self.frame_flag_bar)
+
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
         
@@ -794,6 +873,7 @@ class Tab_SAM2(TabBase):
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
         layout_slider.addWidget(self.slider_imgNo)
+        self.frame_flag_bar.frameClicked.connect(self.slider_imgNo.setValue)
 
         self.button_frame_start = qtw.QPushButton('Start')
         self.button_frame_start.setFixedWidth(45)
@@ -1466,6 +1546,8 @@ class Tab_SAM2(TabBase):
         self.toolbar.push_current()
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.imgs) - 1)
+        self.frame_flag_bar.set_range(len(self.imgs))
+        self._quality_flags = {}
         self.button_runSeg_clip.setEnabled(True)
         self.button_runSeg_img.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
@@ -1521,7 +1603,41 @@ class Tab_SAM2(TabBase):
         self.img_display['nav'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
         self.img_display['seg'].set_data(frame_8bit)
         self.img_display['seg'].set_clim(vmin=frame_8bit.min(), vmax=frame_8bit.max())
+        # The mask overlay is per-frame too (a tracked object's mask stack
+        # has one entry per frame) - without refreshing it here it stayed
+        # whichever frame's mask was last drawn by update_canvas, showing
+        # the WRONG frame's mask on top of this now-current frame's image
+        # (the image itself updated above, correctly, since it's a plain
+        # per-frame array; the mask needs the same apply_edge_mask
+        # resolution update_canvas uses, just without its full (non-
+        # blitted) redraw - see this method's own docstring on why).
+        self._refresh_current_frame_mask(imgNo)
         self._blit_current_frame_display()
+
+    def _refresh_current_frame_mask(self, imgNo):
+        """Recompute and set (but don't draw/blit) the seg_mask overlay for
+        `imgNo` - the mask-resolution half of update_canvas's own obj_id/
+        mask branch, factored out so _refresh_current_frame_display can
+        keep the mask in sync with the frame it just switched to without
+        paying for update_canvas's full redraw (points, DP, titles, ...) on
+        every slider tick. Respects the Selected Object/All Active Objects
+        toggle, same as update_canvas itself."""
+        if self.radio_maskAll.isChecked():
+            self._draw_all_object_masks(imgNo)
+            return
+        try:
+            item_selected = self.tree_objects.currentItem()
+            obj_id = int(item_selected.text(1))
+        except Exception:
+            return
+        try:
+            if not np.all(pd.isna(self.df_obj.loc[obj_id, 'mask'])):
+                self.show_mask(self.apply_edge_mask(self.df_obj.loc[obj_id, 'mask'][imgNo], obj_id, imgNo), obj_id)
+            else:
+                mask = self.apply_edge_mask(self.df_obj.loc[obj_id, 'single_mask'][imgNo], obj_id, imgNo)
+                self.show_mask(mask, 0)
+        except Exception:
+            self.show_mask(self.img_zero)
 
     def _blit_current_frame_display(self):
         """Blit just the nav/seg image artists (plus their existing point/
@@ -1534,7 +1650,8 @@ class Tab_SAM2(TabBase):
         background) since they're drawn on top of the very same axes the
         image artists just overwrote."""
         artists = ([self.img_display['nav'], self.img_display['seg'],
-                    self.img_display['seg_mask']] + self.scatter_plots)
+                    self.img_display['seg_mask']] + self.scatter_plots
+                   + self._all_mask_artists)
         self._blit_canvas(
             self.canvas, self.figure, '_denoise_bg', artists,
             hide_for_background=[self.img_display['nav'], self.img_display['seg']])
@@ -1736,6 +1853,14 @@ class Tab_SAM2(TabBase):
                 self.toggle_tree_icon(row_index, 'ext', True)
 
         self.activate_3ded_widgets(True)
+        # Select the first restored object, if any, so its tracking/mask/DP
+        # actually show up right away - update_canvas() only draws the
+        # currently-selected object's own results, and nothing in the tree
+        # is selected by default just from populating it above (add_item_tree
+        # doesn't select what it adds), so without this the loaded results
+        # sat in df_obj unseen until the user clicked a row themselves.
+        if objects:
+            self.tree_objects.setCurrentItem(self.tree_objects.topLevelItem(0))
         self.update_canvas(0)
         # Loaded DPs may have a different center than the placeholder - re-run
         # auto-centering now if enabled.
@@ -1765,6 +1890,7 @@ class Tab_SAM2(TabBase):
         self.scatter_plots.clear()
         self.tree_objects.clear()
         self.create_main_dataframe()
+        self._quality_flags = {}
         self.label_stack.setText('')
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.update_canvas()
@@ -1814,6 +1940,11 @@ class Tab_SAM2(TabBase):
         item.setIcon(cols['ext'], cancel_icon)
         item.setData(cols['ext'], Qt.UserRole, False)  # Store status boolean (False = not checked)
 
+        # quality - left blank (no icon at all) rather than a false-looking
+        # "bad" cancel icon, until an actual quality check has run for this
+        # object (see _refresh_quality_icon/_compute_tracking_quality) -
+        # there's nothing to report yet before that.
+
         duplicate_button = qtw.QPushButton('Dup')
         duplicate_button.setFixedSize(48, 30)
         duplicate_button.setToolTip('Duplicate this object (points, masks, DPs) into a new row')
@@ -1846,6 +1977,7 @@ class Tab_SAM2(TabBase):
             self.tree_objects.takeTopLevelItem(index)
             self.df_obj = self.df_obj.drop(self.df_obj.index[index])
             # print(self.df_obj)
+            self._quality_flags.pop(obj_id, None)
             self.update_canvas()
     
         delete_button.clicked.connect(delete_row)
@@ -1873,7 +2005,49 @@ class Tab_SAM2(TabBase):
                                          status else self.style().SP_DialogCancelButton)
         item.setIcon(col, icon)
         item.setData(col, Qt.UserRole, status)
-    
+
+    def _compute_tracking_quality(self, obj_id):
+        """Per-frame mask-area quality check for object `obj_id`, run right
+        after tracking (see handle_finished_sam) - applies the same
+        Dilate/Erode/Edge Detection/Mesh post-processing extraction itself
+        would (see apply_edge_mask), so flagged frames reflect what would
+        actually get extracted, not just SAM2's own raw per-frame mask.
+        See io.flag_anomalous_mask_areas for the flagging heuristic
+        itself. Returns [] if this object isn't tracked at all yet.
+        Frame indices returned are global (this object's own `frame_idx`/
+        `end` range only - the mask array itself is allocated at full
+        dataset length, so frames outside that range are just unused
+        padding, not something a quality check has anything to say about)."""
+        mask_stack = self.df_obj.at[obj_id, 'mask']
+        if mask_stack is None or not isinstance(mask_stack, np.ndarray):
+            return []
+        beg = min(self.df_obj.at[obj_id, 'frame_idx'])
+        end = min(int(self.df_obj.at[obj_id, 'end']), len(mask_stack))
+        if end <= beg:
+            return []
+        areas = np.array([self.apply_edge_mask(mask_stack[i], obj_id, i).sum()
+                          for i in range(beg, end)], dtype=float)
+        return [beg + f for f in io.flag_anomalous_mask_areas(areas)]
+
+    def _refresh_quality_icon(self, obj_id):
+        """Set object `obj_id`'s "Qlty" column icon from self._quality_flags
+        - a warning icon if any frame is flagged, a plain check if none are
+        (still distinguishable from the blank/no-icon-yet state an object
+        starts in before its first quality check - see add_item_tree)."""
+        row_index = self.df_obj.index.get_loc(obj_id)
+        item = self.tree_objects.topLevelItem(row_index)
+        if item is None:
+            return
+        col = self.cols_tree.index('qlty')
+        flagged = self._quality_flags.get(obj_id) or []
+        icon = self.style().standardIcon(
+            self.style().SP_MessageBoxWarning if flagged else self.style().SP_DialogApplyButton)
+        item.setIcon(col, icon)
+        tip = (f'{len(flagged)} possibly mistracked frame(s): {", ".join(map(str, flagged[:20]))}'
+              + (f' (+{len(flagged) - 20} more)' if len(flagged) > 20 else '')) if flagged \
+            else 'No flagged frames'
+        item.setToolTip(col, tip)
+
     def on_spinboxEnd_changed(self, idx, value):
         self.df_obj.at[idx, 'end'] = value
 
@@ -2213,6 +2387,7 @@ class Tab_SAM2(TabBase):
                 obj_id = int(item_selected.text(1))
             except Exception:
                 obj_id = None
+        self.frame_flag_bar.set_flags(self._quality_flags.get(obj_id) if obj_id is not None else None)
         self.remove_plotted_points()
         # Displayed from imgs_8bit, not the raw imgs - see _apply_loaded_nav_signal.
         self.img_display['nav'].set_data(self.imgs_8bit[imgNo])
@@ -2220,6 +2395,18 @@ class Tab_SAM2(TabBase):
 
         if obj_id is not None:
             self.plot_points(imgNo, obj_id)
+
+        # Segmented panel mask overlay: "All Active Objects" ignores obj_id
+        # entirely - every use==1 object's own mask composited at once,
+        # regardless of selection (see _draw_all_object_masks). "Selected
+        # Object" needs obj_id to actually point at a tracked/segmented
+        # object, same conditions this used to gate directly on
+        # `if obj_id is not None:`.
+        if self.radio_maskAll.isChecked():
+            self.img_display['seg'].set_data(self.imgs_8bit[imgNo])
+            self.img_display['seg'].set_clim(vmin=self.imgs_8bit[imgNo].min(), vmax=self.imgs_8bit[imgNo].max())
+            self._draw_all_object_masks(imgNo)
+        elif obj_id is not None:
             # plot segmentation masks for video
             if (not np.all(pd.isna(self.df_obj.loc[obj_id, 'mask']))):
                 self.img_display['seg'].set_data(self.imgs_8bit[imgNo])
@@ -2239,7 +2426,8 @@ class Tab_SAM2(TabBase):
                     self.show_mask(mask, 0)
                 except Exception:
                     self.img_display['seg'].set_data(self.img_zero)
-            
+
+        if obj_id is not None:
             # diffraction pattern
             preview = self._current_frame_dp_preview
             if preview is not None and preview['obj_id'] == obj_id and preview['imgNo'] == imgNo:
@@ -2334,11 +2522,70 @@ class Tab_SAM2(TabBase):
             return
         self.add_scalebar()
 
+    def _on_mask_mode_changed(self):
+        self.update_canvas()
+
+    def _draw_all_object_masks(self, imgNo):
+        """"All Active Objects" mask-overlay mode (see the radio_maskAll/
+        radio_maskSelected toggle above tree_objects): composite every
+        active ("Use" checked) object's own mask for this frame at once -
+        unlike show_mask's normal single-object view - each in its own
+        tab10 color, with its index labeled at its own mask centroid.
+        Ignores the table's own selection entirely - every active object
+        is shown regardless of which one, if any, is currently selected."""
+        for artist in self._all_mask_artists:
+            try:
+                artist.remove()
+            except Exception:
+                self.logger.debug('All-objects mask artist already removed.', exc_info=True)
+        self._all_mask_artists = []
+
+        h, w = self.imgs_8bit[imgNo].shape[-2:]
+        composite = np.zeros((h, w, 4))
+        cmap = plt.get_cmap('tab10')
+        labels = []
+        for obj_id2 in self.df_obj[self.df_obj['use'] == 1].index:
+            mask_stack = self.df_obj.at[obj_id2, 'mask']
+            single_stack = self.df_obj.at[obj_id2, 'single_mask']
+            try:
+                if isinstance(mask_stack, np.ndarray) and not np.all(pd.isna(mask_stack)):
+                    mask = self.apply_edge_mask(mask_stack[imgNo], obj_id2, imgNo)
+                elif isinstance(single_stack, np.ndarray) and not np.all(pd.isna(single_stack)):
+                    mask = self.apply_edge_mask(single_stack[imgNo], obj_id2, imgNo)
+                else:
+                    continue
+            except Exception:
+                continue
+            mask = np.asarray(mask, dtype=bool)
+            if not mask.any():
+                continue
+            color = np.array([*cmap(obj_id2 % 10)[:3], 0.28])
+            composite[mask] = color
+            cx, cy = io.mask_centroid(mask)
+            labels.append((obj_id2, cx, cy))
+
+        self.img_display['seg_mask'].set_data(composite)
+        for obj_id2, cx, cy in labels:
+            text = self.ax_seg.text(cx, cy, str(obj_id2), color='white', fontsize=9,
+                                    fontweight='bold', horizontalalignment='center',
+                                    verticalalignment='center')
+            self._all_mask_artists.append(text)
+
     def show_mask(self, mask, cmap_idx=0):
         """Render `mask` as a translucent RGBA overlay on the segmentation
         axis, colored by `cmap_idx` (tab10)."""
+        # Stale index-label artists from a previous "All Active Objects"
+        # mode (see _draw_all_object_masks) don't mean anything once back
+        # in this single-object view.
+        if self._all_mask_artists:
+            for artist in self._all_mask_artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    self.logger.debug('All-objects mask artist already removed.', exc_info=True)
+            self._all_mask_artists = []
         cmap = plt.get_cmap("tab10")
-        color = np.array([*cmap(cmap_idx)[:3], 0.6])
+        color = np.array([*cmap(cmap_idx)[:3], 0.2])
         h, w = mask.shape[-2:]
         # mask = mask.astype(np.uint8)
         mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
@@ -2718,6 +2965,7 @@ class Tab_SAM2(TabBase):
                         # SAM2 result. See apply_edge_mask()/apply_edge_mask_stack().
                         self.df_obj.at[obj_id, 'mask'][
                             start : start + frame_num] = obj_mask
+                flagged_summary = {}
                 for obj_id in all_obj_ids:
                     # Snapshot the freshly-tracked (still un-eroded, un-edited)
                     # result as this object's permanent "Reset to Tracking"
@@ -2726,6 +2974,12 @@ class Tab_SAM2(TabBase):
                     self.df_obj.at[obj_id, 'mask_default'] = self.df_obj.at[obj_id, 'mask'].copy()
                     row_index = self.df_obj.index.get_loc(obj_id)
                     self.toggle_tree_icon(row_index, 'trk', True)
+                    # Tracking-quality check (see _compute_tracking_quality).
+                    flags = self._compute_tracking_quality(obj_id)
+                    self._quality_flags[obj_id] = flags
+                    self._refresh_quality_icon(obj_id)
+                    if flags:
+                        flagged_summary[obj_id] = flags
 
                 n_objects = len(all_obj_ids)
                 _ = gc.collect()
@@ -2744,6 +2998,18 @@ class Tab_SAM2(TabBase):
                         'SAM2 tracking completed successfully for %d object(s) in %s.',
                         n_objects, io.format_duration_hms(duration))
                 self.button_cancel.setDisabled(True)
+
+                if flagged_summary:
+                    lines = [f'  Object {obj_id}: {len(flags)} frame(s) '
+                            f'({", ".join(map(str, flags[:10]))}{", ..." if len(flags) > 10 else ""})'
+                            for obj_id, flags in flagged_summary.items()]
+                    qtw.QMessageBox.warning(self, 'Tracking Quality Check',
+                        f'{len(flagged_summary)} of {n_objects} object(s) have possibly '
+                        'mistracked frames (an abrupt mask-area change, or the mask '
+                        'vanishing entirely):\n\n' + '\n'.join(lines) +
+                        '\n\nCheck them via the red marks on the frame-flag bar under the '
+                        'slider (click one to jump there), or the "Qlty" column in the '
+                        'object list.')
         except json.JSONDecodeError:
             self._track_failed = True
             self.logger.error("Could not decode result: %s", text)
@@ -2918,6 +3184,12 @@ class Tab_SAM2(TabBase):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
             if not isinstance(wid, qtw.QLabel):
                 wid.setEnabled(state)
+        # button_fineTuneMask lives in the left object-list panel (see
+        # init_ui), not box_3ded, so the sweep above doesn't reach it -
+        # toggled explicitly here instead (mirrors ROI Tracker's identical
+        # button_fineTuneMask/button_blobSettings handling in its own
+        # disable_3ded_widgets).
+        self.button_fineTuneMask.setEnabled(state)
     
     def make_rois(self):
         """Compute a bounding-box ROI (x, y, w, h) per frame from each
@@ -3161,6 +3433,17 @@ class Tab_SAM2(TabBase):
         # would normally show, instead of this one-off result staying
         # plotted indefinitely.
         self._current_frame_dp_preview = {'obj_id': obj_id, 'imgNo': imgNo, 'dp': dp}
+        # Force the Clipping Thresholds to reset for this DP (see
+        # _apply_dp_clip's own reset=not self._dp_clip_initialized
+        # convention) - normally left alone across a frame scrub so a
+        # manually-tuned threshold persists through an already-extracted DP
+        # stack, but a one-off current-frame check is a fresh, unrelated
+        # intensity range (could be a different object/frame entirely) that
+        # the OLD thresholds may not even overlap with (e.g. all-clipped-
+        # away or no visible clipping at all) - without this, "the DP loads
+        # but the thresholds don't update" is exactly what the user sees
+        # (same issue reported and fixed for the ROI Tracker tab).
+        self._dp_clip_initialized = False
         self.update_canvas(imgNo=imgNo, obj_id=obj_id)
         # This is freshly-computed data the auto-centering circles have
         # never seen - re-run it now if enabled, same as after a full
@@ -3365,6 +3648,12 @@ class Tab_SAM2(TabBase):
             if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
                 continue
             wid.setDisabled(state)
+        # button_fineTuneMask lives in the left object-list panel (see
+        # init_ui), not box_3ded, so the sweep above doesn't reach it -
+        # toggled explicitly here instead (mirrors ROI Tracker's identical
+        # button_fineTuneMask/button_blobSettings handling in its own
+        # disable_3ded_widgets).
+        self.button_fineTuneMask.setDisabled(state)
     
     def update_progress_bar(self, value, total):
         self.progress_bar.setRange(0, total)
@@ -3387,10 +3676,14 @@ class Tab_SAM2(TabBase):
         # the click first, so the dialog opens cleanly every time.
         QTimer.singleShot(0, self._open_pets2_dialog)
 
-    def _open_pets2_dialog(self):
+    def _open_pets2_dialog(self, uncheck_on_cancel=True):
         """Open Pets2ParamsDialog pre-filled with voltage/exposure/pixel-size
-        read from the current metadata and UI fields; unchecks "Make *.pts2"
-        again if the user cancels."""
+        read from the current metadata and UI fields. `uncheck_on_cancel`
+        (False when opened via button_checkPets2Options, which can be
+        clicked regardless of the checkbox's own state) unchecks "Make
+        *.pts2" again if the user cancels - only makes sense when this
+        dialog is what's actually turning the feature on in the first
+        place (on_makePets2_toggled's own trigger)."""
         voltage_kv = None
         try:
             path_main = self.metadata_path_override or self.lineEdit_dir_4d.text()
@@ -3409,7 +3702,7 @@ class Tab_SAM2(TabBase):
                                     aperpixel=aperpixel, center=self.dp_center)
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.pets2_params = dialog.get_params()
-        else:
+        elif uncheck_on_cancel:
             self.checkbox_makePets2.setChecked(False)
 
     def save_results(self):
@@ -3707,6 +4000,13 @@ class Tab_SAM2(TabBase):
         self.toolbar.update()
         self.toolbar.push_current()
         self.slider_imgNo.setRange(0, len(self.imgs) - 1)
+        self.frame_flag_bar.set_range(len(self.imgs))
+        # Not recomputed here (see _compute_tracking_quality) - a restored
+        # object just starts back at "not yet quality-checked" (the same
+        # blank-icon state a freshly-tracked one is in before its own
+        # check runs), same spirit as this being a derived diagnostic
+        # rather than persisted state (see its own init comment).
+        self._quality_flags = {}
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.button_runSeg_clip.setEnabled(True)
         self.button_runSeg_img.setEnabled(True)

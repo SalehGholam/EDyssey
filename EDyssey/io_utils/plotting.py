@@ -79,10 +79,16 @@ def draw_reciprocal_scale_circles(ax, scale_recip, shape, center=None, old_artis
     """Draw concentric dashed circles marking whole-1/A radii on a
     diffraction-pattern axis, in place of a conventional scale bar (which
     doesn't read naturally on a radially-symmetric reciprocal-space image).
-    Circles are spaced every 1 1/A out to whatever fits in the image; if
-    even the first one wouldn't fit (coarse reciprocal-space resolution), a
-    single 0.5 1/A circle is drawn instead, in a visually distinct (dotted)
-    style so it can't be mistaken for a whole-1/A ring. Each ring is also
+    Circles are spaced every 1 1/A out to whatever fits ENTIRELY inside the
+    image (radius <= the distance to the nearest edge); if even the first
+    one wouldn't fit (coarse reciprocal-space resolution), a single 0.5 1/A
+    circle is drawn instead, in a visually distinct (dotted) style so it
+    can't be mistaken for a whole-1/A ring. One further ring beyond that -
+    only PARTIALLY inside the image (it still reaches into the corners,
+    just clipped by the image edges elsewhere) - is drawn too, as long as
+    any of it is actually visible (radius <= the distance to the FARTHEST
+    corner): still a useful reference for intensity out in the corners,
+    even though it doesn't form a complete circle. Each ring is also
     labeled with its 1/A value near its top-right edge.
 
     Args:
@@ -148,6 +154,21 @@ def draw_reciprocal_scale_circles(ax, scale_recip, shape, center=None, old_artis
         new_artists.append(circle)
         _add_ring_label(r_px, n, 'cyan')
         n += 1
+
+    # One more ring, beyond the last one that fit entirely inside the image
+    # - only partially visible (clipped by the image edges outside the
+    # corners), but still informative there. Skipped if there wasn't even
+    # room for a full ring above (the 0.5 1/A fallback below covers that
+    # case on its own) or MAX_RINGS was already reached.
+    if new_artists and len(new_artists) < MAX_RINGS:
+        max_corner_r_recip = np.hypot(max(cx, w - cx), max(cy, h - cy)) * scale_recip
+        if n <= max_corner_r_recip:
+            r_px = n / scale_recip
+            circle = patches.Circle((cx, cy), r_px, fill=False, edgecolor='cyan',
+                                    linestyle='--', linewidth=1.2, alpha=0.35)
+            ax.add_patch(circle)
+            new_artists.append(circle)
+            _add_ring_label(r_px, n, 'cyan')
 
     if not new_artists and max_r_recip > 0:
         # Not even the first 1/A ring fits - fall back to a finer 0.5/A

@@ -249,6 +249,11 @@ def _resolve_mib_hdr(fn):
     return None
 
 def get_scan_size(fn, dtype):
+    """.tpx3 (no internal scan-size record - always caller-supplied) and
+    .dm2/.dm3/.tif/.tiff (already a single 2D image, no scan dimension to
+    read at all - see calculate_nav_img's own dtype dispatch) are
+    deliberately not handled here; callers for those formats should never
+    reach this function in the first place - see SCAN_SIZE_NOT_APPLICABLE."""
     if dtype in ['.hspy', '.zspy', '.hdf5', '.blo']:
         scanSize = hs.load(fn, lazy=True).data.shape[:2]
     elif dtype == '.mib':
@@ -267,7 +272,19 @@ def get_scan_size(fn, dtype):
             # original pre-redesign load_hdf5, which compared this directly
             # against a caller-supplied (nx, ny) scanSize with no reversal).
             scanSize = tuple(int(x) for x in f['shape'][:2])
+    else:
+        raise ValueError(
+            f"get_scan_size() does not support {dtype!r} files - expected one of "
+            ".hspy/.zspy/.hdf5/.blo/.mib/.hdf5_eventem.")
     return scanSize
+
+
+# Formats that are already a single 2D image (no per-position scan
+# dimension at all, unlike every other supported format) - a scan size is
+# meaningless for them, so callers must skip get_scan_size() entirely for
+# these rather than call it and hit its own ValueError above (see
+# calculate_nav_img/calculate_nav_img_masked in nav_image.py).
+SCAN_SIZE_NOT_APPLICABLE = ('.dm2', '.dm3', '.tif', '.tiff')
 
 def get_det_size(fn, dtype=None):
     """Return (det_x, det_y) detector pixel dimensions, read cheaply (a lazy
