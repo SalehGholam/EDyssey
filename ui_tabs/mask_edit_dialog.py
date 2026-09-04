@@ -20,7 +20,7 @@ import EDyssey.io_utils as io
 from .ribbon import RibbonPanel, RibbonTool
 from .denoise_widget import DenoiseBox
 
-_MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.28])  # translucent orange overlay
+_MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.45])  # translucent orange overlay
 _DIRECTIONS = [('Top', 270), ('Bottom', 90), ('Left', 180), ('Right', 0)]
 # Full reference for the "?" help button below the canvas (see
 # _show_help_dialog) - promoted from the old always-visible label_tip

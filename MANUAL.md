@@ -9,18 +9,10 @@ extracting per-object 3D electron diffraction (3DED) data.
 EDyssey implements the post-acquisition half of the 4D-STEM tomography
 workflow described in Gholam et al., *"A 4D-STEM Tomographic Framework
 Assisted by Object Tracking for Nanoparticle Structure Determination"*
-(arXiv:2602.09768): a tilt series of 4D-STEM scans (collected with fine
-tilt steps and a slightly convergent probe, e.g. via the `evenTem`
-acquisition suite) → per-scan navigation images → object tracking/
+(arXiv:2602.09768): a tilt series of 4D-STEM scans → per-scan navigation images → object tracking/
 segmentation of a ROI on those images (this app's ROI Tracker/SAM2 Tracker
 tabs) → per-object 3DED extraction, ready for data reduction/structure
-solution in PETS2 and Jana2020. This approach targets samples that
-challenge conventional 3D ED/CRED tracking - agglomerated or multi-domain
-particles, beam-sensitive samples needing minimal fluence, and particles
-as small as ~30 nm - and, because tracking happens post-acquisition
-instead of live at the microscope, lets you revisit particles or regions
-you didn't even notice during the session, straight from the saved
-tomogram.
+solution.
 
 ## Launching
 
@@ -28,11 +20,6 @@ See [INSTALL.md](INSTALL.md) for installing the app first (Windows
 installer, or run from source). Launch `EDyssey.exe` (installer) or
 `EDyssey_MainWindow.py` (from source). The main window has four tabs
 (described below), each with its own log console.
-
-If you re-run the script in the same Python console/kernel (e.g. Spyder's
-"Run File") without restarting it, the app reuses the window that's
-already open instead of creating a new one — it will just be brought to
-the front.
 
 ## Working with tabs
 
@@ -341,6 +328,4 @@ tracking.
   first — errors are shown in red.
 - For more detail (or if the app already closed), check `logs/` next to
   the app: one file per tab, plus `logs/app.log` for uncaught exceptions.
-- Re-running the app in the same console/kernel brings back the existing
-  window rather than opening a second one — if you want a completely
-  fresh state, restart the Python console/kernel first.
+- Re-running the app in the same console/kernel is not recommended. It would be better to restart the Python console/kernel first.

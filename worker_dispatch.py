@@ -1,15 +1,9 @@
 # -*- coding: utf-8 -*-
 """Receiving side of ui_tabs/worker_launch.py's `--worker <name> <args>`
-invocation - runs the named worker_*.py script in-process via `runpy`, as if
-it had been launched directly as `python worker_X.py <args>`.
-
-Using `runpy.run_path` (rather than importing each worker as a module and
-calling a specific function) means none of the worker scripts' own
-`if __name__ == '__main__':` entry-point code has to change - each one
-still parses `sys.argv` and calls `sys.exit(...)` exactly as it always has,
-whether invoked directly (`python worker_extract_frame.py ...`, still works
-unchanged) or dispatched through here (dev-mode subprocess re-invoking
-EDyssey_MainWindow.py, or a PyInstaller-frozen build re-invoking itself).
+invocation - runs the named worker_*.py script (workers/, see _base_dir())
+via `runpy`, so its own `if __name__ == '__main__':` code needs no changes.
+worker_dispatch.py itself stays at the repo root; only the scripts it
+dispatches to live in workers/.
 """
 import os
 import sys
@@ -25,12 +19,13 @@ WORKER_SCRIPTS = {
 
 
 def _base_dir():
-    """Directory the worker_*.py scripts live in - the PyInstaller-extracted
-    temp dir (`sys._MEIPASS`) when frozen and bundled as data files, this
-    file's own directory (the repo root) otherwise."""
+    """workers/, under sys._MEIPASS when frozen (see EDyssey.spec's
+    extra_datas) or this file's own directory otherwise."""
     if getattr(sys, 'frozen', False):
-        return getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    return os.path.dirname(os.path.abspath(__file__))
+        root = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    else:
+        root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(root, 'workers')
 
 
 def run_worker(worker_name, args):

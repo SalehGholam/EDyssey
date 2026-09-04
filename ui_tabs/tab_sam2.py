@@ -2559,7 +2559,7 @@ class Tab_SAM2(TabBase):
             mask = np.asarray(mask, dtype=bool)
             if not mask.any():
                 continue
-            color = np.array([*cmap(obj_id2 % 10)[:3], 0.28])
+            color = np.array([*cmap(obj_id2 % 10)[:3], 0.45])
             composite[mask] = color
             cx, cy = io.mask_centroid(mask)
             labels.append((obj_id2, cx, cy))
@@ -2585,7 +2585,7 @@ class Tab_SAM2(TabBase):
                     self.logger.debug('All-objects mask artist already removed.', exc_info=True)
             self._all_mask_artists = []
         cmap = plt.get_cmap("tab10")
-        color = np.array([*cmap(cmap_idx)[:3], 0.2])
+        color = np.array([*cmap(cmap_idx)[:3], 0.45])
         h, w = mask.shape[-2:]
         # mask = mask.astype(np.uint8)
         mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)

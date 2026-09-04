@@ -6,7 +6,7 @@
 ; too) then `#include` this from one of those two files instead.
 
 #define AppName "EDyssey"
-#define AppVersion "1.0.0"
+#define AppVersion "2.1.20260903.1426"
 #define AppPublisher "SalehG"
 #define AppURL "https://github.com/SalehGholam/EDyssey"
 ; Only set the default if the includer didn't already #define one -

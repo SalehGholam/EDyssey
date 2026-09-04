@@ -96,17 +96,23 @@ torch_excludes = ['torch', 'sam2', 'torchvision']
 # the whole point of hiddenimports, and it's what actually wires torch/
 # sam2 into the build.
 scripts = ['EDyssey_MainWindow.py']
+# worker_*.py live in workers/ (matches worker_dispatch._base_dir()).
 extra_datas = [
-    ('worker_sam.py', '.'),
-    ('worker_extract_frame.py', '.'),
-    ('worker_extract_frame_batch.py', '.'),
-    ('worker_nav_img.py', '.'),
-    ('worker_nav_img_batch.py', '.'),
-    # Imported (not runpy'd) by every *_batch.py worker and by ui_tabs/
-    # tab_*.py directly - a loose file regardless, same as the rest of this
-    # list, since nothing currently traced as a scripts= entry imports it,
-    # so PyInstaller's static analysis wouldn't otherwise bundle it.
-    ('worker_pool_utils.py', '.'),
+    ('workers/worker_sam.py', 'workers'),
+    ('workers/worker_extract_frame.py', 'workers'),
+    ('workers/worker_extract_frame_batch.py', 'workers'),
+    ('workers/worker_nav_img.py', 'workers'),
+    ('workers/worker_nav_img_batch.py', 'workers'),
+    ('workers/worker_pool_utils.py', 'workers'),
+    # worker_sam.py's _load_asset_fetch() loads these two directly by file
+    # path (bypassing EDyssey.io_utils/EDyssey.tracking_utils's own
+    # __init__.py, which pulls in hyperspy/dask/PyQt5) - staged here rather
+    # than under EDyssey/ because that destination collides with PyInstaller
+    # auto-compiling them into the PYZ via tab_sam2.py's own normal import of
+    # them (which silently wins over an explicit datas= entry at the same
+    # path) - workers/ has no such collision, same as the entries above.
+    ('EDyssey/io_utils/app_dirs.py', 'workers'),
+    ('EDyssey/tracking_utils/asset_fetch.py', 'workers'),
 ]
 if OFFLINE_BUILD:
     torch_excludes = []
@@ -144,11 +150,17 @@ a = Analysis(
         ('EDyssey/io_utils/io_utils_ui.py', 'EDyssey/io_utils'),
         ('ui_tabs/logo', 'ui_tabs/logo'),
     ] + extra_datas + hs_datas + rs_datas + dask_datas + px_datas + orix_datas + sk_datas + torch_datas,
-    hiddenimports=(['matplotlib.backends.backend_qt5agg']
+    hiddenimports=(['matplotlib.backends.backend_qt5agg',
+                     # stdlib module PyInstaller's static tracing misses -
+                     # torch/sam2's own deps (hydra/omegaconf/iopath) import
+                     # it transitively at runtime, not traceably.
+                     'modulefinder']
                     + hs_hidden + rs_hidden + dask_hidden + px_hidden + orix_hidden + sk_hidden + torch_hidden),
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    # Must run before PyInstaller's own pyi_rth_pyqt5.py - see the hook's
+    # own docstring for why.
+    runtime_hooks=['pyinstaller_hooks/rthook_preload_system_crt.py'],
     excludes=[
         *torch_excludes,  # backstop in the online build - scripts= above already keeps these unreachable there
         # The app only uses PyQt5 (see e.g. EDyssey_MainWindow.py's

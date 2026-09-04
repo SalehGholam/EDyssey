@@ -9,8 +9,8 @@ import argparse
 import sys
 import os
 file_path = os.path.abspath(__file__)
-fld_path = os.path.dirname(file_path)
-sys.path.append(os.path.join(fld_path, 'EDyssey', 'io_utils')) # path to the evetem
+fld_path = os.path.dirname(file_path)  # tools/
+sys.path.append(os.path.join(os.path.dirname(fld_path), 'EDyssey', 'io_utils')) # path to the evetem
 import eventem
 from multiprocessing import Pool
 from glob import glob

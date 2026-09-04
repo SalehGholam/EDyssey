@@ -8,6 +8,76 @@ import os
 import sys
 # if using Apple MPS, fall back to CPU for unsupported ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+# _internal (this file's grandparent dir when staged into a frozen install -
+# see EDyssey.spec's extra_datas) and its sam2_packages subfolder (see
+# sam2_setup_dialog.py's _TARGET_SUBDIR) - both keyed off this file's own
+# location rather than sys.frozen/sys.executable, since worker_launch.py now
+# runs this script directly via a real system Python (not the frozen exe -
+# see its own docstring for why), which doesn't set sys.frozen at all. Must
+# come before numpy/torch import. In dev mode neither directory exists, so
+# this is a no-op - EDyssey_MainWindow.py (the real entry point there) has
+# already put the repo root on sys.path.
+_internal_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_sam2_pkgs = os.path.join(_internal_dir, 'sam2_packages')
+if not getattr(sys, 'frozen', False) and os.path.isdir(_sam2_pkgs):
+    # Launched by worker_launch.py's real-Python redirect (see its
+    # docstring for why) - an installed layout, just not literally the
+    # frozen exe. app_dirs.writable_data_dir()/asset_fetch._install_dir()
+    # key their path resolution off sys.frozen/sys._MEIPASS, so set them to
+    # what the real frozen exe would have, or they'd wrongly resolve as
+    # dev-mode paths (e.g. an unwritable Program Files location instead of
+    # %LOCALAPPDATA%).
+    sys.frozen = True
+    sys._MEIPASS = _internal_dir
+for _p in (_sam2_pkgs, _internal_dir):
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
+
+
+def _load_asset_fetch():
+    """Load EDyssey/tracking_utils/asset_fetch.py directly by file path,
+    bypassing EDyssey.tracking_utils/EDyssey.io_utils's own __init__.py
+    (which `from .tracking_utils_ui import *`/`from .io_utils_ui import *` -
+    pulling in hyperspy/dask/PyQt5/etc, none of which the real system Python
+    running this worker (see worker_launch.py) has installed). asset_fetch's
+    own `from EDyssey.io_utils.app_dirs import writable_data_dir` is
+    satisfied by pre-registering bare package stand-ins in sys.modules
+    instead, since both files are otherwise stdlib-only."""
+    import importlib.util
+    import types
+
+    def _load(dotted_name, file_path):
+        if dotted_name in sys.modules:
+            return sys.modules[dotted_name]
+        spec = importlib.util.spec_from_file_location(dotted_name, file_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[dotted_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    for pkg_name in ('EDyssey', 'EDyssey.io_utils', 'EDyssey.tracking_utils'):
+        if pkg_name not in sys.modules:
+            pkg = types.ModuleType(pkg_name)
+            pkg.__path__ = []
+            sys.modules[pkg_name] = pkg
+
+    def _first_existing(*candidates):
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+        return candidates[0]  # let the real ImportError surface below
+
+    workers_dir = os.path.dirname(os.path.abspath(__file__))
+    _load('EDyssey.io_utils.app_dirs', _first_existing(
+        # Staged loose copy (see EDyssey.spec's extra_datas) - frozen/installed.
+        os.path.join(workers_dir, 'app_dirs.py'),
+        # Dev mode - _internal_dir is the repo root, where this really lives.
+        os.path.join(_internal_dir, 'EDyssey', 'io_utils', 'app_dirs.py')))
+    return _load('EDyssey.tracking_utils.asset_fetch', _first_existing(
+        os.path.join(workers_dir, 'asset_fetch.py'),
+        os.path.join(_internal_dir, 'EDyssey', 'tracking_utils', 'asset_fetch.py')))
+
+
 import json
 import numpy as np
 # torch/sam2 are deliberately NOT bundled in a frozen build (huge, and
@@ -95,9 +165,9 @@ if __name__ == "__main__":
     # directory itself isn't guaranteed to be writable - see
     # EDyssey/io_utils/app_dirs.py). Re-deriving this path independently
     # here used to silently disagree with asset_fetch's own resolution.
-    from EDyssey.tracking_utils.asset_fetch import (
-        resolve_sam2_checkpoint_dir, SAM2_CHECKPOINT_FILENAME)
-    sam2_checkpoint = os.path.join(resolve_sam2_checkpoint_dir(), SAM2_CHECKPOINT_FILENAME)
+    _asset_fetch = _load_asset_fetch()
+    sam2_checkpoint = os.path.join(
+        _asset_fetch.resolve_sam2_checkpoint_dir(), _asset_fetch.SAM2_CHECKPOINT_FILENAME)
     model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
     if not os.path.isfile(sam2_checkpoint):
         # Normally unreachable - tab_sam2.py downloads this checkpoint (via

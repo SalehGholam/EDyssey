@@ -18,6 +18,9 @@ os.chdir(fld_path)
 _path_io_utils = os.path.join(fld_path, r'EDyssey\io_utils')
 if _path_io_utils not in sys.path:
     sys.path.append(_path_io_utils)
+# workers/ on sys.path (for ui_tabs' own bare worker_* imports) is set up
+# in ui_tabs/__init__.py instead - run_worker() below resolves its own
+# script paths directly, no sys.path needed here.
 
 # Dispatch to a worker_*.py subprocess (see ui_tabs/worker_launch.py /
 # worker_dispatch.py) before any of the GUI-only imports below - both to

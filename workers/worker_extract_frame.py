@@ -17,8 +17,8 @@ from scipy import ndimage
 import base64
 import pickle
 file_path = os.path.abspath(__file__)
-main_path = os.path.dirname(file_path)
-eventem_path = os.path.join(main_path, 'EDyssey', 'io_utils')
+main_path = os.path.dirname(file_path)  # workers/
+eventem_path = os.path.join(os.path.dirname(main_path), 'EDyssey', 'io_utils')
 sys.path.append(eventem_path)
 # os.chdir()
 import eventem
