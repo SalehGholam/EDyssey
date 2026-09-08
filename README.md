@@ -14,7 +14,8 @@ The normal workflow is:
 - Create a stack of images from navigation images (with virtual detectors) on Navigator tab
 - Track particles or regions of interest by either classical opencv trackers or MetaAI's SAM2
 - Extract 3D ED frames from the segmented regions
-The software currently supports raw ASI's tpx3, QD's mib, Hyperspy's hspy and
+
+The software currently supports raw Amsterdam Scientific Instruments's tpx3 through [evenTem](https://github.com/EMAT-Jo/evenTem), Quantum Detector's mib, Hyperspy's hspy and
 zspy, ASTAR's blo, and both eventem's own and conventional HDF5 data types.
 
 ## Install
@@ -36,10 +37,11 @@ app - no Python setup required either way:
 **From source:** see [INSTALL.md](INSTALL.md).
 
 With the online installer (or running from source), SAM2 support needs one
-extra manual step (`torch` + the `sam2` package aren't bundled or
-auto-installed, since the right build depends on your GPU/CUDA version) -
+extra step: **Help > Set Up SAM2...** in the app, which auto-detects your
+GPU and installs the matching CUDA build of `torch` for you (a **Check
+CUDA** button lets you confirm it actually picked up your GPU afterwards) -
 see INSTALL.md's "Enabling SAM2" section. The offline installer already
-includes both, so SAM2 works immediately after install.
+includes everything, so SAM2 works immediately after install.
 
 ## Usage
 
@@ -64,10 +66,10 @@ includes both, so SAM2 works immediately after install.
   packaging rationale.
 
 ## Acknowledgements 
-Many thanks to Arno Annys for the support.
+Many thanks to Joke Hadermann and Jo Verbeeck for the support and Arno Annys for assistance on setting up the software and [evenTem](https://github.com/EMAT-Jo/evenTem).
 
 ## AI Usage
-Many parts of the user interface and build of the installers are developed by the help of large language models. The code has been tested to work properly, but not every line has been reviewed by the user. The logo is made by Nano Banana 2.
+Many parts of the user interface and build of the installers are developed by the help of large language models. The code has been tested to work properly, but not every line of the code has been reviewed by the developer. The logo is made by Nano Banana 2.
 
 ## License
 
