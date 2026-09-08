@@ -45,6 +45,11 @@ CUDA** button lets you confirm it actually picked up your GPU afterwards) -
 see INSTALL.md's "Enabling SAM2" section. The offline installer already
 includes everything, so SAM2 works immediately after install.
 
+GPU support (either installer, or from source) needs an NVIDIA driver
+already installed on your machine - `torch` only bundles the CUDA
+runtime, not the driver itself. See INSTALL.md if `nvidia-smi`/Check CUDA
+isn't picking up your GPU.
+
 ## Usage
 
 - [MANUAL.md](MANUAL.md) - full walkthrough of all four tabs (ROI on 4D,

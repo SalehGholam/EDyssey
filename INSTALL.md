@@ -84,8 +84,20 @@ Run `EDyssey_MainWindow.py`. See [MANUAL.md](MANUAL.md) for usage.
 
 ## Enabling SAM2 (running from source, or the online installer)
 
-Skip this section if you're using the offline installer - it already
-includes `torch`/CUDA/`sam2`.
+**You need an NVIDIA GPU driver already installed for GPU support to work
+at all** - this applies to every install method, including the offline
+installer. `torch`'s CUDA builds only bundle the CUDA *runtime* libraries,
+not the GPU driver itself - that's a separate, OS-level component only
+NVIDIA provides (via [nvidia.com/drivers](https://www.nvidia.com/download/index.aspx)
+or your GPU/laptop vendor's own updater), not something `pip install torch`
+or this app can install for you. Without one, SAM2 still works, just on
+CPU (much slower) - Set Up SAM2's GPU dropdown quietly falls back to "CPU
+only" if it can't detect a driver via `nvidia-smi`, and Check CUDA
+reporting `torch.cuda.is_available(): False` after a GPU install usually
+means this, not a broken install.
+
+Skip the rest of this section if you're using the offline installer - it
+already includes `torch`/CUDA/`sam2`.
 
 `torch` and the `sam2` package are deliberately not installed by
 `requirements.txt` or the online installer - `torch` alone is a multi-GB,
