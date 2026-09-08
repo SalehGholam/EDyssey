@@ -15,6 +15,8 @@ The normal workflow is:
 - Track particles or regions of interest by either classical opencv trackers or MetaAI's SAM2
 - Extract 3D ED frames from the segmented regions
 
+For more detailed information, please check out [this paper](https://arxiv.org/abs/2602.09768) on 4D-STEM tomography.
+
 The software currently supports raw Amsterdam Scientific Instruments's tpx3 through [evenTem](https://github.com/EMAT-Jo/evenTem), Quantum Detector's mib, Hyperspy's hspy and
 zspy, ASTAR's blo, and both eventem's own and conventional HDF5 data types.
 
