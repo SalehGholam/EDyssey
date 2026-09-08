@@ -77,7 +77,7 @@ AppTheme.instance().apply_qapp()
 # process to compute it. A plain source constant (not computed at run
 # time) so it's visible directly in the repo on GitHub, not just at
 # runtime. Shown only in the About dialog (Help > About EDyssey).
-APP_VERSION = '2.1.20260903.1426'
+APP_VERSION = '2.1.20260907.1302'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -139,8 +139,14 @@ class MainWindow(qtw.QMainWindow):
         # In a PyInstaller-frozen build, bundled data files (this icon
         # included) are extracted under sys._MEIPASS, not next to __file__ -
         # sys._MEIPASS doesn't exist at all in a normal (non-frozen) run.
-        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-        fn_icon = os.path.join(base_dir, 'ui_tabs', 'logo', 'EDyssey_logo.ico')
+        # Frozen: staged under EDyssey/ui_tabs/logo (see EDyssey.spec's
+        # datas=), grouped with the rest of EDyssey's own loose files;
+        # dev-mode's git checkout still has ui_tabs/logo/ at the repo root.
+        if hasattr(sys, '_MEIPASS'):
+            fn_icon = os.path.join(sys._MEIPASS, 'EDyssey', 'ui_tabs', 'logo', 'EDyssey_logo.ico')
+        else:
+            fn_icon = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'ui_tabs', 'logo', 'EDyssey_logo.ico')
         self.setWindowIcon(QIcon(fn_icon))
 
         central = qtw.QWidget()
@@ -180,8 +186,8 @@ class MainWindow(qtw.QMainWindow):
         action_exit.triggered.connect(self.close)
 
         menu_edit = self.menuBar().addMenu('&Edit')
-        action_display_size = menu_edit.addAction('Display Size...')
-        action_display_size.setToolTip('Adjust ribbon/plot text and icon size, live, across every tab')
+        action_display_size = menu_edit.addAction('Display Preferences...')
+        action_display_size.setToolTip('Theme, colormaps, and ribbon/plot text/icon size, across every tab')
         action_display_size.triggered.connect(self.show_display_size_dialog)
 
         menu_edit.addSeparator()
@@ -192,6 +198,10 @@ class MainWindow(qtw.QMainWindow):
         action_sam2_setup.setToolTip(
             'Install torch/sam2 for the SAM2 tab - not needed with the offline installer')
         action_sam2_setup.triggered.connect(self.show_sam2_setup_dialog)
+        action_ffmpeg_setup = menu_help.addAction('Download ffmpeg (for faster video export)...')
+        action_ffmpeg_setup.setToolTip(
+            'Video export works without this (falls back to GIF) - ffmpeg makes it .mp4 and faster')
+        action_ffmpeg_setup.triggered.connect(self.download_ffmpeg)
         menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
@@ -301,6 +311,36 @@ class MainWindow(qtw.QMainWindow):
         from ui_tabs.sam2_setup_dialog import SAM2SetupDialog
         SAM2SetupDialog(self).exec_()
 
+    def download_ffmpeg(self):
+        """Help > Download ffmpeg... - a one-time, explicit action (like Set
+        Up SAM2...) rather than trying to intercept the moment of first use,
+        since video export runs on background worker threads (created from
+        several different tabs) that can't show a Qt confirm/progress
+        dialog themselves. video.py's create_clip_*() functions just prefer
+        whatever this downloads, falling back to a system PATH ffmpeg or a
+        GIF export if neither is available, exactly as before this existed."""
+        from PyQt5.QtCore import QThreadPool
+        from EDyssey.tracking_utils import asset_fetch
+        from ui_tabs.asset_download_dialog import confirm_and_download
+
+        existing = asset_fetch.resolve_ffmpeg_exe()
+        if existing is not None:
+            qtw.QMessageBox.information(self, 'ffmpeg', f'Already downloaded:\n{existing}')
+            return
+
+        def _ready(_path):
+            qtw.QMessageBox.information(self, 'ffmpeg', 'Downloaded - fast .mp4 video export is now available.')
+
+        def _failed(error_msg):
+            if error_msg:
+                qtw.QMessageBox.warning(self, 'Download Failed', f'Could not download ffmpeg:\n{error_msg}')
+
+        confirm_and_download(
+            self, QThreadPool.globalInstance(), 'Download ffmpeg',
+            'Download ffmpeg (~110 MB) for faster .mp4 video export? Without it, video export '
+            'still works, just as a slower/larger .gif instead. An internet connection is needed.',
+            asset_fetch.ensure_ffmpeg, _ready, _failed)
+
     def show_about_dialog(self):
         """Help > About EDyssey - QMessageBox.about() renders this as rich
         text (Qt auto-detects the HTML), and its label has clickable-link
@@ -379,8 +419,11 @@ if __name__ == "__main__":
     # before __main__ starts), so this covers UI construction time, not
     # library import time, but that's still a real few-second gap with
     # nothing else on screen otherwise.
-    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    fn_splash = os.path.join(base_dir, 'ui_tabs', 'logo', 'EDyssey_logo.png')
+    if hasattr(sys, '_MEIPASS'):
+        fn_splash = os.path.join(sys._MEIPASS, 'EDyssey', 'ui_tabs', 'logo', 'EDyssey_logo.png')
+    else:
+        fn_splash = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'ui_tabs', 'logo', 'EDyssey_logo.png')
     splash_pixmap = QPixmap(fn_splash).scaledToWidth(420, Qt.SmoothTransformation)
     splash = qtw.QSplashScreen(splash_pixmap, Qt.WindowStaysOnTopHint)
     splash.show()

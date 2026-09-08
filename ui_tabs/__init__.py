@@ -1,11 +1,13 @@
 import os
 import sys
 
-# workers/ (repo root, or sys._MEIPASS when frozen) holds worker_*.py,
-# which several tab modules below bare-import - must be on sys.path first.
-_workers_dir = os.path.join(
-    getattr(sys, '_MEIPASS', os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    'workers')
+# workers/ (repo root in dev mode, EDyssey/workers under sys._MEIPASS when
+# frozen - see EDyssey.spec's extra_datas) holds worker_*.py, which several
+# tab modules below bare-import - must be on sys.path first.
+if hasattr(sys, '_MEIPASS'):
+    _workers_dir = os.path.join(sys._MEIPASS, 'EDyssey', 'workers')
+else:
+    _workers_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'workers')
 if _workers_dir not in sys.path:
     sys.path.append(_workers_dir)
 

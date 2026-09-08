@@ -15,6 +15,7 @@ import importlib
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -22,9 +23,8 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QProcess
 from PyQt5.QtGui import QTextCursor
 
-from ui_tabs.python_finder import APP_PYTHON_VERSION, find_system_python, write_interpreter_marker
-
-_APP_PYTHON_VERSION = APP_PYTHON_VERSION
+from ui_tabs.python_finder import (
+    find_bundled_python, find_system_python, read_interpreter_marker, write_interpreter_marker)
 
 # (label, cuda_version, index_url), highest CUDA first, CPU only last -
 # every index PyTorch currently publishes wheels under (confirmed against
@@ -71,7 +71,15 @@ def _pick_default_device(detected_version):
                 return label
     return _CUDA_OPTIONS[-1][0]
 
-SAM2_GIT_URL = 'git+https://github.com/facebookresearch/sam2.git'
+# A plain HTTP(S) archive URL, not `git+https://...` - pip can install
+# straight from this with no `git` executable on PATH at all (confirmed:
+# `pip install <this-url> --no-deps` installs the same "SAM-2" package with
+# git absent from PATH), unlike the `git+` form, which shells out to a real
+# git clone and fails outright on a machine without git installed - a real
+# gap, since this app doesn't require/bundle git anywhere else. Tracks the
+# same ref git+https://github.com/facebookresearch/sam2.git would (no `@ref`
+# on either form - both just follow the repo's default branch).
+SAM2_GIT_URL = 'https://github.com/facebookresearch/sam2/archive/refs/heads/main.zip'
 
 # Frozen builds install into this dedicated subfolder of _internal, not
 # _internal itself - torch's own dependencies (numpy, markupsafe, ...)
@@ -85,12 +93,20 @@ _TARGET_SUBDIR = 'sam2_packages'
 
 def _torch_sam2_available(target_dir=None):
     """Whether both packages are usable - checked as plain directories
-    under target_dir (frozen builds, see _TARGET_SUBDIR) rather than
-    importing, so this never loads a native extension into the long-running
-    main GUI process; via normal import machinery otherwise (dev mode)."""
+    under target_dir, or its parent (frozen builds, see _TARGET_SUBDIR)
+    rather than importing, so this never loads a native extension into the
+    long-running main GUI process; via normal import machinery otherwise
+    (dev mode). The parent check is for an *offline* build, which bundles
+    torch/sam2 directly into _internal (target_dir's own parent) at
+    PyInstaller build time - see worker_sam.py's identical online-vs-
+    offline distinction for why target_dir itself (sam2_packages) is
+    checked first: an online install's pip-installed copy there should
+    always be treated as the answer over an offline build's bundled one, if
+    a Reinstall ever created both."""
     if target_dir:
-        return (os.path.isdir(os.path.join(target_dir, 'torch'))
-                and os.path.isdir(os.path.join(target_dir, 'sam2')))
+        def _has_both(d):
+            return os.path.isdir(os.path.join(d, 'torch')) and os.path.isdir(os.path.join(d, 'sam2'))
+        return _has_both(target_dir) or _has_both(os.path.dirname(target_dir))
     importlib.invalidate_caches()
     return (importlib.util.find_spec('torch') is not None
             and importlib.util.find_spec('sam2') is not None)
@@ -174,47 +190,158 @@ class SAM2SetupDialog(qtw.QDialog):
             self._target_dir = None
             where = f'into the current Python environment ({sys.executable})'
 
-        if _torch_sam2_available(self._target_dir):
-            self.label_status.setText(
-                'torch and sam2 are already installed - the SAM2 tab is ready to use.')
-            self.button_install.setEnabled(False)
-            self.combo_device.setEnabled(False)
-            return
+        already_installed = _torch_sam2_available(self._target_dir)
+        self.button_install.setText('Reinstall' if already_installed else 'Install')
 
-        status = (
-            'SAM2 needs torch and the sam2 package, which EDyssey does not '
-            f'bundle by default (see INSTALL.md) - not installed yet. This '
-            f'installs both {where}. Pick your GPU below, then Install - this '
-            'downloads several GB and can take a while.')
-
-        if frozen and _find_system_python() is None:
-            status += (
-                f'<br><br><b>No Python {_APP_PYTHON_VERSION} installation found on this '
-                'machine</b> - one is needed as a separate tool to run pip (EDyssey itself '
-                f'does not ship one), and it must be Python {_APP_PYTHON_VERSION} specifically '
-                '(matching this build) - installing via a different version silently produces '
-                "files this app's own Python can't load. Install Python "
-                f'{_APP_PYTHON_VERSION} from '
-                '<a href="https://www.python.org/downloads/" style="color:#6db3ff;">'
-                'python.org</a> first, then reopen this dialog.')
-            self.button_install.setEnabled(False)
-            self.combo_device.setEnabled(False)
+        if already_installed:
+            status = (
+                'torch and sam2 are already installed - the SAM2 tab is ready to use. '
+                'Use Check CUDA below to verify GPU support, or pick a different GPU '
+                'option and Reinstall if you need to change it (e.g. it picked CPU by '
+                'mistake, or you want a different CUDA version).')
         else:
-            self.button_install.setEnabled(True)
-            self.combo_device.setEnabled(True)
+            status = (
+                'SAM2 needs torch and the sam2 package, which EDyssey does not '
+                f'bundle by default (see INSTALL.md) - not installed yet. This '
+                f'installs both {where}. Pick your GPU below, then Install - this '
+                'downloads several GB and can take a while.')
+
+        can_install = True
+
+        # Only shown when the install actually looks unwritable (e.g. the
+        # default C:\Program Files\EDyssey location) - installed to a
+        # per-user location (%LocalAppData%\Programs\...) instead, this
+        # never fires, so the note doesn't show up for people it doesn't
+        # apply to.
+        if frozen and not already_installed and not os.access(
+                os.path.join(install_dir, '_internal'), os.W_OK):
+            status += (
+                '<br><br><b>This install location needs administrator rights to write '
+                'to.</b> Close this, then re-open EDyssey as administrator (right-click '
+                'its shortcut > Run as administrator) before installing.')
+            can_install = False
+
+        # A bundled portable Python (offline installer only, see
+        # find_bundled_python()) makes SAM2 itself runnable with no system
+        # Python at all - only pip operations (Install/Reinstall, to
+        # change torch/CUDA version) still need one, so this warning no
+        # longer implies SAM2 itself won't work when one's bundled.
+        has_bundled_python = frozen and self._target_dir and find_bundled_python(
+            os.path.dirname(self._target_dir)) is not None
+        if frozen and _find_system_python() is None:
+            if has_bundled_python:
+                status += (
+                    '<br><br>No separate system Python found on this machine - not '
+                    'needed to run SAM2 (this offline install already bundles one), '
+                    'but Install/Reinstall above (e.g. to switch CUDA versions) needs '
+                    'one. Install a recent version from '
+                    '<a href="https://www.python.org/downloads/" style="color:#6db3ff;">'
+                    'python.org</a> first if you need that.')
+            else:
+                status += (
+                    '<br><br><b>No Python installation found on this machine</b> - one is '
+                    "needed as a separate tool to install and run SAM2 (EDyssey itself "
+                    "doesn't ship one - see INSTALL.md). Any reasonably recent version "
+                    'works, install one from '
+                    '<a href="https://www.python.org/downloads/" style="color:#6db3ff;">'
+                    'python.org</a> first, then reopen this dialog.')
+            # Disables Install/Reinstall specifically (pip needs a real
+            # system Python either way) - not a statement that SAM2 itself
+            # won't work, see has_bundled_python above.
+            can_install = False
+
+        self.button_install.setEnabled(can_install)
+        self.combo_device.setEnabled(can_install)
 
         self.label_status.setText(status)
 
     def _python_prefix_for_run(self):
-        """[python, *args] to run torch/pip in - None if frozen and no
-        matching-version system Python is available."""
+        """[python, *args] to run pip in (Install/Reinstall only - Check
+        CUDA uses _python_prefix_for_check() instead, see its own docstring
+        for why) - None if frozen and no usable system Python is available.
+        Reuses whatever interpreter a prior install actually used (via the
+        marker file in target_dir) if one is recorded, instead of
+        re-resolving fresh each time - keeps Reinstall consistent with the
+        original install even if find_system_python()'s own default pick
+        would differ on a later call (e.g. a new Python got installed/
+        uninstalled meanwhile). Never prefers a bundled portable Python
+        (see find_bundled_python()) the way _python_prefix_for_check() does
+        - the embeddable package it's built from has no pip of its own."""
         if getattr(sys, 'frozen', False):
-            python_prefix = _find_system_python()
+            python_prefix = None
+            if self._target_dir:
+                python_prefix = read_interpreter_marker(self._target_dir)
+            if python_prefix is None:
+                python_prefix = _find_system_python()
             if python_prefix is None:
                 return None
             self._python_prefix = python_prefix
             return list(python_prefix)
         return [sys.executable]
+
+    def _python_prefix_for_check(self):
+        """[python, *args] for Check CUDA - mirrors worker_launch.py's own
+        _sam_command_frozen() resolution order exactly (bundled portable
+        Python first, if this is an *offline* build - see
+        find_bundled_python() - then the marker/system-Python fallback
+        _python_prefix_for_run() also uses), so Check CUDA verifies the
+        SAME interpreter SAM2 itself would actually run under, rather than
+        one that only makes sense for pip (which a bundled portable Python
+        doesn't have - see _python_prefix_for_run())."""
+        if getattr(sys, 'frozen', False) and self._target_dir:
+            python_prefix = find_bundled_python(os.path.dirname(self._target_dir))
+            if python_prefix is not None:
+                self._python_prefix = python_prefix
+                return list(python_prefix)
+        return self._python_prefix_for_run()
+
+    def _set_process_working_dir(self, process, working_dir=None):
+        """Point `process` at working_dir (target_dir/sam2_packages by
+        default) instead of leaving QProcess's default of inheriting this
+        app's own working directory - which EDyssey_MainWindow.py's own
+        `os.chdir(fld_path)` sets to sys._MEIPASS (`_internal`) in every
+        frozen build, for the entire lifetime of the app. `_internal` is
+        packed with this app's own bundled dependencies (numpy, etc.),
+        built against whatever Python built the app itself - a system
+        Python/pip subprocess implicitly launched with that as its CWD can
+        end up resolving an import (or a native .pyd's own DLL search)
+        against `_internal`'s copy instead of the one actually pip-
+        installed for THIS interpreter, producing the exact same "Module
+        use of pythonXYZ.dll conflicts" crash worker_sam.py's own sys.path
+        bug did - see worker_sam.py's own comment on the analogous fix
+        there. Check CUDA passes _torch_import_dir() explicitly instead of
+        relying on this default, since that may correctly resolve to
+        _internal itself for an *offline* build (bundled torch, no
+        sam2_packages) - _internal only needs avoiding when it'd be a
+        foreign shadow, not when it's genuinely where torch lives."""
+        working_dir = working_dir or self._target_dir
+        if working_dir:
+            # Must actually exist first, or QProcess.start() fails outright
+            # (CreateProcess itself rejects a nonexistent working
+            # directory) - target_dir may not exist yet this early (e.g.
+            # _start_install() just wiped it, see its own docstring; pip
+            # would normally create it itself, but only after its own
+            # process has already started).
+            os.makedirs(working_dir, exist_ok=True)
+            process.setWorkingDirectory(working_dir)
+
+    def _torch_import_dir(self):
+        """Directory to sys.path.insert(0, ...) so `import torch` in a
+        Check CUDA subprocess finds it - target_dir (sam2_packages) if an
+        online install actually put torch there, else its parent
+        (_internal) if an *offline* build bundled torch directly instead -
+        see worker_sam.py's identical online-vs-offline resolution and
+        _torch_sam2_available's matching "check both locations" logic.
+        Falls back to target_dir itself (even though it doesn't have
+        torch) if neither does, so a genuinely not-yet-installed state
+        still surfaces a plain, sensible ImportError instead of an empty
+        sys.path.insert."""
+        if os.path.isdir(os.path.join(self._target_dir, 'torch')):
+            return self._target_dir
+        parent = os.path.dirname(self._target_dir)
+        if os.path.isdir(os.path.join(parent, 'torch')):
+            return parent
+        return self._target_dir
 
     def _pip_base_cmd(self):
         """[python, *args, -m, pip, install, (--target <dir>)]. None if
@@ -237,13 +364,13 @@ class SAM2SetupDialog(qtw.QDialog):
         whether the installed torch build can actually see the GPU."""
         if self._process is not None and self._process.state() != QProcess.NotRunning:
             return  # an install is already running - don't clobber it
-        cmd = self._python_prefix_for_run()
+        cmd = self._python_prefix_for_check()
         if cmd is None:
             self._refresh_status()
             return
         script = (
-            "import sys\n"
-            f"sys.path.insert(0, {self._target_dir!r})\n" if self._target_dir else "import sys\n"
+            f"import sys\nsys.path.insert(0, {self._torch_import_dir()!r})\n"
+            if self._target_dir else "import sys\n"
         )
         script += (
             "try:\n"
@@ -263,9 +390,27 @@ class SAM2SetupDialog(qtw.QDialog):
         self._process = QProcess(self)
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
+        self._set_process_working_dir(
+            self._process, self._torch_import_dir() if self._target_dir else None)
         self._process.start(cmd[0], cmd[1:])
 
     def _start_install(self):
+        # Wipe target_dir first (Install and Reinstall both land here) rather
+        # than relying on `pip install --upgrade --target` alone: pip's own
+        # "is this already satisfied" check just reads the recorded
+        # dist-info metadata, oblivious to which interpreter wrote it - so a
+        # Reinstall picking a *different* system Python than a previous
+        # attempt (installed torch as e.g. cp311, this run resolves to
+        # cp312) can leave the old interpreter's compiled .pyd files sitting
+        # there unreplaced if pip decides the recorded version already
+        # satisfies the requirement, producing exactly the "Module use of
+        # pythonXYZ.dll conflicts" mismatch this dialog exists to prevent.
+        # Starting from an empty directory every time makes every install
+        # fully self-consistent regardless of what an earlier attempt left
+        # behind.
+        if self._target_dir and os.path.isdir(self._target_dir):
+            shutil.rmtree(self._target_dir, ignore_errors=True)
+
         base_cmd = self._pip_base_cmd()
         if base_cmd is None:
             self._refresh_status()
@@ -318,6 +463,7 @@ class SAM2SetupDialog(qtw.QDialog):
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
         self._process.finished.connect(self._on_step_finished)
+        self._set_process_working_dir(self._process)
         self._process.start(cmd[0], cmd[1:])
 
     def _on_output(self):

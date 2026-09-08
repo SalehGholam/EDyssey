@@ -13,14 +13,14 @@ for how each of the other 4 tabs applies it.
 """
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
-from .display_settings import DisplaySettings, PLOT_DEFINITIONS
+from .display_settings import DisplaySettings, PLOT_DEFINITIONS, COLORMAP_OPTIONS
 from .app_theme import AppTheme, PALETTES, THEME_LABELS
 
 
 class EditSettingsDialog(qtw.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Edit Display Size')
+        self.setWindowTitle('Display Preferences')
         # Not Qt.Dialog's default modality - a plain top-level window the
         # user can leave open (and move sliders on) while switching between
         # the other tabs, which is the whole point of live-adjusting these.
@@ -63,6 +63,29 @@ class EditSettingsDialog(qtw.QDialog):
         theme_layout.addWidget(self.combo_theme)
         theme_layout.addStretch(1)
         self.layout.addWidget(theme_box)
+
+        # Colormaps - same immediate-apply convention as Theme above (a
+        # live, easily-reversible preference, not something worth batching
+        # behind the Apply button below). Applies to every tab's navigation
+        # image / diffraction pattern display (ROI on 4D, Navigator, ROI
+        # Tracker, SAM2 Tracker) - see each tab's own apply_display_settings
+        # override, wired to DisplaySettings.changed the same way as
+        # everything else in this dialog.
+        cmap_box = qtw.QGroupBox('Colormaps')
+        cmap_layout = qtw.QFormLayout(cmap_box)
+        cmap_layout.setLabelAlignment(Qt.AlignRight)
+        settings = DisplaySettings.instance()
+        self.combo_navCmap = qtw.QComboBox()
+        self.combo_navCmap.addItems(COLORMAP_OPTIONS)
+        self.combo_navCmap.setCurrentText(settings.nav_colormap)
+        self.combo_navCmap.currentTextChanged.connect(self._on_colormap_changed)
+        cmap_layout.addRow('Navigation Image', self.combo_navCmap)
+        self.combo_dpCmap = qtw.QComboBox()
+        self.combo_dpCmap.addItems(COLORMAP_OPTIONS)
+        self.combo_dpCmap.setCurrentText(settings.dp_colormap)
+        self.combo_dpCmap.currentTextChanged.connect(self._on_colormap_changed)
+        cmap_layout.addRow('Diffraction Pattern', self.combo_dpCmap)
+        self.layout.addWidget(cmap_box)
 
         form_box = qtw.QGroupBox('Ribbon')
         form = qtw.QFormLayout(form_box)
@@ -184,6 +207,14 @@ class EditSettingsDialog(qtw.QDialog):
         """Theme combo changed: switch live (see AppTheme.set_theme's own
         docstring for exactly what re-colors and what doesn't)."""
         AppTheme.instance().set_theme(self.combo_theme.currentData())
+
+    def _on_colormap_changed(self, _text):
+        """Either colormap combo changed: apply live, same as Theme above -
+        both combos funnel through here since only one of the two values
+        actually needs updating (set_values leaves the other unchanged)."""
+        DisplaySettings.instance().set_values(
+            nav_colormap=self.combo_navCmap.currentText(),
+            dp_colormap=self.combo_dpCmap.currentText())
 
     def apply_values(self):
         """Push every control's current value to DisplaySettings at once -

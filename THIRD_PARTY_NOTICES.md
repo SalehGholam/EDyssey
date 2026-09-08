@@ -58,6 +58,23 @@ this file documents what each one is, its license, and where it comes from.
   `asset_fetch.py` because the app's existing "nano" option needs it to
   function, not because the licensing question has been resolved.
 
+## ffmpeg (`ffmpeg.exe`)
+
+- **What**: Used for fast `.mp4` clip export (Help > Download ffmpeg... -
+  see [EDyssey/io_utils/video.py](EDyssey/io_utils/video.py)). Not required -
+  video export falls back to a slower/larger `.gif` without it.
+- **Source**: Gyan Doshi's Windows ffmpeg builds - one of the Windows build
+  providers linked directly from ffmpeg.org's own downloads page. Fetched
+  from their [GitHub Releases mirror](https://github.com/GyanD/codexffmpeg/releases)
+  rather than [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) directly (same
+  build, same author - gyan.dev's own server throttles downloads heavily).
+  Only `bin/ffmpeg.exe` is extracted from the zip; `ffplay`/`ffprobe`/docs/
+  presets are discarded.
+- **License**: GPL v3 (this specific build; ffmpeg itself is LGPL/GPL
+  depending on which optional components are compiled in). No new
+  licensing constraint on EDyssey - it's already GPL-3.0 for unrelated
+  reasons (PyQt5/HyperSpy, see below).
+
 ## Not shipped / not downloaded
 
 Two files exist on developer machines but are **not** distributed by the

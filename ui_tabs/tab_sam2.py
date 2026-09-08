@@ -31,11 +31,13 @@ import EDyssey.io_utils as io
 from EDyssey.tracking_utils import asset_fetch
 from typing import Literal
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
+from .asset_download_dialog import confirm_and_download
 from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
+from .display_settings import DisplaySettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .transposed_object_table import TransposedObjectTable
@@ -714,7 +716,7 @@ class Tab_SAM2(TabBase):
         self.radio_maskSelected.toggled.connect(self._on_mask_mode_changed)
 
         self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels, row_tooltips)
-        layout_featurePanel.addWidget(self.tree_objects, 1)
+        layout_featurePanel.addWidget(self.tree_objects)
         # Tall enough for their content: dup/del hold a 30px button, end
         # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
         row_heights = {'use': 24, 'idx': 24, 'fr_idx': 24, 'end': 28,
@@ -722,6 +724,11 @@ class Tab_SAM2(TabBase):
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.setMinimumWidth(200)
+        # tree_objects is now fixed to its own (small) content height - see
+        # TransposedObjectTable.__init__ - so this absorbs the rest of the
+        # column's height as plain background instead of the table itself
+        # stretching all the way down to it.
+        layout_featurePanel.addStretch(1)
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         self.tree_objects.itemChanged.connect(self.on_item_check_changed)
 
@@ -852,9 +859,6 @@ class Tab_SAM2(TabBase):
         self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
         self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
         
-        self.label_imgCounter = qtw.QLabel('Img No.')
-        layout_slider.addWidget(self.label_imgCounter)
-
         # Prev/Next sit together, right before the slider itself, rather
         # than flanking it on both sides.
         self.button_prevFrame = qtw.QPushButton('◀')
@@ -1037,6 +1041,19 @@ class Tab_SAM2(TabBase):
         # sizes) - see TabBase.apply_display_settings.
         self.apply_display_settings()
 #%% load data
+    def apply_display_settings(self):
+        """TabBase's own ribbon/figure-size handling, plus this tab's own
+        nav/DP colormap - see display_settings.py's nav_colormap/
+        dp_colormap and the Edit menu's Display Size dialog. 'seg'
+        deliberately keeps its own 'gray' default instead - show_mask()
+        draws colored (tab10) translucent mask overlays on top of it, which
+        need a plain grayscale background to stay readable."""
+        super().apply_display_settings()
+        settings = DisplaySettings.instance()
+        self.img_display['nav'].set_cmap(settings.nav_colormap)
+        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.canvas.draw_idle()
+
     def show_dialog(self, f):
         """Open the file/folder dialog matching whichever of the three
         directory buttons was clicked (identified via self.sender()) and
@@ -1450,27 +1467,41 @@ class Tab_SAM2(TabBase):
         self.spinner.start()
 
     def _ensure_sam2_ready(self, on_ready, on_failed):
-        """Ensure the SAM2 checkpoint is present (downloading it first if
-        not - not bundled in the installer, see asset_fetch.py) before
-        calling `on_ready()`. Runs the check/download in a background
-        worker with the loading spinner up, so a first-use ~898MB download
-        doesn't freeze the GUI. Calls `on_failed(error_msg)` instead if the
+        """Ensure the SAM2 checkpoint is present before calling `on_ready()`
+        - not bundled in the installer, see asset_fetch.py. Already-cached
+        case (the common one, after first use) just calls on_ready()
+        immediately with the loading spinner, no download UI at all. A
+        genuine first-time download asks for confirmation and shows live
+        progress instead (see asset_download_dialog.py) - was previously
+        silent behind a generic spinner, surprising for a ~898MB fetch.
+        Calls `on_failed(error_msg)` instead if the user declines or the
         download fails, e.g. no internet connection."""
+        dest = os.path.join(asset_fetch.resolve_sam2_checkpoint_dir(),
+                             asset_fetch.SAM2_CHECKPOINT_FILENAME)
+        already_cached = (os.path.isfile(dest)
+                           and os.path.getsize(dest) == asset_fetch.SAM2_CHECKPOINT_SIZE)
+
         self._load_spinner()
 
-        def _ready(_path, _idx):
+        def _ready(_path=None):
             self.spinner.stop()
             on_ready()
 
-        def _failed(error_msg, _idx):
+        def _failed(error_msg):
             self.spinner.stop()
-            self.logger.error('SAM2 checkpoint download failed:\n%s', error_msg)
+            if error_msg:
+                self.logger.error('SAM2 checkpoint download failed:\n%s', error_msg)
             on_failed(error_msg)
 
-        worker = WorkerThread_General(asset_fetch.ensure_sam2_checkpoint, 0)
-        worker.signals.results.connect(_ready)
-        worker.signals.error.connect(_failed)
-        self.threadpool.start(worker)
+        if already_cached:
+            _ready()
+            return
+
+        confirm_and_download(
+            self, self.threadpool, 'Download SAM2 Checkpoint',
+            'SAM2 needs its model checkpoint (~898 MB), not bundled with the app. '
+            'Download it now? An internet connection is needed.',
+            asset_fetch.ensure_sam2_checkpoint, _ready, _failed)
 
     def load_navSignal(self):
         """Validate the nav-signal path, reset any existing analysis, and load
@@ -2559,7 +2590,7 @@ class Tab_SAM2(TabBase):
             mask = np.asarray(mask, dtype=bool)
             if not mask.any():
                 continue
-            color = np.array([*cmap(obj_id2 % 10)[:3], 0.45])
+            color = np.array([*cmap(obj_id2 % 10)[:3], 0.65])
             composite[mask] = color
             cx, cy = io.mask_centroid(mask)
             labels.append((obj_id2, cx, cy))
@@ -2585,7 +2616,7 @@ class Tab_SAM2(TabBase):
                     self.logger.debug('All-objects mask artist already removed.', exc_info=True)
             self._all_mask_artists = []
         cmap = plt.get_cmap("tab10")
-        color = np.array([*cmap(cmap_idx)[:3], 0.45])
+        color = np.array([*cmap(cmap_idx)[:3], 0.65])
         h, w = mask.shape[-2:]
         # mask = mask.astype(np.uint8)
         mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)

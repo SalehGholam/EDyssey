@@ -25,7 +25,7 @@ specific compatibility surface.
 """
 import PyQt5.QtWidgets as qtw
 import PyQt5.QtGui as qtg
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
 
 
 class _TransposedColumnItem:
@@ -146,6 +146,39 @@ class TransposedObjectTable(qtw.QTableWidget):
         self.setSelectionBehavior(qtw.QAbstractItemView.SelectColumns)
         self.setSelectionMode(qtw.QAbstractItemView.SingleSelection)
         self.setEditTriggers(qtw.QAbstractItemView.NoEditTriggers)
+
+        # Fixed vertically (leave horizontal policy at whatever Qt's own
+        # default already was): the row count is fixed for this table's
+        # whole lifetime (set once above, from row_keys - only the COLUMN
+        # count changes as objects are added/removed), so letting it keep
+        # the default Expanding vertical policy stretched it all the way to
+        # the bottom of its ribbon column regardless of how few rows it
+        # actually has. sizeHint() below reports its real fixed content
+        # height instead, so it sits at its natural height and leaves any
+        # remaining column height as plain background below it (both tabs'
+        # own addWidget call adds a trailing addStretch() for that space,
+        # not a stretch factor on this widget itself).
+        policy = self.sizePolicy()
+        policy.setVerticalPolicy(qtw.QSizePolicy.Fixed)
+        self.setSizePolicy(policy)
+
+    def _content_height(self):
+        height = self.frameWidth() * 2
+        for row in range(self.rowCount()):
+            height += self.rowHeight(row)
+        # Reserved unconditionally (not just when actually visible) so a
+        # horizontal scrollbar appearing later, once enough object columns
+        # overflow the column's width, doesn't squeeze the row heights
+        # above into a table whose already-fixed sizeHint didn't account
+        # for it.
+        height += self.horizontalScrollBar().sizeHint().height()
+        return height
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), self._content_height())
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
     def clear(self):
         self.setColumnCount(0)

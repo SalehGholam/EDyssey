@@ -2,7 +2,10 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-![Icon Image](New_Icon.png)
+<p align="center">
+  <img src="docs/New_Icon.png" alt="EDyssey Icon" width="180">
+  <img src="docs/UI_screenshot.png" alt="EDyssey UI Screenshot" width="520">
+</p>
 
 EDyssey is a PyQt5 desktop application for processing
 and analyzing 4D-STEM Tomography data (scanning electron diffraction) datasets. It covers a range of necessary steps to reach the final 3D ED dataset.
@@ -13,8 +16,6 @@ The normal workflow is:
 - Extract 3D ED frames from the segmented regions
 The software currently supports raw ASI's tpx3, QD's mib, Hyperspy's hspy and
 zspy, ASTAR's blo, and both eventem's own and conventional HDF5 data types.
-
-<!-- screenshot: docs/screenshot.png -->
 
 ## Install
 

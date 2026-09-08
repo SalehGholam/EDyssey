@@ -1,6 +1,8 @@
 other_scripts/
 EDyssey/tracking_utils/opencv_models
 EDyssey/tracking_utils/SAM2_checkpoints
+EDyssey/tracking_utils/ffmpeg
+EDyssey/portable_python
 temp/
 EDyssey/io_utils/temp
 tests/test_data
@@ -8,7 +10,6 @@ tests/test_data
 *.msi
 .claude/
 EDyssey/io_utils/tab_tracking_log.txt
-New Icon.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -8,7 +8,10 @@ first tried out and compared on real tomogram data.
 """
 import numpy as np
 from scipy.ndimage import gaussian_filter, median_filter
-from scipy.signal import convolve2d
+# scipy.signal (convolve2d below, in estimate_noise_sigma) is deferred to
+# first use - it's a slow import (~0.8s, mostly its own array-API-backend
+# setup) that would otherwise run at app startup even for sessions that
+# never denoise anything.
 from skimage.restoration import (
     denoise_bilateral, denoise_tv_chambolle, denoise_wavelet, denoise_nl_means,
 )
@@ -49,6 +52,7 @@ def estimate_noise_sigma(img):
     starting point for the Non-Local Means kernel width in denoise_image
     below - skimage's own estimate_sigma needs PyWavelets even for methods
     that otherwise don't, this doesn't need any of that."""
+    from scipy.signal import convolve2d
     laplacian_kernel = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], dtype=float)
     conv = convolve2d(img, laplacian_kernel, mode='same', boundary='symm')
     h, w = img.shape

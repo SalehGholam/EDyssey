@@ -26,6 +26,19 @@ RIBBON_HEIGHT_SCALE_DEFAULT = 1.0
 PLOT_FONT_SCALE_DEFAULT = 1.0
 FIGURE_SIZE_SCALE_DEFAULT = 1.0
 
+# Curated, not matplotlib's full list - perceptually-uniform ones
+# (viridis/inferno/plasma/magma/cividis) plus a few classic/high-contrast
+# options - each paired with its own valid _r (reversed) variant, since
+# matplotlib registers one for every named colormap.
+COLORMAP_OPTIONS = [
+    'gray', 'gray_r', 'viridis', 'viridis_r', 'inferno', 'inferno_r',
+    'plasma', 'plasma_r', 'magma', 'magma_r', 'cividis', 'cividis_r',
+    'turbo', 'turbo_r', 'hot', 'hot_r', 'bone', 'bone_r',
+    'copper', 'copper_r', 'twilight', 'twilight_r',
+]
+NAV_COLORMAP_DEFAULT = 'viridis'
+DP_COLORMAP_DEFAULT = 'inferno'
+
 # Every individually-resizable plot: (key, tab_name, figure_attr, label).
 # `key` is the stable id used in figure_size_scales/JSON; `tab_name` is the
 # TabBase._tab_name each one belongs to (see TabBase._display_settings_figures,
@@ -55,6 +68,8 @@ def _default_state():
         'ribbon_height_scale': RIBBON_HEIGHT_SCALE_DEFAULT,
         'plot_font_scale': PLOT_FONT_SCALE_DEFAULT,
         'figure_size_scales': {key: FIGURE_SIZE_SCALE_DEFAULT for key in PLOT_KEYS},
+        'nav_colormap': NAV_COLORMAP_DEFAULT,
+        'dp_colormap': DP_COLORMAP_DEFAULT,
     }
 
 
@@ -120,6 +135,13 @@ class DisplaySettings(QObject):
             key: saved_scales.get(key, defaults['figure_size_scales'][key])
             for key in PLOT_KEYS
         }
+        # A colormap saved by an older version (or hand-edited to something
+        # invalid) falls back to the default rather than being passed
+        # through to matplotlib, which would raise on an unknown name.
+        nav_cmap = state.get('nav_colormap', defaults['nav_colormap'])
+        self.nav_colormap = nav_cmap if nav_cmap in COLORMAP_OPTIONS else defaults['nav_colormap']
+        dp_cmap = state.get('dp_colormap', defaults['dp_colormap'])
+        self.dp_colormap = dp_cmap if dp_cmap in COLORMAP_OPTIONS else defaults['dp_colormap']
 
     def _current_state(self):
         return {
@@ -128,6 +150,8 @@ class DisplaySettings(QObject):
             'ribbon_height_scale': self.ribbon_height_scale,
             'plot_font_scale': self.plot_font_scale,
             'figure_size_scales': dict(self.figure_size_scales),
+            'nav_colormap': self.nav_colormap,
+            'dp_colormap': self.dp_colormap,
         }
 
     def _persist(self):
@@ -143,7 +167,8 @@ class DisplaySettings(QObject):
         return cls._instance
 
     def set_values(self, ribbon_text_scale=None, ribbon_icon_size=None,
-                   ribbon_height_scale=None, plot_font_scale=None, figure_size_scales=None):
+                   ribbon_height_scale=None, plot_font_scale=None, figure_size_scales=None,
+                   nav_colormap=None, dp_colormap=None):
         """Update whichever values are given (None = leave unchanged), then
         emit `changed` once for the whole batch and persist to disk - the
         Display Size dialog's "Apply" button calls this once with every
@@ -166,6 +191,10 @@ class DisplaySettings(QObject):
         if figure_size_scales:
             self.figure_size_scales.update(
                 {k: v for k, v in figure_size_scales.items() if k in self.figure_size_scales})
+        if nav_colormap is not None:
+            self.nav_colormap = nav_colormap
+        if dp_colormap is not None:
+            self.dp_colormap = dp_colormap
         self._persist()
         self.changed.emit()
 

@@ -29,6 +29,7 @@ import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
 from .base_tab import TabBase, resolve_hdf5_dtype, glob_ext_for_dtype, HDF5_EVENTEM_LABEL
+from .display_settings import DisplaySettings
 from .threshold_dialog import ThresholdDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .worker_thread import ProcessStderrBuffer, WorkerThread_General
@@ -395,7 +396,7 @@ class Tab_ROI_on_4D(TabBase):
         layout_edgeDetection_row_2.addWidget(self.spinbox_edgeDirection)
 
         self._ribbon_inline_separator(layout_edgeDetection_row_2)
-        self.button_computeEdgeDp = qtw.QPushButton('Re-compute DP')
+        self.button_computeEdgeDp = qtw.QPushButton('Recompute DP')
         self.button_computeEdgeDp.setFixedSize(button_w, button_h)
         self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
         self.button_computeEdgeDp.setToolTip(
@@ -876,6 +877,19 @@ class Tab_ROI_on_4D(TabBase):
         # sizes) - see TabBase.apply_display_settings.
         self.apply_display_settings()
 #%% functions
+    def apply_display_settings(self):
+        """TabBase's own ribbon/figure-size handling, plus this tab's own
+        nav/DP colormap - see display_settings.py's nav_colormap/
+        dp_colormap and the Edit menu's Display Size dialog. 'nav_roi'
+        deliberately keeps its own 'gray' default instead - show_seg_mask()
+        draws a translucent segmentation-mask overlay on it, which needs a
+        plain grayscale background to stay readable."""
+        super().apply_display_settings()
+        settings = DisplaySettings.instance()
+        self.img_display['nav'].set_cmap(settings.nav_colormap)
+        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.canvas.draw_idle()
+
     def activate_lineEdit_scanSize(self):
         if self.checkbox_scanSize.isChecked():
             self.spinbox_scanSize_x.setDisabled(True)
@@ -1438,7 +1452,10 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display = {}
         img_temp = np.zeros((512,512), dtype='uint16')
         self.img_display['nav'] = self.ax_nav.imshow(img_temp, cmap='viridis')
-        self.img_display['nav_roi'] = self.ax_nav_roi.imshow(img_temp, cmap='viridis')
+        # 'gray', not nav_colormap - show_seg_mask() draws a translucent
+        # segmentation-mask overlay on this one, which needs a plain
+        # grayscale background to stay readable (see apply_display_settings).
+        self.img_display['nav_roi'] = self.ax_nav_roi.imshow(img_temp, cmap='gray')
 
         self.img_display['dp'] = self.ax_dp.imshow(img_temp, cmap='inferno')
         self.img_display['dp'].set_norm(SymLogNorm(linthresh=1))

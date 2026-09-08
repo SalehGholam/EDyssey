@@ -20,9 +20,26 @@ from matplotlib.animation import FuncAnimation
 from .plotting import ReadableScaleBar, draw_reciprocal_scale_circles
 from .progress import _log_or_print
 
-_ffmpeg = shutil.which('ffmpeg')
-if _ffmpeg:
-    plt.rcParams['animation.ffmpeg_path'] = _ffmpeg
+_ffmpeg_cache = None
+_ffmpeg_checked = False
+
+
+def _find_ffmpeg():
+    """The on-demand-downloaded ffmpeg (Help > Download ffmpeg..., see
+    EDyssey_MainWindow.py) if present, else whatever's on PATH, else None
+    (callers fall back to a GIF export). asset_fetch is imported here, not
+    at module level - EDyssey.tracking_utils's own __init__.py imports back
+    into this same EDyssey.io_utils package (video.py's own), which is
+    still mid-initialization the first time video.py itself gets imported
+    (via io_utils_ui.py) - a circular import if done eagerly."""
+    global _ffmpeg_cache, _ffmpeg_checked
+    if not _ffmpeg_checked:
+        from EDyssey.tracking_utils.asset_fetch import resolve_ffmpeg_exe
+        _ffmpeg_cache = resolve_ffmpeg_exe() or shutil.which('ffmpeg')
+        if _ffmpeg_cache:
+            plt.rcParams['animation.ffmpeg_path'] = _ffmpeg_cache
+        _ffmpeg_checked = True
+    return _ffmpeg_cache
 
 def convert_to_rgb(imgs):
     """Convert a stack of grayscale images to an RGBA/RGB array suitable for video encoding.
@@ -134,7 +151,7 @@ def create_clip_dp(fn, s, scale=None, center=None, dpi=150, fps=5, vmin=None, vm
     draw_reciprocal_scale_circles(ax, scale, s[0].shape, center=center)
     if fps is None:
         fps = max(1, len(s) // 20)
-    path_ffmpeg = shutil.which('ffmpeg')
+    path_ffmpeg = _find_ffmpeg()
     if path_ffmpeg:
         fig.canvas.draw()
         W, H = fig.canvas.get_width_height()
@@ -236,7 +253,7 @@ def create_clip_tracking(fn, imgs, rois=None, ref_rois=None, scale=None, dpi=150
                                             linestyle='--', facecolor='none')
             ax.add_patch(ref_rect[0])
 
-    path_ffmpeg = shutil.which('ffmpeg')
+    path_ffmpeg = _find_ffmpeg()
     if path_ffmpeg:
         fig.canvas.draw()
         W, H = fig.canvas.get_width_height()
@@ -311,7 +328,7 @@ def create_clip_tracking_with_mask(fn, imgs, masks, obj_id=1, scale=None,
     img_mask_plot.set_data(_make_mask_rgba(masks[0]))
     if fps is None:
         fps = max(1, len(imgs) // 20)
-    path_ffmpeg = shutil.which('ffmpeg')
+    path_ffmpeg = _find_ffmpeg()
     if path_ffmpeg:
         fig.canvas.draw()
         W, H = fig.canvas.get_width_height()

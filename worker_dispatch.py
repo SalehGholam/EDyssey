@@ -3,7 +3,8 @@
 invocation - runs the named worker_*.py script (workers/, see _base_dir())
 via `runpy`, so its own `if __name__ == '__main__':` code needs no changes.
 worker_dispatch.py itself stays at the repo root; only the scripts it
-dispatches to live in workers/.
+dispatches to live in workers/ (EDyssey/workers/ in a frozen install - see
+EDyssey.spec's extra_datas).
 """
 import os
 import sys
@@ -19,12 +20,13 @@ WORKER_SCRIPTS = {
 
 
 def _base_dir():
-    """workers/, under sys._MEIPASS when frozen (see EDyssey.spec's
-    extra_datas) or this file's own directory otherwise."""
+    """EDyssey/workers/ under sys._MEIPASS when frozen (see EDyssey.spec's
+    extra_datas), or plain workers/ next to this file's own directory (the
+    repo root) otherwise."""
     if getattr(sys, 'frozen', False):
         root = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    else:
-        root = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(root, 'EDyssey', 'workers')
+    root = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(root, 'workers')
 
 

@@ -29,6 +29,9 @@
 ;   EDyssey\tracking_utils\opencv_models\dasiamrpn_model.onnx
 ;   EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_cls1.onnx
 ;   EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_r1.onnx
+;   EDyssey\tracking_utils\ffmpeg\ffmpeg.exe (see THIRD_PARTY_NOTICES.md -
+;     Help > Download ffmpeg... in the app itself is the easiest way to get
+;     a copy at exactly this path)
 ;
 ; This installer lands at several GB (torch+CUDA alone is multi-GB) -
 ; deliberately NOT built by .github/workflows/build-installer.yml or
@@ -41,9 +44,26 @@
 #include "EDyssey_common.iss"
 
 [Files]
-Source: "..\EDyssey\tracking_utils\SAM2_checkpoints\sam2.1_hiera_large.pt"; DestDir: "{app}\EDyssey\tracking_utils\SAM2_checkpoints"; Flags: ignoreversion
-Source: "..\EDyssey\tracking_utils\opencv_models\backbone.onnx"; DestDir: "{app}\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
-Source: "..\EDyssey\tracking_utils\opencv_models\neckhead.onnx"; DestDir: "{app}\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
-Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_model.onnx"; DestDir: "{app}\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
-Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_cls1.onnx"; DestDir: "{app}\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
-Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_r1.onnx"; DestDir: "{app}\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+; DestDir is {app}\_internal\EDyssey\... - NOT {app}\EDyssey\... (a real,
+; pre-existing mismatch fixed here): asset_fetch.py's _install_dir() reads
+; sys._MEIPASS/EDyssey/tracking_utils, and sys._MEIPASS for a PyInstaller
+; 6.x onedir build (confirmed against this repo's own dist\EDyssey\ layout)
+; is {app}\_internal, not {app} itself. Staged to {app}\EDyssey\... before,
+; these files sat somewhere _install_dir() never actually looked - silently
+; falling through to _writable_dir() and re-downloading over the internet
+; on first use anyway, defeating this installer's whole "zero internet,
+; ever" point for every one of these files.
+Source: "..\EDyssey\tracking_utils\SAM2_checkpoints\sam2.1_hiera_large.pt"; DestDir: "{app}\_internal\EDyssey\tracking_utils\SAM2_checkpoints"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\opencv_models\backbone.onnx"; DestDir: "{app}\_internal\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\opencv_models\neckhead.onnx"; DestDir: "{app}\_internal\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_model.onnx"; DestDir: "{app}\_internal\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_cls1.onnx"; DestDir: "{app}\_internal\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\opencv_models\dasiamrpn_kernel_r1.onnx"; DestDir: "{app}\_internal\EDyssey\tracking_utils\opencv_models"; Flags: ignoreversion
+Source: "..\EDyssey\tracking_utils\ffmpeg\ffmpeg.exe"; DestDir: "{app}\_internal\EDyssey\tracking_utils\ffmpeg"; Flags: ignoreversion
+; Portable Python 3.12 runtime (see EDyssey/portable_python/ - not tracked
+; in git, see .gitignore) - lets worker_sam.py run the bundled torch/sam2
+; via a real, guaranteed-matching interpreter without depending on the
+; target machine having Python 3.12 (or any Python at all) already
+; installed, unlike the online installer's pip-at-runtime approach. See
+; python_finder.find_bundled_python()/worker_launch.py's own use of it.
+Source: "..\EDyssey\portable_python\*"; DestDir: "{app}\_internal\portable_python"; Flags: recursesubdirs createallsubdirs ignoreversion

@@ -30,6 +30,7 @@ from matplotlib.figure import Figure
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
+from .display_settings import DisplaySettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -169,7 +170,6 @@ class Tab_Create_NavSignal(TabBase):
         layout_smartScan_2 = qtw.QHBoxLayout()
         layout_smartScan.addLayout(layout_smartScan_2)
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files')
-        self.button_checkSmartScanFiles.setFixedWidth(75)
         self.button_checkSmartScanFiles.setToolTip(
             'Review/fix the automatic per-angle file match before calculating')
         self.button_checkSmartScanFiles.setDisabled(True)
@@ -892,6 +892,17 @@ class Tab_Create_NavSignal(TabBase):
         self.apply_display_settings()
 
     #%% functions
+    def apply_display_settings(self):
+        """TabBase's own ribbon/figure-size handling, plus this tab's own
+        nav/DP colormap - see display_settings.py's nav_colormap/
+        dp_colormap and the Edit menu's Display Size dialog. img_display_mask
+        is this tab's "Summed DP" preview, despite the name."""
+        super().apply_display_settings()
+        settings = DisplaySettings.instance()
+        self.img_display.set_cmap(settings.nav_colormap)
+        self.img_display_mask.set_cmap(settings.dp_colormap)
+        self.canvas.draw_idle()
+
     def show_dialog(self, f):
         """Open a folder picker for whichever button (button_dir or
         button_dir_save) triggered it, and fill the corresponding line edit."""

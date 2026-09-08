@@ -13,9 +13,11 @@ rather than duplicating it.
 import hashlib
 import logging
 import os
+import shutil
 import sys
 import urllib.request
 import urllib.error
+import zipfile
 
 from EDyssey.io_utils.app_dirs import writable_data_dir
 
@@ -131,7 +133,13 @@ NANOTRACK_MODELS = {
 }
 
 
-def _download(url, dest_path, expected_size=None, expected_sha256=None, progress_callback=None):
+class AssetDownloadCancelled(AssetDownloadError):
+    """Raised when `cancel_event` was set mid-download - a distinct type so
+    callers can skip showing this one as an error (the user asked for it)."""
+
+
+def _download(url, dest_path, expected_size=None, expected_sha256=None,
+               progress_callback=None, cancel_event=None):
     """Stream `url` to `dest_path`, verifying size/hash before an atomic
     rename into place - a cancelled or failed download this way never leaves
     a corrupt file at `dest_path` for a later run to mistake for the real
@@ -141,6 +149,9 @@ def _download(url, dest_path, expected_size=None, expected_sha256=None, progress
         progress_callback: optional `callback(bytes_done, total_bytes)`,
             called after each chunk - `total_bytes` is 0 if the server
             didn't send Content-Length.
+        cancel_event: optional `threading.Event` - checked after each chunk;
+            setting it mid-download raises AssetDownloadCancelled instead of
+            finishing.
     """
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
     part_path = dest_path + '.part'
@@ -152,6 +163,8 @@ def _download(url, dest_path, expected_size=None, expected_sha256=None, progress
             done = 0
             with open(part_path, 'wb') as f:
                 while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise AssetDownloadCancelled(f'Download of {url!r} was cancelled.')
                     chunk = resp.read(1024 * 1024)
                     if not chunk:
                         break
@@ -161,6 +174,12 @@ def _download(url, dest_path, expected_size=None, expected_sha256=None, progress
                     done += len(chunk)
                     if progress_callback is not None:
                         progress_callback(done, total)
+    except AssetDownloadCancelled:
+        try:
+            os.remove(part_path)
+        except OSError:
+            pass
+        raise
     except (urllib.error.URLError, OSError) as exc:
         try:
             os.remove(part_path)
@@ -197,7 +216,7 @@ def resolve_sam2_checkpoint_dir():
     return target
 
 
-def ensure_sam2_checkpoint(progress_callback=None):
+def ensure_sam2_checkpoint(progress_callback=None, cancel_event=None):
     """Return the SAM2 checkpoint's path, downloading it first if missing."""
     dest = os.path.join(resolve_sam2_checkpoint_dir(), SAM2_CHECKPOINT_FILENAME)
     if os.path.isfile(dest) and os.path.getsize(dest) == SAM2_CHECKPOINT_SIZE:
@@ -205,7 +224,7 @@ def ensure_sam2_checkpoint(progress_callback=None):
     _logger.info('SAM2 checkpoint not found locally, downloading (~%.0f MB)...',
                  SAM2_CHECKPOINT_SIZE / 1e6)
     _download(SAM2_CHECKPOINT_URL, dest, expected_size=SAM2_CHECKPOINT_SIZE,
-              progress_callback=progress_callback)
+              progress_callback=progress_callback, cancel_event=cancel_event)
     return dest
 
 
@@ -236,7 +255,18 @@ def resolve_opencv_models_dir(tracking_method):
     return target
 
 
-def ensure_tracker_models(tracking_method, progress_callback=None):
+def tracker_models_available(tracking_method):
+    """Whether ensure_tracker_models(tracking_method) would need to
+    download anything - True for 'csrt'/'mil'/the xcorr methods too, which
+    need no external weights at all."""
+    models = _models_for(tracking_method)
+    if not models:
+        return True
+    return _resolve_existing(
+        'opencv_models', {fn: info['size'] for fn, info in models.items()}) is not None
+
+
+def ensure_tracker_models(tracking_method, progress_callback=None, cancel_event=None):
     """Download whichever of `tracking_method`'s model file(s) are missing
     from resolve_opencv_models_dir()'s target - a no-op for 'csrt'/'mil'/
     the xcorr methods, which need no external weights.
@@ -257,4 +287,69 @@ def ensure_tracker_models(tracking_method, progress_callback=None):
         _logger.info('Tracker model %s not found locally, downloading (~%.1f MB)...',
                      filename, info['size'] / 1e6)
         _download(info['url'], dest, expected_size=info['size'],
-                  expected_sha256=info['sha256'], progress_callback=progress_callback)
+                  expected_sha256=info['sha256'], progress_callback=progress_callback,
+                  cancel_event=cancel_event)
+
+
+# Gyan Doshi's essentials build - a well-known, widely-trusted Windows
+# ffmpeg distribution (linked directly from ffmpeg.org's own download
+# page). Fetched from its GitHub Releases mirror rather than gyan.dev
+# itself: gyan.dev's own server throttles downloads hard (~140KB/s
+# measured, turning an ~85MB file into 10+ minutes regardless of the
+# user's own connection), while GitHub's release-asset CDN serves the
+# same file in a few seconds. Pinned to one release (unlike gyan.dev's
+# "always current" URL, which has no per-version path) - see
+# resolve_ffmpeg_exe()'s size-only (not exact-size) check below; bump
+# the version in this URL occasionally rather than depending on it for
+# up-to-the-minute currency.
+FFMPEG_URL = 'https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip'
+# A genuine ffmpeg.exe is comfortably >40MB; a truncated/corrupt download
+# would be far smaller. Not an exact size check like the assets above,
+# since the zip's contents (and so ffmpeg.exe's own size) change release to
+# release.
+_FFMPEG_MIN_SIZE = 40_000_000
+
+
+def resolve_ffmpeg_exe():
+    """Path to a usable ffmpeg.exe - checked at _install_dir() (the offline
+    installer stages it there directly, like the other assets above) and
+    _writable_dir() (where ensure_ffmpeg() downloads to), in that order -
+    or None if neither has one yet."""
+    for base in (_install_dir(), _writable_dir()):
+        candidate = os.path.join(base, 'ffmpeg', 'ffmpeg.exe')
+        if os.path.isfile(candidate) and os.path.getsize(candidate) >= _FFMPEG_MIN_SIZE:
+            return candidate
+    return None
+
+
+def ensure_ffmpeg(progress_callback=None, cancel_event=None):
+    """Return a usable ffmpeg.exe's path, downloading the essentials zip
+    (~110MB, see FFMPEG_URL) and extracting just bin/ffmpeg.exe from it if
+    not already present - everything else in the zip (ffplay, ffprobe,
+    docs, presets) is discarded, this app only ever shells out to ffmpeg
+    itself."""
+    existing = resolve_ffmpeg_exe()
+    if existing is not None:
+        return existing
+    target = os.path.join(_writable_dir(), 'ffmpeg', 'ffmpeg.exe')
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    zip_path = target + '.download.zip'
+    _logger.info('ffmpeg not found locally, downloading (~110 MB)...')
+    _download(FFMPEG_URL, zip_path, progress_callback=progress_callback, cancel_event=cancel_event)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            member = next(
+                (n for n in zf.namelist()
+                 if n.replace('\\', '/').endswith('/bin/ffmpeg.exe')), None)
+            if member is None:
+                raise AssetDownloadError(f'{FFMPEG_URL!r} did not contain a bin/ffmpeg.exe')
+            part_path = target + '.part'
+            with zf.open(member) as src, open(part_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+        os.replace(part_path, target)
+    finally:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+    return target

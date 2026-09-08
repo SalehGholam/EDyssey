@@ -30,6 +30,8 @@ import cv2
 import datetime
 from copy import deepcopy
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
+from .asset_download_dialog import confirm_and_download
+from EDyssey.tracking_utils import asset_fetch
 from worker_extract_frame import load_dp
 import worker_pool_utils as wpu
 from .worker_launch import worker_command
@@ -37,6 +39,7 @@ from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
+from .display_settings import DisplaySettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .transposed_object_table import TransposedObjectTable
 from .pets2_dialog import Pets2ParamsDialog
@@ -196,49 +199,48 @@ class Tab_Tracking_CV2(TabBase):
         layout_dir.addLayout(layout_dwell_row)
 
         #### Smart-scan support
+        # Grid layout matches Tab_SAM2's identical "Smart Scan" groupbox:
+        # left column = activation controls (checkbox, then Check Files
+        # button), right column = directory pickers (pattern dir, then
+        # detection dir).
         groupbox_smartScan = qtw.QGroupBox('Smart Scan')
-        layout_smartScan = qtw.QVBoxLayout(groupbox_smartScan)
-        layout_smartScan_1 = qtw.QHBoxLayout()
-        layout_smartScan.addLayout(layout_smartScan_1)
+        layout_smartScan = qtw.QGridLayout(groupbox_smartScan)
+
         self.checkbox_smartScan = qtw.QCheckBox('Activate')
         self.checkbox_smartScan.setToolTip(
             'Smart-scanned series - reads each frame\'s acquisition + pattern file, '
             'not every raw file in the folder.')
-        layout_smartScan_1.addWidget(self.checkbox_smartScan)
+        layout_smartScan.addWidget(self.checkbox_smartScan, 0, 0)
         self.checkbox_smartScan.stateChanged.connect(self.activate_smartScan_widgets)
 
         self.lineEdit_patternDir = qtw.QLineEdit()
         self.lineEdit_patternDir.setPlaceholderText('Pattern Dir. (defaults to 4D Signals folder)')
         self.lineEdit_patternDir.setDisabled(True)
-        layout_smartScan_1.addWidget(self.lineEdit_patternDir)
+        layout_smartScan.addWidget(self.lineEdit_patternDir, 0, 1)
         self.button_browsePatternDir = qtw.QPushButton('...')
         self.button_browsePatternDir.setFixedWidth(30)
         self.button_browsePatternDir.setDisabled(True)
         self.button_browsePatternDir.clicked.connect(self.browse_pattern_dir)
-        layout_smartScan_1.addWidget(self.button_browsePatternDir)
-        
-        layout_smartScan_2 = qtw.QHBoxLayout()        
-        layout_smartScan.addLayout(layout_smartScan_2)
-                
+        layout_smartScan.addWidget(self.button_browsePatternDir, 0, 2)
+
         self.button_checkSmartScanFiles = qtw.QPushButton('Check Files')
-        self.button_checkSmartScanFiles.setFixedWidth(75)
         self.button_checkSmartScanFiles.setToolTip(
             'Review/fix the automatic per-frame file match before extracting')
         self.button_checkSmartScanFiles.setDisabled(True)
         self.button_checkSmartScanFiles.clicked.connect(self.open_smart_scan_check_dialog)
-        layout_smartScan_2.addWidget(self.button_checkSmartScanFiles)
+        layout_smartScan.addWidget(self.button_checkSmartScanFiles, 1, 0)
 
         self.lineEdit_detectionDir = qtw.QLineEdit()
         self.lineEdit_detectionDir.setPlaceholderText('Detect. Dir. (defaults to 4D Signals folder)')
         self.lineEdit_detectionDir.setDisabled(True)
         self.lineEdit_detectionDir.setToolTip(
             'Folder to look for detection files in, if different from the 4D Signals folder')
-        layout_smartScan_2.addWidget(self.lineEdit_detectionDir)
+        layout_smartScan.addWidget(self.lineEdit_detectionDir, 1, 1)
         self.button_browseDetectionDir = qtw.QPushButton('...')
         self.button_browseDetectionDir.setFixedWidth(30)
         self.button_browseDetectionDir.setDisabled(True)
         self.button_browseDetectionDir.clicked.connect(self.browse_detection_dir)
-        layout_smartScan_2.addWidget(self.button_browseDetectionDir)
+        layout_smartScan.addWidget(self.button_browseDetectionDir, 1, 2)
 
         # Summary of the last "Check Files" review (see
         # _set_smart_scan_summary) - was referenced throughout this file
@@ -249,7 +251,7 @@ class Tab_Tracking_CV2(TabBase):
         # label_smartScanSummary exactly (hidden until there's text).
         self.label_smartScanSummary = qtw.QLabel('')
         self.label_smartScanSummary.setVisible(False)
-        layout_smartScan.addWidget(self.label_smartScanSummary)
+        layout_smartScan.addWidget(self.label_smartScanSummary, 2, 0, 1, 3)
 
         layout_dir.addWidget(groupbox_smartScan)
 
@@ -515,7 +517,7 @@ class Tab_Tracking_CV2(TabBase):
         self.combo_trackMethod.addItems(['csrt', 'nano', 'mil', 'dasiamrpn', 'xcorr-phase', 'xcorr-template'])
 
         self.button_track = qtw.QPushButton('Track!')
-        self.button_track.setFixedHeight(button_h_lrg)
+        self.button_track.setFixedWidth(button_w)
         layout_tracking.addWidget(self.button_track)
         self.button_track.clicked.connect(self.track_rois)
         self.button_track.setDisabled(True)
@@ -729,7 +731,7 @@ class Tab_Tracking_CV2(TabBase):
         self.radio_maskSelected.toggled.connect(self._on_mask_mode_changed)
 
         self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels, row_tooltips)
-        layout_featurePanel.addWidget(self.tree_objects, 1)
+        layout_featurePanel.addWidget(self.tree_objects)
         self.tree_objects.setMinimumWidth(200)
         # Tall enough for their content: dup/del hold a 48/30px button, end
         # holds a QSpinBox with up/down arrows, ref/blob hold a
@@ -740,6 +742,11 @@ class Tab_Tracking_CV2(TabBase):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
         self.tree_objects.itemChanged.connect(self.on_item_check_changed)
+        # tree_objects is now fixed to its own (small) content height - see
+        # TransposedObjectTable.__init__ - so this absorbs the rest of the
+        # column's height as plain background instead of the table itself
+        # stretching all the way down to it.
+        layout_featurePanel.addStretch(1)
 
         self.patches_axNav = []
         self.patches_axTrack = []
@@ -1097,6 +1104,19 @@ class Tab_Tracking_CV2(TabBase):
         # sizes) - see TabBase.apply_display_settings.
         self.apply_display_settings()
     #%% load data
+    def apply_display_settings(self):
+        """TabBase's own ribbon/figure-size handling, plus this tab's own
+        nav/DP colormap - see display_settings.py's nav_colormap/
+        dp_colormap and the Edit menu's Display Size dialog. img_mask/mask
+        (the mask-editing crop view) deliberately keep their own 'gray'
+        default - a translucent color mask overlay reads better against a
+        plain grayscale background than a colored one."""
+        super().apply_display_settings()
+        settings = DisplaySettings.instance()
+        self.img_display['nav'].set_cmap(settings.nav_colormap)
+        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.canvas.draw_idle()
+
     def show_dialog(self, f):
         """Open a file/folder browser for whichever button triggered this
         (nav signal file, 4D signals folder, or save folder), dispatched on
@@ -3335,12 +3355,47 @@ class Tab_Tracking_CV2(TabBase):
                 'Check the "Use" box for at least one ROI before tracking.')
             return
 
+        tracking_method = self.combo_trackMethod.currentText()
+        # 'nano'/'dasiamrpn' need external .onnx weight files not bundled
+        # with the app (see THIRD_PARTY_NOTICES.md) - checked/downloaded
+        # once here for the whole batch, not per-ROI inside track_roi_cv2
+        # itself (which runs on a background worker thread and can't show
+        # Qt dialogs) - asks once instead of duplicating the prompt per ROI.
+        if asset_fetch.tracker_models_available(tracking_method):
+            self._start_tracking_workers(df, tracking_method)
+        else:
+            confirm_and_download(
+                self, self.threadpool, 'Download Tracker Model',
+                f'The "{tracking_method}" tracker needs model weight files, not bundled '
+                'with the app. Download them now? An internet connection is needed.',
+                asset_fetch.ensure_tracker_models,
+                lambda _result: self._start_tracking_workers(df, tracking_method),
+                self._on_tracker_download_failed,
+                download_kwargs={'tracking_method': tracking_method})
+
+    def _on_tracker_download_failed(self, error_msg):
+        """confirm_and_download's on_failed for the tracker-model download -
+        error_msg is empty if the user simply declined/cancelled, not a
+        real failure."""
+        if error_msg:
+            self.logger.error('Tracker model download failed:\n%s', error_msg)
+            qtw.QMessageBox.warning(self, 'Download Failed',
+                f'Could not download the tracker model:\n{error_msg}')
+
+    def _start_tracking_workers(self, df, tracking_method):
+        """Launch tr.track_roi_cv2 for each ROI in `df` - the part of
+        track_rois() that actually starts tracking, split out so it can run
+        either immediately (models already cached) or after a confirmed
+        on-demand download finishes."""
         self.load_spinner()
         self._cancelling = False
         self.button_cancel.setEnabled(True)
         self.tracking_counter = 0
         self.tracking_finished = False
-        tracking_method = self.combo_trackMethod.currentText()
+        # tracking_method comes from the caller (not re-read from the combo
+        # box here) - it must match whichever method's models were just
+        # confirmed/downloaded, even if the user changed the dropdown while
+        # that download was still running.
 
         self.tracking_counter_end = len(df.index)
         self._track_tic = perf_counter()

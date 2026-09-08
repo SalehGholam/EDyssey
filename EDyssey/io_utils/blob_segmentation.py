@@ -20,8 +20,9 @@ import numpy as np
 from scipy import ndimage as ndi
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
-from sklearn.cluster import KMeans
-from sklearn.mixture import GaussianMixture
+# sklearn (KMeans/GaussianMixture below) is only imported inside the two
+# functions that actually use it - it's a slow import (~0.5-0.8s, pulls in
+# scipy.stats etc.) and most sessions never touch K-Means/GMM segmentation.
 
 _STRUCT8 = np.ones((3, 3), dtype=int)  # 8-connectivity, matching the cv2
                                         # connectivity=8 the 'connected'
@@ -137,6 +138,7 @@ def label_kmeans(mask, n_clusters=2, **_ignored):
     if n_clusters == 1:
         labels[ys, xs] = 1
         return labels
+    from sklearn.cluster import KMeans
     fit = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(coords)
     labels[ys, xs] = fit.labels_ + 1  # 0 is reserved for background
     return labels
@@ -161,6 +163,7 @@ def label_gmm(mask, n_clusters=2, **_ignored):
         labels[ys, xs] = 1
         return labels
     try:
+        from sklearn.mixture import GaussianMixture
         fit = GaussianMixture(n_components=n_clusters, random_state=0).fit(coords)
         assignments = fit.predict(coords)
     except ValueError:

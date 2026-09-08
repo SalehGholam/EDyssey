@@ -30,7 +30,7 @@ keeps using the frozen self-relaunch path.
 import sys
 import os
 
-from ui_tabs.python_finder import find_system_python, read_interpreter_marker
+from ui_tabs.python_finder import find_bundled_python, find_system_python, read_interpreter_marker
 
 # Repo root - two levels up from this file (ui_tabs/worker_launch.py).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,16 +41,21 @@ _WORKER_NAMES = {'extract_frame', 'extract_frame_batch', 'nav_img', 'nav_img_bat
 def _sam_command_frozen(str_args):
     """(program, arguments) for the 'sam' worker specifically, run via a
     real system Python instead of self-relaunching the frozen exe - see this
-    module's own docstring for why. Falls back to the old self-relaunch
-    (which will surface a clean "missing_dependency" message if torch truly
-    isn't installed) if no matching Python can be found here - shouldn't
-    normally happen, since installing needed one too."""
+    module's own docstring for why. Prefers a bundled portable Python (an
+    *offline* build only - see find_bundled_python()) over the marker/
+    system-Python resolution an *online* build depends on, since it's
+    guaranteed to match whatever torch/sam2 were bundled for. Falls back to
+    the old self-relaunch (which will surface a clean "missing_dependency"
+    message if torch truly isn't installed) if no matching Python can be
+    found here - shouldn't normally happen, since installing needed one too."""
     install_dir = os.path.dirname(sys.executable)
     internal_dir = os.path.join(install_dir, '_internal')
     sam2_packages_dir = os.path.join(internal_dir, 'sam2_packages')
-    worker_script = os.path.join(internal_dir, 'workers', 'worker_sam.py')
+    worker_script = os.path.join(internal_dir, 'EDyssey', 'workers', 'worker_sam.py')
 
-    python_prefix = read_interpreter_marker(sam2_packages_dir) or find_system_python()
+    python_prefix = (find_bundled_python(internal_dir)
+                      or read_interpreter_marker(sam2_packages_dir)
+                      or find_system_python())
     if python_prefix is not None and os.path.isfile(worker_script):
         return python_prefix[0], python_prefix[1:] + [worker_script] + str_args
     return sys.executable, ['--worker', 'sam'] + str_args

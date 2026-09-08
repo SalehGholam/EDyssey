@@ -8,30 +8,60 @@ import os
 import sys
 # if using Apple MPS, fall back to CPU for unsupported ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-# _internal (this file's grandparent dir when staged into a frozen install -
-# see EDyssey.spec's extra_datas) and its sam2_packages subfolder (see
-# sam2_setup_dialog.py's _TARGET_SUBDIR) - both keyed off this file's own
+# _internal (frozen install root) and its sam2_packages subfolder (see
+# sam2_setup_dialog.py's _TARGET_SUBDIR) - keyed off this file's own
 # location rather than sys.frozen/sys.executable, since worker_launch.py now
 # runs this script directly via a real system Python (not the frozen exe -
 # see its own docstring for why), which doesn't set sys.frozen at all. Must
-# come before numpy/torch import. In dev mode neither directory exists, so
-# this is a no-op - EDyssey_MainWindow.py (the real entry point there) has
-# already put the repo root on sys.path.
-_internal_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# come before numpy/torch import.
+#
+# This file lives at <repo_root>/workers/worker_sam.py in dev mode, but at
+# <install>/_internal/EDyssey/workers/worker_sam.py once frozen (see
+# EDyssey.spec's extra_datas - grouped under EDyssey/ with the rest of this
+# app's own loose files) - one level deeper than in dev mode, so a fixed
+# number of dirname() calls can't reach the true root in both cases. Detect
+# it instead: <repo_root> has EDyssey/ as a direct child already; only
+# _internal/EDyssey does not (there's no nested EDyssey/EDyssey).
+_candidate_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.isdir(os.path.join(_candidate_root, 'EDyssey')):
+    _internal_dir = _candidate_root
+else:
+    _internal_dir = os.path.dirname(_candidate_root)
 _sam2_pkgs = os.path.join(_internal_dir, 'sam2_packages')
-if not getattr(sys, 'frozen', False) and os.path.isdir(_sam2_pkgs):
+if not getattr(sys, 'frozen', False) and (
+        os.path.isdir(_sam2_pkgs) or os.path.isdir(os.path.join(_internal_dir, 'torch'))):
     # Launched by worker_launch.py's real-Python redirect (see its
     # docstring for why) - an installed layout, just not literally the
     # frozen exe. app_dirs.writable_data_dir()/asset_fetch._install_dir()
     # key their path resolution off sys.frozen/sys._MEIPASS, so set them to
     # what the real frozen exe would have, or they'd wrongly resolve as
     # dev-mode paths (e.g. an unwritable Program Files location instead of
-    # %LOCALAPPDATA%).
+    # %LOCALAPPDATA%). Either _sam2_pkgs or a bundled _internal/torch (see
+    # below) means this is really an installed layout.
     sys.frozen = True
     sys._MEIPASS = _internal_dir
-for _p in (_sam2_pkgs, _internal_dir):
-    if os.path.isdir(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
+# _sam2_pkgs if it exists (an online build's pip-installed torch/sam2,
+# always version-matched to whatever interpreter this worker actually runs
+# under - see python_finder.py/sam2_setup_dialog.py), else _internal_dir
+# itself (an *offline* build's torch/sam2, bundled directly into _internal
+# at PyInstaller build time via EDYSSEY_OFFLINE_BUILD=1 - no sam2_packages
+# folder ever gets created there, pip never runs). These two are mutually
+# exclusive - an online install never has _internal/torch, an offline build
+# never has sam2_packages - so this never risks the bug _internal_dir's
+# presence used to cause here: _internal_dir is the frozen app's OWN
+# bundled dependencies, built against whatever Python built the app itself
+# (APP_PYTHON_VERSION) - for an *online* install, blindly adding it ahead
+# of (or even alongside) a pip-installed sam2_packages meant `import numpy`
+# (etc.) below could resolve to the frozen app's own cp-tagged copy instead
+# of the one actually pip-installed for THIS interpreter, producing "Module
+# use of pythonXYZ.dll conflicts with this version of Python" even on a
+# machine with no Python matching that version installed anywhere at all.
+# For an *offline* build there's no separate pip-installed copy to prefer -
+# _internal_dir's own torch is the only one there is, so it's used as a
+# straightforward fallback, not a competing/shadowing entry.
+_torch_source_dir = _sam2_pkgs if os.path.isdir(_sam2_pkgs) else _internal_dir
+if _torch_source_dir not in sys.path:
+    sys.path.insert(0, _torch_source_dir)
 
 
 def _load_asset_fetch():

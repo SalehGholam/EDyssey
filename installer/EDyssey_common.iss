@@ -6,9 +6,14 @@
 ; too) then `#include` this from one of those two files instead.
 
 #define AppName "EDyssey"
-#define AppVersion "2.1.20260903.1426"
-#define AppPublisher "SalehG"
+#define AppVersion "2.1.20260907.1302"
+#define AppPublisher "Saleh Gholam"
 #define AppURL "https://github.com/SalehGholam/EDyssey"
+; Single-braced form for use everywhere except the [Setup] AppId= directive
+; itself below, which - per Inno Setup's own constant-escaping rules for
+; that directive's value - needs a DOUBLED leading brace ({{#AppGuid) to
+; produce this same single-braced value; see the comment there.
+#define AppGuid "{B8B1B6DA-4B7E-4C8B-9F52-EDY55EE00001}"
 ; Only set the default if the includer didn't already #define one -
 ; EDyssey_offline.iss builds from a separate PyInstaller output
 ; (dist_offline/, via EDYSSEY_OFFLINE_BUILD=1) and overrides this.
@@ -17,18 +22,41 @@
 #endif
 
 [Setup]
-AppId={{B8B1B6DA-4B7E-4C8B-9F52-EDY55EE00001}
+; {{#AppGuid rather than {#AppGuid: this directive's value parser treats a
+; leading "{" as the start of a Inno constant reference (like {app}) unless
+; doubled - see AppGuid's own comment above.
+AppId={{#AppGuid}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
+; VersionInfo* stamps setup.exe's/the uninstaller's OWN Explorer Properties
+; > Details tab - separate from AppVersion above (which only drives the
+; wizard's own UI text and the Apps & Features "Version" column, both
+; already correct). Left unset, Inno Setup defaults this to 0.0.0.0 - a
+; Win32 version resource caps each of the 4 numeric fields at 65535, which
+; AppVersion's YYYYMMDD segment doesn't fit, so this re-encodes the same
+; build timestamp as MMDD.HHMM instead (drops the year - purely decorative
+; file-properties metadata, not used anywhere the app itself checks its own
+; version).
+#define VersionInfoVersionValue "2.1." + Copy(AppVersion, 9, 4) + "." + Copy(AppVersion, 14, 4)
+VersionInfoVersion={#VersionInfoVersionValue}
+VersionInfoCompany={#AppPublisher}
+VersionInfoDescription={#AppName} Setup
+VersionInfoProductName={#AppName}
+VersionInfoProductVersion={#VersionInfoVersionValue}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 ; Lets a non-admin install per-user (into {localappdata}\Programs) instead
 ; of requiring elevation - relevant because the documented post-install
 ; "pip install --target ...\_internal torch" step (see INSTALL.md) is much
-; simpler without an elevated shell for a Program Files install.
-PrivilegesRequiredOverridesAllowed=dialog
+; simpler without an elevated shell for a Program Files install. `commandline`
+; (in addition to `dialog`) lets a silent/unattended install (/VERYSILENT)
+; pick the per-user path too via /CURRENTUSER - without it, silent installs
+; fall back to Inno Setup's own default (PrivilegesRequired=admin) and hang
+; forever waiting on a UAC consent prompt nothing can click in a
+; non-interactive session (confirmed the hard way testing this installer).
+PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir=Output
 OutputBaseFilename=EDyssey_Setup_{#Variant}_{#AppVersion}
 Compression=lzma2
@@ -63,3 +91,37 @@ Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "A
 
 [Run]
 Filename: "{app}\EDyssey.exe"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// Same AppId across versions means Inno Setup would otherwise just install
+// straight over whatever's already there - files a newer version removed
+// (e.g. worker_*.py's move into EDyssey/workers/ this same release) would
+// linger as stale leftovers instead of getting cleaned up, and the
+// destination-folder picker gets skipped entirely (Inno Setup's own
+// upgrade-detection). Asking to uninstall first avoids both.
+function InitializeSetup(): Boolean;
+var
+  UninstallString: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if RegQueryStringValue(HKA, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#AppGuid}_is1',
+       'UninstallString', UninstallString) then
+  begin
+    if MsgBox('A previous installation of {#AppName} was found. It needs to be removed ' +
+         'before installing this version - uninstall it now?', mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      UninstallString := RemoveQuotes(UninstallString);
+      if not Exec(UninstallString, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', '',
+           SW_SHOW, ewWaitUntilTerminated, ResultCode) then
+      begin
+        MsgBox('Could not run the previous version''s uninstaller automatically - ' +
+             'please uninstall {#AppName} manually via Settings > Apps, then run this ' +
+             'installer again.', mbError, MB_OK);
+        Result := False;
+      end;
+    end
+    else
+      Result := False;
+  end;
+end;
