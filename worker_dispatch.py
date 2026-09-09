@@ -41,7 +41,21 @@ def run_worker(worker_name, args):
         print(f'Unknown worker: {worker_name!r} (expected one of {sorted(WORKER_SCRIPTS)})',
               file=sys.stderr)
         sys.exit(1)
-    fn = os.path.join(_base_dir(), script)
+    base_dir = _base_dir()
+    # workers/ on sys.path, so a worker script can bare-import its own
+    # siblings (worker_extract_frame_batch.py's `import worker_pool_utils`
+    # / `from worker_extract_frame import ...`, and the same in
+    # worker_nav_img_batch.py). `python worker_x.py` would put the script's
+    # own directory on sys.path automatically, but runpy.run_path() does
+    # NOT - and ui_tabs/__init__.py, which is what puts workers/ on
+    # sys.path for the GUI process, never runs here: EDyssey_MainWindow.py
+    # dispatches --worker before any ui_tabs import. Without this, every
+    # batch worker died at import with "No module named
+    # 'worker_pool_utils'" (both frozen and from source), taking
+    # Navigator's Calculate All and ROI Tracker/SAM2's Extract! with it.
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
+    fn = os.path.join(base_dir, script)
     sys.argv = [fn] + list(args)
     runpy.run_path(fn, run_name='__main__')
     sys.exit(0)

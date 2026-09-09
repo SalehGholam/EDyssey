@@ -6,7 +6,7 @@
 ; too) then `#include` this from one of those two files instead.
 
 #define AppName "EDyssey"
-#define AppVersion "2.1.20260907.1302"
+#define AppVersion "2.1.20260909.1300"
 #define AppPublisher "Saleh Gholam"
 #define AppURL "https://github.com/SalehGholam/EDyssey"
 ; Single-braced form for use everywhere except the [Setup] AppId= directive
@@ -38,8 +38,10 @@ AppPublisherURL={#AppURL}
 ; AppVersion's YYYYMMDD segment doesn't fit, so this re-encodes the same
 ; build timestamp as MMDD.HHMM instead (drops the year - purely decorative
 ; file-properties metadata, not used anywhere the app itself checks its own
-; version).
-#define VersionInfoVersionValue "2.1." + Copy(AppVersion, 9, 4) + "." + Copy(AppVersion, 14, 4)
+; version). The major.minor prefix is taken from AppVersion itself rather
+; than hardcoded, so bumping AppVersion (e.g. 2.1 -> 2.2) can't leave this
+; silently stamping the old one.
+#define VersionInfoVersionValue Copy(AppVersion, 1, 4) + Copy(AppVersion, 9, 4) + "." + Copy(AppVersion, 14, 4)
 VersionInfoVersion={#VersionInfoVersionValue}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Setup
