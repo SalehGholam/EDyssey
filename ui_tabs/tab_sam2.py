@@ -911,6 +911,7 @@ class Tab_SAM2(TabBase):
         # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
+        self._mirror_toolbar_coords_to_statusbar(self.toolbar)
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
@@ -1285,6 +1286,10 @@ class Tab_SAM2(TabBase):
         if d4d:
             self.lineEdit_dir_4d.setText(d4d)
             applied.append('4D signals directory')
+            # New 4D folder - re-derive comment.txt and re-run the block-count
+            # check, which is what enables the Block # spinbox.
+            self.metadata_path_override = None
+            self.load_metadata(silent=True)
         dtype = metadata.get('dtype')
         if dtype:
             if dtype in ('.hdf5', '.hdf5_eventem'):
@@ -1583,6 +1588,14 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_img.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
         self.button_autoDetector.setEnabled(True)
+        # Tracking shares box_3ded, so init's disable_3ded_widgets sweep
+        # catches these too - re-enable them alongside the buttons above.
+        self.spinbox_stackNum.setEnabled(True)
+        # The whole stack-nav subtree (scroll area, its viewport, the button
+        # container) was explicitly disabled by that sweep - re-enable it all.
+        self._stack_scroll.setEnabled(True)
+        for w in self._stack_scroll.findChildren(qtw.QWidget):
+            w.setEnabled(True)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.imgs)))
         self.spinbox_stackNum.setValue(len(self.imgs))
         # Scale fields may already hold a value from a previous session/load -
@@ -4043,6 +4056,14 @@ class Tab_SAM2(TabBase):
         self.button_runSeg_img.setEnabled(True)
         self.button_fineTuneMask.setEnabled(True)
         self.button_autoDetector.setEnabled(True)
+        # Tracking shares box_3ded, so init's disable_3ded_widgets sweep
+        # catches these too - re-enable them alongside the buttons above.
+        self.spinbox_stackNum.setEnabled(True)
+        # The whole stack-nav subtree (scroll area, its viewport, the button
+        # container) was explicitly disabled by that sweep - re-enable it all.
+        self._stack_scroll.setEnabled(True)
+        for w in self._stack_scroll.findChildren(qtw.QWidget):
+            w.setEnabled(True)
 
         # Extraction settings - signals blocked so setting them doesn't
         # trigger a redundant redraw/recompute/dialog (see docstring); the

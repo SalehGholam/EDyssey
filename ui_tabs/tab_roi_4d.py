@@ -744,6 +744,7 @@ class Tab_ROI_on_4D(TabBase):
         # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
+        self._mirror_toolbar_coords_to_statusbar(self.toolbar)
 
         self.clip_dp = ClippingThresholdsWidget(title='DP Clipping\nThresh.')
         # Clipping Thresholds sit directly beside the canvas (Nav. Image is
@@ -1403,7 +1404,8 @@ class Tab_ROI_on_4D(TabBase):
         self._cancelling = False
         dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime, dtype,
-                                    self.get_fn_pattern(), self.get_detector_shape(self.fn))
+                                    self.get_fn_pattern(), self.get_detector_shape(self.fn),
+                                    tab_name=self._tab_name)
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
     
@@ -2359,7 +2361,7 @@ class Tab_ROI_on_4D(TabBase):
         self._cancelling = False
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
                                          self.scanSize, self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn))
+                                         self.get_detector_shape(self.fn), tab_name=self._tab_name)
         worker.signals.result.connect(self.get_dp_from_mask)
         self.threadpool.start(worker)
 
@@ -2459,7 +2461,8 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setEnabled(True)
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
                                          self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn), patch_mode=True)
+                                         self.get_detector_shape(self.fn), patch_mode=True,
+                                         tab_name=self._tab_name)
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -2723,9 +2726,10 @@ class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
-    def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512)):
+    def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512),
+                tab_name='Tab_ROI_on_4D'):
         super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
         self.logger.info('calculating the dp...')
         self.fn = fn
@@ -2791,9 +2795,9 @@ class Worker_CalculateDP_Mask(QRunnable):
     covering its full (potentially huge/scattered) bounding box - see
     load_dp/load_tpx3_patches in worker_extract_frame.py."""
     def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
-                det_shape=(512, 512), patch_mode=False):
+                det_shape=(512, 512), patch_mode=False, tab_name='Tab_ROI_on_4D'):
         super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
         self.logger.info('calculating the dp from mask...')
         self.fn = fn

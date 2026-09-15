@@ -14,7 +14,7 @@ import datetime
 from time import perf_counter
 from PyQt5.QtCore import Qt, QProcess, QThreadPool, QTimer
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtGui import QDoubleValidator, QKeySequence
+from PyQt5.QtGui import QDoubleValidator, QIntValidator, QKeySequence
 from PyQt5.QtWidgets import QShortcut
 import numpy as np
 import gc
@@ -732,6 +732,7 @@ class Tab_Create_NavSignal(TabBase):
         # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
+        self._mirror_toolbar_coords_to_statusbar(self.toolbar)
 
         self.clip_dp = ClippingThresholdsWidget(title='DP Clipping\nThresh.')
         # Clipping Thresholds sit directly beside the canvas (in the same
@@ -791,11 +792,54 @@ class Tab_Create_NavSignal(TabBase):
         layout_canvas.addLayout(layout_slider)
         self.label_imgCounter = qtw.QLabel('Img No.')
         layout_slider.addWidget(self.label_imgCounter)
+
+        self.lineEdit_imgNo = qtw.QLineEdit()
+        layout_slider.addWidget(self.lineEdit_imgNo)
+        self.lineEdit_imgNo.setFixedWidth(35)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, 0))
+        self.lineEdit_imgNo.returnPressed.connect(self.jump_to_frame_no)
+
+        # Prev/Next sit together, right before the slider itself, matching
+        # ROI Tracker/SAM2 Tracker's identical row.
+        self.button_prevFrame = qtw.QPushButton('◀')
+        self.button_prevFrame.setFixedWidth(28)
+        self.button_prevFrame.setToolTip('Previous frame')
+        self.button_prevFrame.clicked.connect(lambda: self._step_frame(-1))
+        layout_slider.addWidget(self.button_prevFrame)
+
+        self.button_nextFrame = qtw.QPushButton('▶')
+        self.button_nextFrame.setFixedWidth(28)
+        self.button_nextFrame.setToolTip('Next frame')
+        self.button_nextFrame.clicked.connect(lambda: self._step_frame(1))
+        layout_slider.addWidget(self.button_nextFrame)
+
         self.slider_imgNo = qtw.QSlider(self)
         self.slider_imgNo.setOrientation(1)  # Horizontal slider
         self.slider_imgNo.setRange(0,0)
         layout_slider.addWidget(self.slider_imgNo)
         self.slider_imgNo.valueChanged.connect(self.update_canvas)
+
+        self.button_frame_start = qtw.QPushButton('Start')
+        self.button_frame_start.setFixedWidth(45)
+        self.button_frame_start.setToolTip('Jump to the first frame')
+        self.button_frame_start.clicked.connect(
+            lambda: self.slider_imgNo.setValue(self.slider_imgNo.minimum()))
+        layout_slider.addWidget(self.button_frame_start)
+
+        self.button_frame_middle = qtw.QPushButton('Mid')
+        self.button_frame_middle.setFixedWidth(45)
+        self.button_frame_middle.setToolTip('Jump to the middle frame')
+        self.button_frame_middle.clicked.connect(
+            lambda: self.slider_imgNo.setValue(
+                (self.slider_imgNo.minimum() + self.slider_imgNo.maximum()) // 2))
+        layout_slider.addWidget(self.button_frame_middle)
+
+        self.button_frame_end = qtw.QPushButton('End')
+        self.button_frame_end.setFixedWidth(45)
+        self.button_frame_end.setToolTip('Jump to the last frame')
+        self.button_frame_end.clicked.connect(
+            lambda: self.slider_imgNo.setValue(self.slider_imgNo.maximum()))
+        layout_slider.addWidget(self.button_frame_end)
 
         # Display-only contrast for the navigation image - a set_clim() on
         # the plotted image, purely cosmetic: never touches
@@ -1347,14 +1391,17 @@ class Tab_Create_NavSignal(TabBase):
     def _on_sum_dp_computed(self, result, index):
         """Display a completed Summed DP on the mask-preview canvas, rescale
         the center/radius spinboxes to its size, and redraw the mask
-        overlay. self.dp_center (the recip. rings' own center) is reset -
-        a new Summed DP may have a different shape/beam position, so the
-        previous one may no longer apply; click "Center" (Files) or
-        Ctrl+Click to find/set it again."""
+        overlay. self.dp_center (the recip. rings' own center) is carried
+        over from the previous run - never auto-centered here; click
+        "Center" (Files) or Ctrl+Click to move it."""
         self.button_computeSumDp.setEnabled(True)
         self.sum_dp = result
-        self.dp_center = None
         det_y, det_x = self.sum_dp.shape
+        # dp_center deliberately survives a new Summed DP - only pulled back
+        # inside the image if this one is smaller than where it used to sit.
+        if self.dp_center is not None:
+            cx, cy = self.dp_center
+            self.dp_center = (min(max(cx, 0), det_x), min(max(cy, 0), det_y))
         for sb, val in ((self.spinbox_centerX, det_x), (self.spinbox_centerY, det_y),
                        (self.spinbox_rIn, max(det_x, det_y)), (self.spinbox_rOut, max(det_x, det_y))):
             sb.setMaximum(val)
@@ -2258,6 +2305,7 @@ class Tab_Create_NavSignal(TabBase):
         self._set_nav_contrast_range(self.nav_imgs)
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
         self.button_cancel.setDisabled(True)
         if self._nav_failed or len(valid) < self.nav_counter_total:
             self.logger.error(
@@ -2481,6 +2529,7 @@ class Tab_Create_NavSignal(TabBase):
         self.nav_imgs = state['nav_imgs']
         self.clip_nav.set_state(state['clip_nav'])
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
+        self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
         self.slider_imgNo.setValue(state['imgNo'])
         self.update_canvas(state['imgNo'])
         self.button_save_results.setEnabled(True)
@@ -2603,6 +2652,18 @@ class Tab_Create_NavSignal(TabBase):
         self.progress_bar.setRange(0, total)
         self.progress_bar.setValue(value)
         self.progress_bar.setFormat(f'%v / {total}')
+
+    def jump_to_frame_no(self):
+        num = int(self.lineEdit_imgNo.text())
+        self.slider_imgNo.setValue(num)
+
+    def _step_frame(self, delta):
+        """Previous/Next Frame buttons: move the slider by one frame,
+        clamped to its range - mirrors ROI Tracker/SAM2 Tracker's own
+        _step_frame."""
+        self.slider_imgNo.setValue(int(np.clip(
+            self.slider_imgNo.value() + delta,
+            self.slider_imgNo.minimum(), self.slider_imgNo.maximum())))
 
     def update_canvas(self, imgNo):
         """Display frame `imgNo` of the computed nav-image stack (self.nav_imgs)

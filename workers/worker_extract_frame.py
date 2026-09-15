@@ -6,7 +6,6 @@ Created on Tue May  6 22:47:49 2025
 """
 
 import sys
-import dask.array as da
 import h5py
 from dask.distributed import Client, LocalCluster
 import os
@@ -22,6 +21,7 @@ eventem_path = os.path.join(os.path.dirname(main_path), 'EDyssey', 'io_utils')
 sys.path.append(eventem_path)
 # os.chdir()
 import eventem
+import hdf5_eventem_layout
 from hyperspy.api import signals, load
 # from EDyssey.io_utils import load_signal
 import warnings
@@ -303,30 +303,39 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
                               dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape)
     return dp_total
 
-def load_hdf5_eventem(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
+def load_hdf5_eventem(fn, roi, mask, scanSize=None, max_eager_frames=10000, **kwargs):
     """Load an eventem-format '.hdf5_eventem' file and sum diffraction
     patterns at mask-True scan pixels.
+
+    Handles both the current native-4D storage layout and the older flat/
+    1-D layout some pre-4D-native eventem exports still use (see
+    hdf5_eventem_layout's module docstring). For the flat layout, reads the
+    masked positions directly via h5py (no dask) when their count is within
+    `max_eager_frames` - noticeably faster than always building and
+    computing a dask graph, which is what this used to do unconditionally -
+    falling back to dask above that, same as loaders.load_hdf5_eventem's
+    own max_eager_frames.
 
     Args:
         fn: Path to the .hdf5_eventem file.
         roi: (x, y, w, h) scan-space crop (currently unused in this loader).
         mask: 2-D boolean array matching the full scan dimensions.
-        scanSize: (nx, ny) scan dimensions for reshaping flat storage.
-        chunks: Dask chunk shape.
+        scanSize: Unused - the file's own `f['shape']` is authoritative
+            (see hdf5_eventem_layout.get_shape). Kept for call-signature
+            compatibility with the other load_* functions load_dp dispatches to.
+        max_eager_frames: See above.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
+    # max_workers=1: this script always runs as one of several concurrent
+    # pool workers (worker_extract_frame_batch.py's own ProcessPoolExecutor)
+    # - same reasoning as load_tpx3's n_threads=1 above. Without this,
+    # sum_masked_positions's own dynamically-sized thread pool would spin up
+    # inside every one of those worker processes too, multiplying concurrent
+    # ~1GB chunk buffers by the pool's own worker count.
     with h5py.File(fn, 'r') as f:
-        shape = tuple(f['shape'][:])
-        if len(f['4D'].shape) == 4:
-            s = da.from_array(f['4D'], chunks=chunks)
-        elif len(f['4D'].shape) == 1:
-            s = da.from_array(f['4D'], chunks=np.prod(chunks))
-            s = s.reshape(shape)
-        s = s.reshape(-1, *s.shape[2:])
-        mask_idx = np.where(mask.flatten() == 1)[0]
-        dp = s[mask_idx].sum(axis=0).compute()
+        dp = hdf5_eventem_layout.sum_masked_positions(f, mask, max_eager_frames=max_eager_frames, max_workers=1)
     return dp
     
 def load_hs(fn, roi, mask, fn_pattern=None, **kwargs):

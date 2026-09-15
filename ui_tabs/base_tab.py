@@ -16,7 +16,7 @@ below (build_left_panel()), this module owns none of that.
 import os
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QThreadPool
-from PyQt5.QtGui import QFontDatabase
+from PyQt5.QtGui import QFont, QFontDatabase
 import matplotlib.pyplot as plt
 import EDyssey.io_utils as io
 from .logging_utils import get_tab_logger
@@ -336,7 +336,25 @@ class TabBase(qtw.QWidget):
                 base_height = ribbon_page.sizeHint().height()
                 ribbon_page._edyssey_base_height = base_height
             base_pt = getattr(self, '_ribbon_base_pt', 9)
-            ribbon_page.setStyleSheet(f'font-size: {round(base_pt * settings.ribbon_text_scale)}pt;')
+            tab_pt = round(base_pt * settings.ribbon_text_scale)
+            ribbon_page.setStyleSheet(f'font-size: {tab_pt}pt;')
+            # Everything OUTSIDE ribbon_page (file lists, combos, plain
+            # labels with no override of their own - e.g. the "All files"
+            # dtype filter) inherits the app's own ambient default font
+            # instead, which on at least one real machine renders smaller
+            # than ribbon_page's own explicit size above - so it reads
+            # inconsistently small next to the ribbon. Setting the WHOLE
+            # tab's own font to the same size fixes that everywhere at
+            # once: ribbon_page's own explicit stylesheet above still wins
+            # for its own subtree (a widget's own set style beats an
+            # inherited QFont), so this only affects everything else.
+            base_font = getattr(self, '_edyssey_base_font', None)
+            if base_font is None:
+                base_font = qtw.QWidget.font(self)
+                self._edyssey_base_font = base_font
+            scaled_font = QFont(base_font)
+            scaled_font.setPointSize(tab_pt)
+            self.setFont(scaled_font)
             new_height = round(base_height * settings.ribbon_height_scale)
             splitter = getattr(self, '_main_splitter', None)
             if splitter is not None:
@@ -416,6 +434,24 @@ class TabBase(qtw.QWidget):
         scroll.setFrameShape(qtw.QFrame.NoFrame)
         canvas._edyssey_scroll_area = scroll
         return scroll
+
+    def _mirror_toolbar_coords_to_statusbar(self, toolbar):
+        """`toolbar`'s own hover coordinate/pixel-value readout (its
+        locLabel) is invisible along with the rest of it once hidden (see
+        each tab's own toolbar construction) - mirror set_message() into
+        the main window's status bar instead, so hovering the canvas still
+        reports the cursor position the way the old under-canvas toolbar
+        did. self.window() resolves to the real top-level MainWindow once
+        this tab is actually embedded in it - called right after building
+        the toolbar, but the override itself only fires later, on mouse
+        movement over the canvas, by which point that's already true."""
+        orig_set_message = toolbar.set_message
+        def _set_message(s, _orig=orig_set_message):
+            _orig(s)
+            status_bar = self.window().statusBar()
+            if status_bar is not None:
+                status_bar.showMessage(s)
+        toolbar.set_message = _set_message
 
     def _apply_single_figure_scale(self, figure, scale):
         """Resize one figure's canvas to `scale` of its own natural size,

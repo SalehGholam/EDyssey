@@ -872,6 +872,7 @@ class Tab_Tracking_CV2(TabBase):
         # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
+        self._mirror_toolbar_coords_to_statusbar(self.toolbar)
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
@@ -932,6 +933,7 @@ class Tab_Tracking_CV2(TabBase):
         # can safely share the one canvas's button_press_event.
         self.rect = None            # Currently drawn rectangle
         self.press = None           # Mouse press coordinates
+        self._last_motion_xy = None  # last in-bounds drag position (see on_release)
 
         self.canvas.mpl_connect('button_press_event', self.on_press)
         self.canvas.mpl_connect('button_release_event', self.on_release)
@@ -1247,6 +1249,10 @@ class Tab_Tracking_CV2(TabBase):
         if d4d:
             self.lineEdit_dir_4d.setText(d4d)
             applied.append('4D signals directory')
+            # New 4D folder - re-derive comment.txt and re-run the block-count
+            # check, which is what enables the Block # spinbox.
+            self.metadata_path_override = None
+            self.load_metadata(silent=True)
         dtype = metadata.get('dtype')
         if dtype:
             if dtype in ('.hdf5', '.hdf5_eventem'):
@@ -2547,7 +2553,7 @@ class Tab_Tracking_CV2(TabBase):
                or _any_enabled(self._mesh_settings_for(idx), lambda s: s.get('cells'))
                or _any_enabled(self._blob_settings_for(idx)))
 
-    def _resolve_blob_mask(self, idx, frame_idx, mask):
+    def _resolve_blob_mask(self, idx, frame_idx, mask, cache=None):
         """If ROI `idx` has Blob Selection enabled for `frame_idx` (see the
         "Blob Selection" ribbon section/_on_blob_mask_clicked), restrict
         `mask` to just one connected component - the one nearest whatever
@@ -2567,14 +2573,29 @@ class Tab_Tracking_CV2(TabBase):
         seed_centroid (wherever the user last clicked, or None for
         "largest blob") rather than walking every intermediate frame just
         to jump far ahead - a bounded-cost approximation of "auto-follow",
-        not an exhaustive one."""
+        not an exhaustive one.
+
+        `cache`: the per-frame centroid history to read/write - defaults
+        to self._blob_centroid_cache[idx] (the main UI's own live-scrubbing
+        history, read back by _draw_blob_overlay/get_tracking_results
+        etc.). open_fine_tune_mask_dialog passes its own private dict
+        instead of this default: it resolves two independent stacks
+        (mask_stack, default_mask_stack) back-to-back before the dialog
+        even opens, and sharing one cache between those two passes let
+        each one's choices bleed into the other's auto-follow chain, and
+        both would additionally overwrite the main UI's own already-
+        correct history with default_mask_stack's - a fresh re-threshold
+        that ignores this ROI's saved mask edits, so its blob shapes/
+        positions (and thus which one is "nearest") can genuinely differ
+        from what the main UI had been tracking."""
         segments = (self._blob_settings_for(idx) or {}).get('segments')
         seg = io.segment_for_frame(segments, frame_idx) if segments else None
         if not seg or not seg.get('enabled'):
             return mask
         method, params = self._blob_method_params(idx)
         labels = self._label_blobs_for(mask, idx, frame_idx, method, params)
-        cache = self._blob_centroid_cache.setdefault(idx, {})
+        if cache is None:
+            cache = self._blob_centroid_cache.setdefault(idx, {})
         prev = cache.get(frame_idx - 1)
         fixed_seed = seg.get('seed_centroid')
         seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
@@ -2846,15 +2867,33 @@ class Tab_Tracking_CV2(TabBase):
             # ROI" tool) to draw/edit a ROI instead.
             self.press = None
             return
+        self._discard_temp_rect()
         self.press = (event.xdata, event.ydata)
-        if self.rect is not None:
-            self.rect.remove()
         self.rect = patches.Rectangle(self.press, 0, 0, linewidth=1,
                                       edgecolor='r', facecolor='none')
         self.patches_axNav.append(self.rect)
         self.ax_nav.add_patch(self.rect)
         self.canvas.draw()
         self.backgrounds['nav'] = self.canvas.copy_from_bbox(self.ax_nav.bbox)
+
+    def _discard_temp_rect(self):
+        """Remove the in-progress drag rectangle (if any) from both the
+        axes and patches_axNav, and reset drag state. Without this, a
+        release that can't finish the drag (see on_release) left self.rect
+        attached to the axes but "forgotten" by self.rect itself once the
+        next on_press replaced it - draw_rois_in's cleanup loop would then
+        try to remove that same artist a second time and crash
+        (list.remove(x): x not in list)."""
+        if self.rect is not None:
+            if self.rect in self.patches_axNav:
+                self.patches_axNav.remove(self.rect)
+            try:
+                self.rect.remove()
+            except ValueError:
+                pass  # already detached
+        self.rect = None
+        self.press = None
+        self._last_motion_xy = None
 
     def on_motion(self, event):
         """Mouse-motion handler: while a Ctrl+drag started by on_press is in
@@ -2866,6 +2905,7 @@ class Tab_Tracking_CV2(TabBase):
         x0, y0 = self.press
         width = event.xdata - x0
         height = event.ydata - y0
+        self._last_motion_xy = (event.xdata, event.ydata)
         try:
             self.rect.set_width(width)
             self.rect.set_height(height)
@@ -2882,23 +2922,37 @@ class Tab_Tracking_CV2(TabBase):
         see add_item_tree's Ref combo to make it a ROI-in-ROI afterward) or
         an additional init frame/box on the selected ROI (right click), and
         add/update its tree entry."""
-        if self.press is None or event.inaxes is None:
+        if self.press is None:
+            return
+        if event.inaxes == self.ax_nav and event.xdata is not None and event.ydata is not None:
+            xdata, ydata = event.xdata, event.ydata
+        elif self._last_motion_xy is not None:
+            # Released outside ax_nav entirely (dragged the ROI past the
+            # image edge, off the subplot) - finish with the last in-bounds
+            # drag position instead of silently dropping the ROI; the box
+            # gets clamped to the image below, same as a mouse-up right at
+            # the edge would produce.
+            xdata, ydata = self._last_motion_xy
+        else:
+            # No motion at all before releasing off-axis - nothing usable
+            # to finish the drag with.
+            self._discard_temp_rect()
             return
         x0, y0 = self.press
-        width = event.xdata - x0
-        height = event.ydata - y0
+        width = xdata - x0
+        height = ydata - y0
         # ROI might be drawn reversed
         if width < 0:
             width = abs(width)
-            x0 = event.xdata
+            x0 = xdata
         if height < 0:
             height = abs(height)
-            y0 = event.ydata
+            y0 = ydata
         if width==0:
             width = 1
         if height==0:
             height = 1
-        roi = (int(x0), int(y0), int(width), int(height))
+        roi = self._clamp_roi_to_nav_image((int(x0), int(y0), int(width), int(height)))
 
         # updating df roi
         imgNo = self.slider_imgNo.value()
@@ -2935,7 +2989,22 @@ class Tab_Tracking_CV2(TabBase):
             item.setText(2, str(init))
 
         self.press = None
+        self._last_motion_xy = None
         self.update_canvas(imgNo)
+
+    def _clamp_roi_to_nav_image(self, roi):
+        """Clip a freshly-drawn (x, y, w, h) ROI to the navigation image's
+        own bounds - a drag released past the image edge (or off ax_nav
+        entirely, see on_release) would otherwise hand tracking an
+        out-of-bounds box, the root cause of an OpenCV assertion crash on
+        initializing the tracker with it."""
+        x, y, w, h = roi
+        img_h, img_w = self.nav_imgs[0].shape[:2]
+        x0 = min(max(x, 0), img_w)
+        y0 = min(max(y, 0), img_h)
+        x1 = min(max(x + w, 0), img_w)
+        y1 = min(max(y + h, 0), img_h)
+        return (x0, y0, max(x1 - x0, 1), max(y1 - y0, 1))
 
     def on_scroll(self, event):
         """Zoom the axes under the cursor in/out on Ctrl+scroll wheel,
@@ -3259,16 +3328,23 @@ class Tab_Tracking_CV2(TabBase):
         out_rois = self.df_rois.at[idx, 'out_rois']
         if np.all(pd.isna(out_rois)):
             return []
+        # Only this ROI's own tracked span - frames outside it were never
+        # tracked, and scoring them would flag every one as "mistracked".
+        st = int(min(self.df_rois.loc[idx, 'init']))
+        end = int(self.df_rois.loc[idx, 'end'])
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value()
-        areas = np.full(len(out_rois), np.nan)
-        for frame_idx, roi in enumerate(out_rois):
+        areas = np.full(max(end - st, 0), np.nan)
+        for offset, roi in enumerate(out_rois[st:end]):
             if roi is None or not np.any(roi):
                 continue
+            frame_idx = st + offset
             img_mask, _ = self.threshold_img(self.nav_imgs[frame_idx], roi, thresh_method,
                                              thresh_offset, idx=idx, frame_idx=frame_idx)
-            areas[frame_idx] = img_mask.sum()
-        return io.flag_anomalous_mask_areas(areas)
+            areas[offset] = img_mask.sum()
+        # Back to absolute frame numbers - the icon tooltip and the frame
+        # flag bar both index by real frame.
+        return [st + i for i in io.flag_anomalous_mask_areas(areas)]
 
     def _refresh_quality_icon(self, idx):
         """Set ROI `idx`'s "Qlty" column icon from self._quality_flags -
@@ -3408,8 +3484,8 @@ class Tab_Tracking_CV2(TabBase):
             imgs = self.nav_imgs[beg:end]
             
             rois_in = np.array(df.loc[ind, 'in_rois'])
-            # shift frame number to the start
-            rois_in -= beg
+            # Only `init` is frame numbers; `rois_in` is (x, y, w, h) boxes -
+            # subtracting `beg` from those corrupted position AND size.
             init -= beg
             # 'ref' is None for a plain (non-ROI-in-ROI) ROI - nothing to
             # translate against, so this whole block is skipped silently
@@ -3615,16 +3691,25 @@ class Tab_Tracking_CV2(TabBase):
             # Mesh live from the settings seeded below; applying the whole
             # pipeline here would double them. Order matters (auto-follow's
             # own per-frame centroid cache - see _resolve_blob_mask), so
-            # both stacks are walked frame-by-frame in order;
-            # default_mask_stack (the "Reset to Tracking" target) gets the
-            # exact same treatment so resetting doesn't reintroduce the
-            # un-restricted mask through a different path.
+            # both stacks are walked frame-by-frame in order - each with
+            # its OWN private cache (not self._blob_centroid_cache), since
+            # mask_stack (this ROI's saved/edited mask) and
+            # default_mask_stack (a fresh, un-edited re-threshold) can
+            # genuinely disagree on a frame's blob shapes/positions;
+            # sharing one cache between the two passes let one's picks
+            # bleed into the other's auto-follow chain (wrong blob picked,
+            # or the picked blob drifting partway through the clip), and
+            # both would leave the main UI's own live-scrubbing cache
+            # overwritten with default_mask_stack's choices instead of
+            # whatever it had actually been showing.
             mask_stack = mask_stack.copy()
             default_mask_stack = default_mask_stack.copy()
+            mask_cache, default_cache = {}, {}
             for f in range(mask_stack.shape[0]):
-                mask_stack[f] = self._resolve_blob_mask(idx, f, mask_stack[f])
+                mask_stack[f] = self._resolve_blob_mask(idx, f, mask_stack[f], cache=mask_cache)
             for f in range(default_mask_stack.shape[0]):
-                default_mask_stack[f] = self._resolve_blob_mask(idx, f, default_mask_stack[f])
+                default_mask_stack[f] = self._resolve_blob_mask(
+                    idx, f, default_mask_stack[f], cache=default_cache)
         edge_settings = self._edge_settings_for(idx)
         thresh_settings = {
             'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_sigma}

@@ -24,6 +24,7 @@ import eventem
 from scipy.ndimage import gaussian_filter
 
 from .progress import redirect_console_to_logger, LoggingProgressBar, _log_or_print
+from . import hdf5_eventem_layout as h5ev
 
 def get_4d_files(path_4d_datasets, dtype):
     """Return sorted list of 4D-STEM files matching *dtype* in *path_4d_datasets* (recursive)."""
@@ -115,10 +116,15 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     return roi_obj
 
 def load_hdf5_eventem(fn, roi=None, scanSize=None, lazy=False, max_eager_frames=10000,
-                      logger=None, **kwargs):
+                      logger=None, max_workers=None, **kwargs):
     """Load an eventem-format '.hdf5_eventem' 4D-STEM file (a raw `f['4D']`
     dataset written by eventem, NOT a conventional/HyperSpy-loadable HDF5 -
     see this module's docstring); supports lazy loading, ROI crop, and DP summation.
+
+    Transparently handles both the current native-4D storage layout and the
+    older flat/1-D layout some pre-4D-native eventem exports still use (see
+    hdf5_eventem_layout's module docstring) - callers never need to know
+    which one a given file uses.
 
     Either path (lazy=True or lazy=False) ends up returning a fully
     materialized numpy array - the difference is HOW the read happens.
@@ -135,22 +141,21 @@ def load_hdf5_eventem(fn, roi=None, scanSize=None, lazy=False, max_eager_frames=
     because lazy=False (the default) was left unset. Only ever overrides an
     *unset/default* lazy=False - an explicit lazy=True request is always
     honored as-is.
+
+    `max_workers`: see hdf5_eventem_layout._resolve_max_workers - None
+    (default) sizes the chunk-processing thread pool dynamically
+    per-machine; pass 1 when already running inside another process pool.
     """
     with h5py.File(fn, 'r') as f:
         if roi is None:
             roi = [0, 0, scanSize[1], scanSize[0]]
-        x, y, w, h = roi  # roi format: [x, y, w, h] — x=col, y=row
-        if lazy or w * h > max_eager_frames:
-            # Must be .compute()d before this `with` block exits, same as
-            # get_dp()'s '.hdf5' branch (see its comment) - a dask array
-            # built from a dataset inside a `with h5py.File(...)` block
-            # stops being readable the moment that block exits, so it can
-            # never actually be handed back to the caller still lazy.
-            s = da.from_array(f['4D'])
-            s = s[y:y+h, x:x+w]
-            s = s.compute()
-        else:
-            s = f['4D'][y:y+h, x:x+w]  # numpy row-major: row (y) axis first
+        # Must be resolved (eager array, or dask .compute()d) before this
+        # `with` block exits, same as get_dp()'s '.hdf5_eventem' branch (see
+        # its comment) - a dask array built from a dataset inside a `with
+        # h5py.File(...)` block stops being readable the moment that block
+        # exits, so it can never actually be handed back to the caller still
+        # lazy.
+        s = h5ev.read_roi(f, roi, max_eager_frames=max_eager_frames, lazy=lazy, max_workers=max_workers)
     return s
 
 def load_hs(fn, roi=None, lazy=True, logger=None,
@@ -351,8 +356,11 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
         # block stops being readable the moment that block exits, so a lazy
         # array can only safely be handed back to a caller already computed,
         # same as calculate_nav_img_hdf5_eventem does.
+        # h5ev.as_dask() transparently handles both the native-4D and the
+        # older flat/1-D storage layout - see hdf5_eventem_layout's module
+        # docstring.
         with h5py.File(fn, 'r') as f:
-            s = da.from_array(f['4D'], chunks=f['4D'].chunks)
+            s = h5ev.as_dask(f)
             if roi is not None:
                 x, y, w, h = roi
                 s = s[y:y+h, x:x+w]
