@@ -6,11 +6,11 @@ Created on Tue May  6 22:47:49 2025
 """
 
 import sys
-import dask.array as da
 import h5py
 from dask.distributed import Client, LocalCluster
 import os
 from dask import config
+import dask.array as da
 import numpy as np
 from dask.diagnostics import ProgressBar
 from scipy import ndimage
@@ -22,6 +22,7 @@ eventem_path = os.path.join(os.path.dirname(main_path), 'EDyssey', 'io_utils')
 sys.path.append(eventem_path)
 # os.chdir()
 import eventem
+import hdf5_eventem_layout
 from hyperspy.api import signals, load
 # from EDyssey.io_utils import load_signal
 import warnings
@@ -142,7 +143,9 @@ def load_dp(fn, **kwargs):
             result = load_tpx3(fn, **kwargs)
     elif dtype == '.hdf5_eventem':
         result = load_hdf5_eventem(fn, **kwargs)
-    elif dtype in ['.zspy', '.hspy', '.hdf5', '.blo']:
+    elif dtype == '.hdf5':
+        result = load_hdf5_generic(fn, **kwargs)
+    elif dtype in ['.zspy', '.hspy', '.blo']:
         result = load_hs(fn, **kwargs)
     elif dtype == '.mib':
         result = load_mib(fn, **kwargs)
@@ -303,32 +306,85 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
                               dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape)
     return dp_total
 
-def load_hdf5_eventem(fn, roi, mask, scanSize=None, chunks=(8, 512, 512, 512), **kwargs):
+def load_hdf5_eventem(fn, roi, mask, scanSize=None, max_eager_frames=10000, **kwargs):
     """Load an eventem-format '.hdf5_eventem' file and sum diffraction
     patterns at mask-True scan pixels.
+
+    Handles both the current native-4D storage layout and the older flat/
+    1-D layout some pre-4D-native eventem exports still use (see
+    hdf5_eventem_layout's module docstring). For the flat layout, reads the
+    masked positions directly via h5py (no dask) when their count is within
+    `max_eager_frames` - noticeably faster than always building and
+    computing a dask graph, which is what this used to do unconditionally -
+    falling back to dask above that, same as loaders.load_hdf5_eventem's
+    own max_eager_frames.
 
     Args:
         fn: Path to the .hdf5_eventem file.
         roi: (x, y, w, h) scan-space crop (currently unused in this loader).
         mask: 2-D boolean array matching the full scan dimensions.
-        scanSize: (nx, ny) scan dimensions for reshaping flat storage.
-        chunks: Dask chunk shape.
+        scanSize: Unused - the file's own `f['shape']` is authoritative
+            (see hdf5_eventem_layout.get_shape). Kept for call-signature
+            compatibility with the other load_* functions load_dp dispatches to.
+        max_eager_frames: See above.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
+    # max_workers=1: this script always runs as one of several concurrent
+    # pool workers (worker_extract_frame_batch.py's own ProcessPoolExecutor)
+    # - same reasoning as load_tpx3's n_threads=1 above. Without this,
+    # sum_masked_positions's own dynamically-sized thread pool would spin up
+    # inside every one of those worker processes too, multiplying concurrent
+    # ~1GB chunk buffers by the pool's own worker count.
+    with h5py.File(fn, 'r') as f:
+        dp = hdf5_eventem_layout.sum_masked_positions(f, mask, max_eager_frames=max_eager_frames, max_workers=1)
+    return dp
+
+def load_hdf5_generic(fn, roi, mask, fn_pattern=None, **kwargs):
+    """Load a conventional/third-party '.hdf5' file and sum diffraction
+    patterns at mask-True scan pixels - mirrors load_hs below, but via a
+    plain h5py tree walk + dask instead of HyperSpy's own `load()`, which
+    can't parse this format's arbitrary internal layout (see
+    EDyssey.io_utils.loaders' module docstring - same one-4D-dataset
+    convention as its own load_hdf5_generic).
+
+    fn_pattern (smart-scan) isn't supported here, unlike load_hs's own
+    .hspy/.zspy path - no real acquisition needing this loader has used a
+    smart-scan pattern file in practice.
+
+    Args:
+        fn: Path to the .hdf5 file.
+        roi: (x, y, w, h) scan-space crop.
+        mask: 2-D boolean array matching the full scan dimensions.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
     with h5py.File(fn, 'r') as f:
-        shape = tuple(f['shape'][:])
-        if len(f['4D'].shape) == 4:
-            s = da.from_array(f['4D'], chunks=chunks)
-        elif len(f['4D'].shape) == 1:
-            s = da.from_array(f['4D'], chunks=np.prod(chunks))
-            s = s.reshape(shape)
-        s = s.reshape(-1, *s.shape[2:])
-        mask_idx = np.where(mask.flatten() == 1)[0]
-        dp = s[mask_idx].sum(axis=0).compute()
+        datasets_4d = []
+        def _visit(name, obj):
+            # Any numeric kind or plain boolean (a thresholded/binary
+            # detector read is still meaningful data to sum) - see
+            # EDyssey.io_utils.loaders._is_dp_dtype.
+            if (isinstance(obj, h5py.Dataset) and obj.ndim == 4
+                    and (np.issubdtype(obj.dtype, np.number) or np.issubdtype(obj.dtype, np.bool_))):
+                datasets_4d.append(name)
+        f.visititems(_visit)
+        if len(datasets_4d) != 1:
+            raise ValueError(
+                f"Expected exactly one numerical 4D dataset in {fn!r}, found "
+                f"{len(datasets_4d)}.")
+        dset = f[datasets_4d[0]]
+        data = da.from_array(dset, chunks=dset.chunks if dset.chunks is not None else 'auto')
+        x, y, w, h = roi
+        data = data[y:y+h, x:x+w]
+        mask_crop = mask[y:y+h, x:x+w]
+        data = data.reshape(-1, *data.shape[-2:])
+        dp = data[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+        dp = dp.compute()
     return dp
-    
+
 def load_hs(fn, roi, mask, fn_pattern=None, **kwargs):
     """Load a .hspy/.zspy file and sum diffraction patterns at mask-True scan pixels.
 

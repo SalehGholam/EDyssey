@@ -5,6 +5,7 @@ pixels or rectangular regions in/out with the mouse, and preview the same
 Edge Detection post-processing the main tab uses - live, without baking it
 into the stored mask. Shared by Tab_SAM2 and Tab_Tracking_CV2 (see their own
 open_fine_tune_mask_dialog())."""
+import copy
 import numpy as np
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
@@ -37,12 +38,15 @@ _HELP_TEXT = (
     'disarm/switch it. Same effect as the Ctrl/Shift shortcuts below, '
     'just without needing to hold a key.\n'
     '  Undo / Redo  ->  step back/forward through mask edits (paint/rect '
-    'paint, D-pad grow/shrink, Reset This Frame, Threshold changes, Reset '
-    'to Tracking) - same as Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) below. Jumps '
-    'to whichever frame the undone/redone edit was on if it isn\'t already '
-    'on screen. Does NOT cover Dilate/Erode, Edge Detection, Mesh, or Blob '
-    'Selection - those are live previews only and never touch the saved '
-    'mask, so reversing them is just changing the control back.\n'
+    'paint, D-pad grow/shrink, Reset Frame, Threshold changes, Reset to '
+    'Tracking\'s mask) - same as Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) below. '
+    'Jumps to whichever frame the undone/redone edit was on if it isn\'t '
+    'already on screen. Does NOT cover Dilate/Erode, Edge Detection, Mesh, '
+    'Blob Selection (live previews only, never touch the saved mask, so '
+    'reversing them is just changing the control back), or any segment '
+    'boundary/setting Reset Frame/Reset Segment/Reset to Tracking change - '
+    'those need a manual Split/Merge/re-tweak, or (for a full wipe) '
+    'confirming Reset to Tracking again is the only way back.\n'
     '  Pan / Zoom (rectangle) / Home  ->  matplotlib\'s own pan/zoom-box/'
     'reset-view, same as the toolbar under the main tabs\' own canvases.\n'
     '  "?"  ->  this reference.\n'
@@ -76,13 +80,34 @@ _HELP_TEXT = (
     'boundaries, the yellow line is the current frame). "Split Here" '
     'breaks the current segment in two at this frame - the first half '
     'keeps its settings, the new second half starts back at plain '
-    'defaults (all disabled); "Reset to Default" puts the current segment '
-    'back to that same untouched state without changing its frame range; '
-    '"Merge with Previous" removes the boundary at this frame, folding it '
-    'back into the previous segment (using the previous segment\'s '
-    'settings). ⏮/⏭ Segment jump to the previous/next segment\'s start. '
-    'Whichever segment covers the frame on screen is the one Dilate/'
-    'Erode\'s, Edge Detection\'s, and Mesh\'s widgets show/edit.\n'
+    'defaults (all disabled); "Merge with Previous" removes the boundary '
+    'at this frame, folding it back into the previous segment (using the '
+    'previous segment\'s settings). ⏮/⏭ Segment jump to the previous/next '
+    'segment\'s start. Whichever segment covers the frame on screen is the '
+    'one Dilate/Erode\'s, Edge Detection\'s, and Mesh\'s widgets show/edit.\n'
+    '\n'
+    'Edit Scope (above the canvas):\n'
+    '  The "Single Frame"/"Segment" radios govern what a Dilate/Erode, '
+    'Edge Detection, or Mesh change (a control tweak or a mesh cell click) '
+    'actually applies to - "Single Frame" (the default) silently splits '
+    'the current segment down to just this one frame first, inheriting '
+    'whatever settings already covered it, then applies the change to '
+    'only that frame; "Segment" applies it to the whole segment currently '
+    'on screen instead, same as before this toggle existed. Either way, '
+    'the result is an ordinary segment - scrubbing back to an already '
+    'frame-isolated frame later shows its own settings regardless of '
+    'which mode is currently selected.\n'
+    '  Three reset actions cover every scope, narrowest to widest: '
+    '"Reset Frame" discards this frame\'s painted mask AND (isolating it '
+    'first if needed) its Dilate/Erode/Edge Detection/Mesh settings, '
+    'without touching neighboring frames - undo-able (Ctrl+Z). "Reset '
+    'Segment" (below the slider) puts the whole current segment\'s '
+    'Dilate/Erode/Edge Detection/Mesh settings back to plain defaults '
+    'without changing its frame range or touching the mask. "Reset to '
+    'Tracking" (confirmed first, not undo-able) discards everything at '
+    'once - the mask on every frame, back to the original tracked/'
+    'segmented result, and every segment boundary/setting, back to one '
+    'plain-default segment spanning the whole stack.\n'
     '\n'
     'Dilate / Erode Mask:\n'
     '  Live preview only - never changes the returned mask. Grows or '
@@ -92,20 +117,20 @@ _HELP_TEXT = (
     'the mask\'s overall size; "Closing Kernel Size" (dilate then erode) '
     'fills small dark holes/gaps the same way - both 0 (off) by default, '
     'applied in that order right after Kernel Size above. All three apply '
-    'before Edge Detection below, and are scoped to the current segment '
-    '(see Frame Navigation & Segments above).\n'
+    'before Edge Detection below, scoped to either the current frame or '
+    'segment depending on Edit Scope (see above).\n'
     '\n'
     'Edge Detection:\n'
     '  Live preview only - never changes the returned mask. Reduces the '
     'mask to its outline (optionally one-sided via "Directional" + Angle). '
-    'Scoped to the current segment, like Dilate/Erode and Mesh (see Frame '
-    'Navigation & Segments above) - each segment has its own independent '
-    'Edge Detection settings.\n'
+    'Scoped by Edit Scope like Dilate/Erode and Mesh (see above) - each '
+    'segment has its own independent Edge Detection settings.\n'
     '\n'
     'Mesh:\n'
     '  Divides the mask into a rotated grid; left-click cell(s) to '
     'restrict extraction to just those cells (live preview only), scoped '
-    'to the current segment. The full mask keeps showing in orange as a '
+    'by Edit Scope like the other two (see above). The full mask keeps '
+    'showing in orange as a '
     'reference - the part of it inside the selected cell(s) is highlighted '
     'brown on top, instead of the mask shrinking down to just the '
     'selection. "Lines Only" restricts to full-width stripes along the '
@@ -114,10 +139,6 @@ _HELP_TEXT = (
     '"Center on Initial Mask" anchors the grid to where the object '
     'started (its first tracked/segmented position) instead of wherever '
     "it's been edited to since - useful once the mask has moved a lot.\n"
-    '\n'
-    'Reset This Frame / Reset to Tracking:\n'
-    '  Discard edits to just the frame on screen, or every frame, back to '
-    'the original tracked/segmented mask.\n'
     '\n'
     'Find Tilt Axis:\n'
     '  Estimates the tomography tilt axis from how this object\'s mask '
@@ -372,6 +393,10 @@ class MaskEditDialog(qtw.QDialog):
         self._redo_stack = []
         self._threshold_undo_frame = None  # see _threshold_live_update
         self._roi_bg = None
+        # Cached blit background for _redraw_mask (see _blit_mask_display) -
+        # None means "needs (re)capture". Separate from _roi_bg above,
+        # which is the ROI-drag preview's own independent blit cache.
+        self._mask_frame_bg = None
 
         # See _on_frame_changed's own comment - coalesces the expensive
         # per-frame redraw (denoise + mask recompute) so dragging the frame
@@ -426,6 +451,62 @@ class MaskEditDialog(qtw.QDialog):
         layout = qtw.QVBoxLayout()
         main_row.addLayout(layout, 1)
 
+        # Edit Scope: whether the NEXT Dilate/Erode/Edge Detection/Mesh
+        # edit (a checkbox/spinbox change, or a mesh cell click) applies
+        # to just this one frame or to the whole segment currently
+        # covering it - see _write_widgets_to_current_segment/_mesh_cells'
+        # setter, both of which isolate the current frame into its own
+        # segment first (inheriting whatever settings already cover it,
+        # not blank defaults - unlike a manual "Split Here") when this is
+        # set to "Single Frame". Purely a "how do I want my next edit
+        # committed" mode, not itself saved anywhere - the RESULT of an
+        # edit (a new 1-frame segment, or a wider one left as-is) is
+        # exactly the same segment structure this dialog already saves,
+        # so navigating back to an already-isolated frame later shows its
+        # own settings regardless of which mode is selected here.
+        #
+        # Reset Frame/Reset to Tracking share this row too (moved here from
+        # the old full-width bottom row, and "Reset This Frame" folded into
+        # "Reset Frame" - see _reset_current_frame_to_default) - grouping
+        # every "throw away edits" action along one edge, from narrowest
+        # scope (this frame) up to widest (everything, "Reset to
+        # Tracking"), with "Reset Segment" below the slider (row_segment2)
+        # in between.
+        row_edit_scope = qtw.QHBoxLayout()
+        row_edit_scope.addWidget(qtw.QLabel('Edit Scope:'))
+        self.radio_scopeFrame = qtw.QRadioButton('Single Frame')
+        self.radio_scopeFrame.setChecked(True)
+        self.radio_scopeFrame.setToolTip(
+            'Dilate/Erode, Edge Detection, and Mesh changes apply to just this one frame')
+        row_edit_scope.addWidget(self.radio_scopeFrame)
+        self.radio_scopeSegment = qtw.QRadioButton('Segment')
+        self.radio_scopeSegment.setToolTip(
+            'Dilate/Erode, Edge Detection, and Mesh changes apply to the whole current '
+            'segment (the frame range shown below the slider)')
+        row_edit_scope.addWidget(self.radio_scopeSegment)
+        # Belt-and-suspenders exclusivity - the two radios already exclude
+        # each other via their shared parent widget, but an explicit group
+        # doesn't rely on that layout detail staying true.
+        self._scope_group = qtw.QButtonGroup(self)
+        self._scope_group.addButton(self.radio_scopeFrame)
+        self._scope_group.addButton(self.radio_scopeSegment)
+        row_edit_scope.addStretch(1)
+        self.button_resetFrame = qtw.QPushButton('Reset Frame')
+        self.button_resetFrame.setToolTip(
+            "Discard edits to just this frame - both its painted mask and (isolating "
+            "it into its own segment first if it isn't already one) its Dilate/Erode/"
+            'Edge Detection/Mesh settings')
+        self.button_resetFrame.clicked.connect(self._reset_current_frame_to_default)
+        row_edit_scope.addWidget(self.button_resetFrame)
+        self.button_resetTracking = qtw.QPushButton('Reset to Tracking')
+        self.button_resetTracking.setToolTip(
+            'Discard every edit in this dialog - the mask on every frame (back to the '
+            'original tracked/segmented result) and every segment boundary/Dilate/'
+            'Erode/Edge Detection/Mesh setting')
+        self.button_resetTracking.clicked.connect(self._reset_to_tracking)
+        row_edit_scope.addWidget(self.button_resetTracking)
+        layout.addLayout(row_edit_scope)
+
         self.figure = Figure(constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setMinimumSize(480, 480)
@@ -440,6 +521,24 @@ class MaskEditDialog(qtw.QDialog):
         bg0 = self.bg_stack[self.frame] if self.bg_stack is not None else np.zeros((h, w))
         self.img_bg = self.ax.imshow(bg0, cmap='gray')
         self.img_mask = self.ax.imshow(self._mask_rgba(self.mask_stack[self.frame]))
+
+        # Any real view change - Ctrl+scroll (_on_scroll) or the ribbon's
+        # own Pan/Zoom tools driving self.toolbar.pan()/.zoom() below -
+        # shifts what's baked into the cached blit background (see
+        # _blit_mask_display); catching it here, on the axes' own
+        # xlim/ylim callbacks, covers both without hunting down every
+        # call site that can move the view.
+        self.ax.callbacks.connect('xlim_changed', lambda ax: setattr(self, '_mask_frame_bg', None))
+        self.ax.callbacks.connect('ylim_changed', lambda ax: setattr(self, '_mask_frame_bg', None))
+        # Resizing/maximizing this dialog (it has both hints - see
+        # setWindowFlags above) changes the canvas's own pixel dimensions
+        # without necessarily touching xlim/ylim, so the two callbacks
+        # above alone don't catch it - restoring a background cached at
+        # the OLD, smaller canvas size then leaves a visible stale
+        # rectangle (the old canvas's own edge) in a corner of the new,
+        # bigger one, since restore_region() only repaints the region it
+        # was captured over.
+        self.canvas.mpl_connect('resize_event', lambda evt: setattr(self, '_mask_frame_bg', None))
 
         self.canvas.mpl_connect('scroll_event', self._on_scroll)
         self.canvas.mpl_connect('button_press_event', self._on_press)
@@ -612,11 +711,11 @@ class MaskEditDialog(qtw.QDialog):
             "to cover this one too (using the previous segment's settings)")
         self.button_mergeSegment.clicked.connect(self._merge_with_previous_segment)
         row_segment2.addWidget(self.button_mergeSegment)
-        self.button_resetSegment = qtw.QPushButton('Reset to Default')
+        self.button_resetSegment = qtw.QPushButton('Reset Segment')
         self.button_resetSegment.setToolTip(
-            "Put this segment's Dilate/Erode/Mesh settings back to plain defaults "
-            "(both disabled) without changing its frame range - doesn't affect Edge "
-            'Detection, which applies uniformly to the whole stack, not per-segment')
+            "Put this segment's Dilate/Erode/Edge Detection/Mesh settings back to plain "
+            'defaults (all disabled) without changing its frame range - see also "Reset '
+            'Frame" above, which does the same for just the current frame')
         self.button_resetSegment.clicked.connect(self._reset_current_segment_to_default)
         row_segment2.addWidget(self.button_resetSegment)
 
@@ -656,44 +755,18 @@ class MaskEditDialog(qtw.QDialog):
         row_tilt.addWidget(self.label_tiltAxis)
         row_tilt.addStretch(1)
 
-        # Everything below the frame slider (D-pad, Threshold/Edge
-        # Detection, Mesh, ...) sits in an independently-scrolling area
-        # instead of the dialog's own top-level layout (see bug fix in the
-        # class docstring / item 0 of the originating request): a QDialog
-        # can't be resized smaller than the sum of its children's minimum
-        # size hints, and the canvas's own 480px minimum plus every
-        # groupbox's natural height can together exceed a smaller/laptop
-        # screen's available height, pushing row_buttons (Save && Close/
-        # Cancel) off-screen with no way to reach it. QScrollArea's own
-        # minimumSizeHint is small (frame + scrollbar allowance) regardless
-        # of how tall its contents are, so wrapping them here - instead of
-        # adding them to `layout` directly - guarantees the canvas (top) and
-        # row_buttons (bottom, added straight to `layout` below) always both
-        # fit, however many control groupboxes exist or however short the
-        # screen is; only the controls in between ever need to scroll.
-        # The left panel (Denoise, Grow/Shrink Mask, Threshold, Edge
-        # Detection, Dilate/Erode, Mesh - one column, in that order) scrolls
-        # independently instead of being added to `outer_layout` directly
-        # (see the class docstring's layout note, item 0 of the originating
-        # request): a QDialog can't be resized smaller than the sum of its
-        # children's minimum size hints, and this many groupboxes stacked in
-        # one column can together exceed a smaller/laptop screen's available
-        # height, pushing row_buttons (Save && Close/Cancel) off-screen with
-        # no way to reach it. QScrollArea's own minimumSizeHint is small
-        # (frame + scrollbar allowance) regardless of how tall its contents
-        # are, so wrapping them here guarantees the canvas (right column)
-        # and row_buttons (bottom, spanning both columns) always both fit,
-        # however many groupboxes exist or however short the screen is;
-        # only the left panel's own controls ever need to scroll.
-        scroll_controls = qtw.QScrollArea()
-        scroll_controls.setWidgetResizable(True)
-        scroll_controls.setFrameShape(qtw.QFrame.NoFrame)
-        scroll_content = qtw.QWidget()
-        grid_boxes = qtw.QVBoxLayout(scroll_content)
+        # The left panel's own controls (Denoise, Grow/Shrink Mask,
+        # Threshold, Edge Detection, Dilate/Erode, Mesh) go straight into
+        # left_layout, stretch-factor 1 so they claim any leftover height
+        # below Tilt Axis above - no independent scroll area around them
+        # (an earlier version had one, to protect against a short screen
+        # pushing row_buttons off-screen, but it also kicked in - showing
+        # an unwanted scrollbar and clipping labels against it - on
+        # perfectly tall-enough screens; removed at the user's request).
+        grid_boxes = qtw.QVBoxLayout()
         grid_boxes.setContentsMargins(0, 0, 0, 0)
         grid_boxes.setSpacing(8)
-        scroll_controls.setWidget(scroll_content)
-        left_layout.addWidget(scroll_controls, 1)
+        left_layout.addLayout(grid_boxes, 1)
 
         grid_boxes.addWidget(self.box_denoise)
 
@@ -1007,20 +1080,9 @@ class MaskEditDialog(qtw.QDialog):
                        self.spinbox_meshCellSize.valueChanged, self.checkbox_meshCenterInitial.stateChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
-        # Full dialog width, below both columns - always reachable
-        # regardless of how tall the left panel's own scroll area gets (see
-        # its own comment above), same reasoning as before this dialog had
-        # two columns at all.
+        # Full dialog width, below both columns.
         row_buttons = qtw.QHBoxLayout()
         outer_layout.addLayout(row_buttons)
-        self.button_resetFrame = qtw.QPushButton('Reset This Frame')
-        self.button_resetFrame.setToolTip('Discard edits made to this frame only')
-        self.button_resetFrame.clicked.connect(self._reset_frame)
-        row_buttons.addWidget(self.button_resetFrame)
-        self.button_resetTracking = qtw.QPushButton('Reset to Tracking')
-        self.button_resetTracking.setToolTip('Discard all edits, every frame, restore the original mask')
-        self.button_resetTracking.clicked.connect(self._reset_to_tracking)
-        row_buttons.addWidget(self.button_resetTracking)
         row_buttons.addStretch(1)
         self.button_ok = qtw.QPushButton('Save && Close')
         self.button_ok.clicked.connect(self.accept)
@@ -1109,10 +1171,64 @@ class MaskEditDialog(qtw.QDialog):
         return mask
 
     def _redraw_mask(self):
+        """Recompute and show the mask overlay (+ Mesh/tilt-axis overlays
+        on top) for the current frame - called on every single mouse-move
+        tick while pixel-painting (_paint_pixel/_on_motion), so the actual
+        screen update is blitted (_blit_mask_display) rather than a full
+        canvas.draw_idle(): a full redraw here (re-running constrained_
+        layout, repainting every axis) on every one of those made painting
+        feel sluggish for anything but a tiny mask."""
         self.img_mask.set_data(self._mask_rgba(self._effective_mask(self.frame)))
         self._redraw_mesh_overlay()
         self._redraw_tilt_axis_overlay()
-        self.canvas.draw_idle()
+        self._blit_mask_display()
+
+    def _blit_mask_display(self):
+        """Blit the background image, mask overlay, and Mesh/tilt-axis
+        overlays onto the canvas - see TabBase._blit_canvas (duplicated
+        here, in miniature, since this dialog doesn't inherit TabBase).
+        img_bg is included even though most _redraw_mask callers (paint/
+        mesh/tilt-axis edits) never actually change it - it's cheap to
+        redraw and this way the same cache also serves _redraw_frame_
+        content's per-frame calls (where it DOES change), without a
+        separate code path. Mesh/tilt-axis overlays are freshly recreated
+        artists every call (see _redraw_mesh_overlay/_redraw_tilt_axis_
+        overlay - a contour set can't just have its data updated), so
+        they're read fresh here rather than cached, the same convention
+        as the main tabs' own per-frame ROI-rectangle overlays."""
+        dynamic = [self.img_bg, self.img_mask] + self._mesh_grid_artists
+        if self._mesh_cell_artist is not None:
+            dynamic.append(self._mesh_cell_artist)
+        if self._tilt_axis_line_artist is not None:
+            dynamic.append(self._tilt_axis_line_artist)
+        self._blit_canvas(self.canvas, self.figure, '_mask_frame_bg', dynamic,
+                          hide_for_background=[self.img_bg, self.img_mask])
+
+    def _blit_canvas(self, canvas, figure, bg_attr, artists,
+                     hide_for_background=(), titles_for_background=()):
+        """See TabBase._blit_canvas (ui_tabs/base_tab.py) - identical
+        logic, duplicated here since MaskEditDialog is a QDialog, not a
+        TabBase subclass."""
+        if getattr(self, bg_attr) is None:
+            prev_visible = [a.get_visible() for a in hide_for_background]
+            for a in hide_for_background:
+                a.set_visible(False)
+            prev_titles = [ax.get_title() for ax in titles_for_background]
+            for ax in titles_for_background:
+                ax.set_title('')
+
+            canvas.draw()
+            setattr(self, bg_attr, canvas.copy_from_bbox(figure.bbox))
+
+            for a, v in zip(hide_for_background, prev_visible):
+                a.set_visible(v)
+            for ax, t in zip(titles_for_background, prev_titles):
+                ax.set_title(t)
+
+        canvas.restore_region(getattr(self, bg_attr))
+        for artist in artists:
+            artist.axes.draw_artist(artist)
+        canvas.blit(figure.bbox)
 
     #%% segments
     def _load_segment_into_widgets(self):
@@ -1150,14 +1266,87 @@ class MaskEditDialog(qtw.QDialog):
             wid.blockSignals(False)
         self._update_mesh_cell_label()
 
+    def _isolate_current_frame_as_segment(self):
+        """Split the segment currently covering self.frame down to exactly
+        that one frame, inheriting its Dilate/Erode/Edge Detection/Mesh
+        settings (deep-copied, not blank defaults - unlike a manual "Split
+        Here") into the pieces before/after it, so the rest of the
+        original range is left exactly as it was. Called before writing an
+        edit while Edit Scope is "Single Frame" (see
+        _write_widgets_to_current_segment/_mesh_cells' setter). A no-op if
+        the current segment is already exactly this one frame."""
+        idx = self._current_segment_idx
+        seg = self._segments[idx]
+        if seg['start'] == seg['end'] == self.frame:
+            return
+        before = None
+        if self.frame > seg['start']:
+            before = {'start': seg['start'], 'end': self.frame - 1,
+                     'dilate_erode': copy.deepcopy(seg['dilate_erode']),
+                     'edge': copy.deepcopy(seg['edge']),
+                     'mesh': copy.deepcopy(seg['mesh'])}
+        after = None
+        if self.frame < seg['end']:
+            after = {'start': self.frame + 1, 'end': seg['end'],
+                    'dilate_erode': copy.deepcopy(seg['dilate_erode']),
+                    'edge': copy.deepcopy(seg['edge']),
+                    'mesh': copy.deepcopy(seg['mesh'])}
+        seg['start'] = seg['end'] = self.frame
+        insert_at = idx
+        if before is not None:
+            self._segments[idx] = before
+            self._segments.insert(idx + 1, seg)
+            insert_at = idx + 1
+        if after is not None:
+            self._segments.insert(insert_at + 1, after)
+        self._current_segment_idx = insert_at
+
+    def _reset_current_frame_to_default(self):
+        """"Reset Frame": discard every edit to just this frame - both its
+        painted mask (back to the original tracked/segmented result, same
+        as the old "Reset This Frame" button this folds in - undo-able,
+        see _push_undo) and, isolating it into its own segment first if it
+        isn't already one (see _isolate_current_frame_as_segment), its
+        Dilate/Erode/Edge Detection/Mesh settings back to plain defaults -
+        without touching neighboring frames."""
+        self._push_undo(self.frame)
+        self.mask_stack[self.frame] = self._original_stack[self.frame].copy()
+        self._isolate_current_frame_as_segment()
+        seg = self._segments[self._current_segment_idx]
+        seg['dilate_erode'] = _dilate_erode_fields(None)
+        seg['edge'] = _edge_fields(None)
+        seg['mesh'] = _mesh_fields(None)
+        self._load_segment_into_widgets()
+        self._redraw_mask()
+        self._update_segment_ui()
+
+    def _reset_segments_to_single_default(self):
+        """Collapse self._segments back to one plain-default segment
+        spanning the whole stack, reload the widgets/segment UI from it -
+        the segment-list half of "Reset to Tracking" (which also resets
+        self.mask_stack itself - see _reset_to_tracking). Does not redraw -
+        the caller does that once, after its own other state changes."""
+        self._segments = [{
+            'start': 0, 'end': self.n_frames - 1,
+            'dilate_erode': _dilate_erode_fields(None),
+            'edge': _edge_fields(None),
+            'mesh': _mesh_fields(None),
+        }]
+        self._current_segment_idx = 0
+        self._load_segment_into_widgets()
+        self._update_segment_ui()
+
     def _write_widgets_to_current_segment(self):
         """The inverse of _load_segment_into_widgets - called whenever a
         Dilate/Erode/Edge Detection/Mesh control changes, so the currently-
-        active segment's own stored Dilate/Erode/Mesh settings (not just the
-        live widget state) reflect the edit - Edge Detection is written into
-        every segment at once instead, since it's dialog-wide, not per-
-        segment (see below). Doesn't touch mesh['cells'] - that's kept in
-        sync separately via the _mesh_cells property."""
+        active segment's own stored Dilate/Erode/Edge/Mesh settings (not
+        just the live widget state) reflect the edit. If Edit Scope is
+        "Single Frame", isolates the current frame into its own segment
+        first (see _isolate_current_frame_as_segment) so the edit lands on
+        just this frame, not the whole range. Doesn't touch mesh['cells'] -
+        that's kept in sync separately via the _mesh_cells property."""
+        if self.radio_scopeFrame.isChecked():
+            self._isolate_current_frame_as_segment()
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = {'enabled': self.checkbox_dilateErode.isChecked(),
                                'kernel': self.spinbox_dilateErode.value(),
@@ -1179,6 +1368,7 @@ class MaskEditDialog(qtw.QDialog):
         mesh cell clicks/Lines Only, which go through the _mesh_cells
         property/_on_mesh_lines_only_toggled instead)."""
         self._write_widgets_to_current_segment()
+        self._update_segment_ui()
         self._redraw_mask()
 
     def _sync_current_segment(self):
@@ -1236,7 +1426,7 @@ class MaskEditDialog(qtw.QDialog):
         Detection/Mesh (all disabled) rather than inheriting a copy of the
         first half's settings - a segment nobody has actually configured yet
         should read as "untouched", not as a hidden duplicate of whatever
-        segment it was split off from. Use "Reset to Default" to put an
+        segment it was split off from. Use "Reset Segment" to put an
         already-configured segment back to this same state. A no-op if
         self.frame is already this segment's own start (nothing to
         split)."""
@@ -1258,11 +1448,13 @@ class MaskEditDialog(qtw.QDialog):
         self._update_segment_ui()
 
     def _reset_current_segment_to_default(self):
-        """"Reset to Default": put the current segment's Dilate/Erode/Edge
+        """"Reset Segment": put the current segment's Dilate/Erode/Edge
         Detection/Mesh settings back to plain defaults (all disabled) - the
         same state a freshly-split, never-touched segment starts in (see
         _split_segment_here) - without changing its frame range or touching
-        any other segment."""
+        any other segment. See also "Reset Frame"
+        (_reset_current_frame_to_default), which does the same for just
+        the current frame."""
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = _dilate_erode_fields(None)
         seg['edge'] = _edge_fields(None)
@@ -1316,6 +1508,8 @@ class MaskEditDialog(qtw.QDialog):
 
     @_mesh_cells.setter
     def _mesh_cells(self, value):
+        if self.radio_scopeFrame.isChecked():
+            self._isolate_current_frame_as_segment()
         self._segments[self._current_segment_idx]['mesh']['cells'] = [list(c) for c in value]
 
     def _mesh_origin_for_frame(self, frame):
@@ -1389,6 +1583,7 @@ class MaskEditDialog(qtw.QDialog):
     def _clear_mesh_selection(self):
         self._mesh_cells = set()
         self._update_mesh_cell_label()
+        self._update_segment_ui()
         self._redraw_mask()
 
     def _on_mesh_lines_only_toggled(self):
@@ -1436,6 +1631,7 @@ class MaskEditDialog(qtw.QDialog):
                 cells.add(cell)
         self._mesh_cells = cells
         self._update_mesh_cell_label()
+        self._update_segment_ui()
         self._redraw_mask()
 
     def get_mesh_settings(self):
@@ -1603,7 +1799,7 @@ class MaskEditDialog(qtw.QDialog):
         if self.bg_stack is None:
             return
         self.img_bg.set_data(self._bg_frame(self.frame))
-        self.canvas.draw_idle()
+        self._blit_mask_display()
 
     def _show_denoise_check_methods(self):
         """box_denoise's "Check Methods..." button: compare every method on
@@ -1679,15 +1875,27 @@ class MaskEditDialog(qtw.QDialog):
             self.mask_stack[self.frame], angle, grow=grow)
         self._redraw_mask()
 
-    def _reset_frame(self):
-        self._push_undo(self.frame)
-        self.mask_stack[self.frame] = self._original_stack[self.frame].copy()
-        self._redraw_mask()
-
     def _reset_to_tracking(self):
+        """"Reset to Tracking": discard every edit in this dialog - the
+        mask on every frame (back to the original tracked/segmented
+        result) AND every segment boundary/Dilate/Erode/Edge Detection/
+        Mesh setting (back to one plain-default segment spanning the whole
+        stack) - confirmed first since it's the single most destructive
+        action here, and (unlike "Reset Frame"/painted edits) not
+        undo-able: _push_undo only ever snapshots self.mask_stack, not
+        self._segments, so Ctrl+Z can't bring a wiped segment list back."""
+        if qtw.QMessageBox.question(
+                self, 'Reset to Tracking',
+                'Discard every edit in this dialog - the mask on every frame (back to '
+                'the original tracked/segmented result) and every segment boundary/'
+                'Dilate/Erode/Edge Detection/Mesh setting? This cannot be undone.',
+                qtw.QMessageBox.Yes | qtw.QMessageBox.No, qtw.QMessageBox.No
+        ) != qtw.QMessageBox.Yes:
+            return
         self._push_undo(None)
         source = self._default_stack if self._default_stack is not None else self._original_stack
         self.mask_stack = source.copy()
+        self._reset_segments_to_single_default()
         self._redraw_mask()
 
     def _recompute_threshold_stack(self):

@@ -254,7 +254,10 @@ a = Analysis(
     pathex=[],
     binaries=[
         ('EDyssey/io_utils/eventem.cp312-win_amd64.pyd', 'EDyssey/io_utils'),
-        ('EDyssey/io_utils/hdf5.dll', 'EDyssey/io_utils'),
+        # Renamed from hdf5.dll: eventem links HDF5 1.14.3, h5py ships its own
+        # HDF5, and Windows resolves DLL imports by base name - identical names
+        # meant whichever loaded first won and broke the other.
+        ('EDyssey/io_utils/h5ev.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_cpp.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_hl.dll', 'EDyssey/io_utils'),
     ] + hs_binaries + rs_binaries + dask_binaries + sk_binaries + torch_binaries,

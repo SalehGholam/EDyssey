@@ -57,9 +57,10 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
                      Tab_ROI_on_4D, Tab_SAM2, EditSettingsDialog)
-from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler
-from ui_tabs.app_theme import AppTheme, THEME_LABELS
-from PyQt5.QtGui import QIcon, QCursor, QPixmap
+from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler, get_tab_logger
+from ui_tabs.app_theme import AppTheme, THEME_LABELS, apply_font_scale
+from ui_tabs.display_settings import DisplaySettings
+from PyQt5.QtGui import QFont, QIcon, QCursor, QPixmap
 # Sets matplotlib's own style (dark_background/default) to match whichever
 # theme was last saved (see AppTheme) - the QApplication-wide stylesheet
 # for every other (Qt, not matplotlib) widget is applied once a
@@ -77,7 +78,7 @@ AppTheme.instance().apply_qapp()
 # process to compute it. A plain source constant (not computed at run
 # time) so it's visible directly in the repo on GitHub, not just at
 # runtime. Shown only in the About dialog (Help > About EDyssey).
-APP_VERSION = '2.1.20260909.1300'
+APP_VERSION = '2.1.20260917.1414'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -135,6 +136,12 @@ class MainWindow(qtw.QMainWindow):
             self.tabs.tabBar().setTabButton(i, qtw.QTabBar.LeftSide, None)
         self.tabs.tabCloseRequested.connect(self._on_tab_close_requested)
         self._build_menu()
+        # Native chrome (see below) - not reached by any tab's own
+        # apply_display_settings(), and its own inherited/ambient default
+        # font renders smaller than the tabs' ribbon on at least one real
+        # machine, so it needs the same explicit sizing kept in sync live.
+        self._apply_menu_bar_font_scale()
+        DisplaySettings.instance().changed.connect(self._apply_menu_bar_font_scale)
 
         # In a PyInstaller-frozen build, bundled data files (this icon
         # included) are extracted under sys._MEIPASS, not next to __file__ -
@@ -205,6 +212,22 @@ class MainWindow(qtw.QMainWindow):
         menu_help.addSeparator()
         action_about = menu_help.addAction('About EDyssey')
         action_about.triggered.connect(self.show_about_dialog)
+
+    def _apply_menu_bar_font_scale(self):
+        """Size the menu bar and the tab bar (the tab titles - "ROI on 4D",
+        "Navigator", ...) off the same reference/scale each tab's own
+        ribbon uses (TabBase.apply_display_settings' base_pt=9 default *
+        DisplaySettings.ribbon_text_scale) - neither lives inside any
+        tab's own ribbon_page to inherit that from (the tab bar is
+        self.tabs' own chrome, a sibling of every tab, not a child of one),
+        so without this both fall back to whatever the app's own ambient
+        default font is, which reads noticeably smaller than the ribbon on
+        at least one real machine."""
+        base_pt = round(9 * DisplaySettings.instance().ribbon_text_scale)
+        for widget in (self.menuBar(), self.tabs.tabBar()):
+            font = QFont(widget.font())
+            font.setPointSize(base_pt)
+            widget.setFont(font)
 
     def _build_theme_menu(self, menu_edit):
         """Edit > Color Theme - a checkable submenu, one radio-style entry
@@ -277,7 +300,24 @@ class MainWindow(qtw.QMainWindow):
                             'see the log for details. It opened empty instead.')
         existing = sum(1 for i in range(self.tabs.count())
                       if re.sub(r' \(\d+\)$', '', self.tabs.tabText(i)) == base_label)
-        index = self.tabs.addTab(new_tab, f'{base_label} ({existing + 1})')
+        instance_num = existing + 1
+        if instance_num > 1 and hasattr(new_tab, '_tab_name'):
+            # get_tab_logger(name) returns the same shared logger for the
+            # same name, and every tab class passes a fixed class-level
+            # string to it (e.g. 'Tab_ROI_on_4D') - without this, every
+            # duplicate of a given tab type would log under that exact same
+            # name, making the console/log files impossible to tell apart
+            # between instances. Suffix matches the tab's own visible label
+            # below, so e.g. a second "ROI on 4D" tab logs as
+            # 'Tab_ROI_on_4D_2'. Reassigned before the tab is shown or used,
+            # so anything that logs afterward (including tab_roi_4d.py's
+            # Worker_CalculateDP/Worker_CalculateDP_Mask, which take their
+            # tab_name from the owning tab's _tab_name at the point they're
+            # created) picks up the renamed logger.
+            new_tab._tab_name = f'{new_tab._tab_name}_{instance_num}'
+            if hasattr(new_tab, 'logger'):
+                new_tab.logger = get_tab_logger(new_tab._tab_name)
+        index = self.tabs.addTab(new_tab, f'{base_label} ({instance_num})')
         self._all_tabs.append(new_tab)
         self.tabs.setCurrentIndex(index)
 
@@ -412,6 +452,14 @@ if __name__ == "__main__":
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = qtw.QApplication([])
+    # Before anything else gets built - every dialog constructed from here
+    # on (including MainWindow's own four tabs) picks up the right default
+    # font from the start, instead of the too-small stock one for one
+    # frame/construction before a later call could fix it up. See
+    # app_theme.apply_font_scale's own docstring for why this can't just
+    # be each tab's own self.setFont() (a QDialog doesn't inherit that).
+    apply_font_scale()
+    DisplaySettings.instance().changed.connect(apply_font_scale)
 
     # Shown while MainWindow() builds its four tabs (matplotlib canvases
     # included) below - the heavy hyperspy/dask/etc. imports above already

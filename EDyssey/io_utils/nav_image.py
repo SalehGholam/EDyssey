@@ -17,7 +17,8 @@ from scipy.ndimage import center_of_mass, gaussian_filter
 from dask.diagnostics import ProgressBar
 import dask.array as da
 from .progress import redirect_console_to_logger, LoggingProgressBar
-from .loaders import get_scan_size, get_det_size, SCAN_SIZE_NOT_APPLICABLE
+from .loaders import get_scan_size, get_det_size, load_hdf5_generic, SCAN_SIZE_NOT_APPLICABLE
+from . import hdf5_eventem_layout as h5ev
 
 # "Cover the whole detector" sentinel for an annular virtual detector's outer
 # radius, deliberately far larger than any real detector - used as a default/
@@ -167,7 +168,8 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
         var_image = var_image.reshape(scanSize[1], scanSize[0])
     return var_image
 
-def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum'):
+def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum',
+                                    max_workers=None):
     """Return a navigation image from an eventem-format '.hdf5_eventem' file
     (a raw `f['4D']` dataset - NOT a conventional/HyperSpy-loadable HDF5,
     see loaders.py's module docstring).
@@ -185,46 +187,37 @@ def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_
             highlights local structural variation (e.g. amorphous vs. crystalline
             regions) rather than total scattered dose. The precomputed `dose_image`
             dataset is always a sum, so it's only used when mode == 'sum'.
+        max_workers: See hdf5_eventem_layout._resolve_max_workers - None
+            (default) sizes the chunk-processing thread pool dynamically
+            per-machine; pass 1 when already running inside another process
+            pool (see workers/worker_nav_img.py).
 
     Returns:
         numpy.ndarray of shape (ny, nx).
     """
     if mode not in ('sum', 'variance'):
         raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
+    if fn_pattern is not None:
+        raise NotImplementedError('Smart Scanned is not yet implemented for converted data from tpx3!')
     with h5py.File(fn, 'r') as f:
-        s = da.from_array(f['4D'], chunks=f['4D'].chunks)
-        if (det_mask is None):
-            if mode == 'sum' and 'dose_image' in f.keys() and fn_pattern is None:
-                nav_img = f['dose_image'][:]
-                return nav_img
-            elif fn_pattern is None:
-                nav_img = s.sum(axis=(-1,-2)) if mode == 'sum' else s.var(axis=(-1,-2))
-        else:
-            det_mask = det_mask.ravel().astype(bool)
-            s = s.reshape(*scanSize,-1)
-            if mode == 'sum':
-                nav_img = (s*det_mask).sum(axis=-1)
-            else:
-                # Variance over only the masked pixels - multiplying by the
-                # mask first (as the sum path does) would pull in a majority
-                # of zeroed-out pixels from outside the mask and bias the
-                # variance low, so the masked-out pixels are dropped via
-                # boolean indexing instead of zeroed.
-                nav_img = s[..., det_mask].var(axis=-1)
-
-        if fn_pattern is not None:
-            raise NotImplementedError('Smart Scanned is not yet implemented for converted data from tpx3!')
-
+        if det_mask is None and mode == 'sum' and 'dose_image' in f.keys():
+            return f['dose_image'][:]
+        det_mask_flat = det_mask.ravel().astype(bool) if det_mask is not None else None
+        # h5ev.full_scan_reduce() transparently handles both the native-4D
+        # and the older flat/1-D storage layout, preferring a fast
+        # libdeflate-decompressed chunk-by-chunk read over building a dask
+        # graph when the dataset's chunking allows it (falls back to dask
+        # otherwise) - see hdf5_eventem_layout's module docstring.
         with LoggingProgressBar(logger, 'Loading 4D signal'):
-            nav_img = nav_img.compute()
-        return nav_img
+            return h5ev.full_scan_reduce(f, mode=mode, det_mask=det_mask_flat, max_workers=max_workers)
 
-def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=None, mode='sum'):
-    if mode not in ('sum', 'variance'):
-        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
-    s = hs.load(fn, lazy=True)
+def _nav_img_from_dask(data, scanSize, det_mask=None, fn_pattern=None, mode='sum'):
+    """The det_mask/fn_pattern/reshape/compute logic shared by
+    calculate_nav_img_hs and calculate_nav_img_hdf5_generic, once each has
+    its own lazy dask array in hand (from `hs.load(fn, lazy=True).data` or
+    load_hdf5_generic(fn, lazy=True) respectively)."""
     if (det_mask is None):
-        nav_img = (s.sum(axis=(-1,-2)) if mode == 'sum' else s.var(axis=(-1,-2))).data
+        nav_img = (data.sum(axis=(-1,-2)) if mode == 'sum' else data.var(axis=(-1,-2)))
     else:
         det_mask = det_mask.ravel().astype(bool)
         # Merge every leading (navigation) axis into one before masking,
@@ -238,7 +231,7 @@ def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=No
         # *collapsing* axes, which dask always supports regardless of
         # chunking, and produces the same per-position ordering the "maybe
         # 1D" reshape below already relies on for the no-mask path above.
-        arr = s.data.reshape(-1, det_mask.size)
+        arr = data.reshape(-1, det_mask.size)
         if mode == 'sum':
             nav_img = (arr*det_mask).sum(axis=-1)
         else:
@@ -260,8 +253,26 @@ def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=No
             nav_img = nav_img.compute()
         return nav_img
 
+def calculate_nav_img_hs(fn, scanSize, det_mask=None, fn_pattern=None, logger=None, mode='sum'):
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
+    s = hs.load(fn, lazy=True)
+    return _nav_img_from_dask(s.data, scanSize, det_mask=det_mask, fn_pattern=fn_pattern, mode=mode)
+
+def calculate_nav_img_hdf5_generic(fn, scanSize, det_mask=None, fn_pattern=None, logger=None, mode='sum'):
+    """Same as calculate_nav_img_hs, for a conventional/third-party '.hdf5'
+    file that HyperSpy's own `hs.load` can't parse directly - loads via
+    load_hdf5_generic (a dask array wrapping the file's one 4D dataset,
+    found via a plain h5py tree walk - see that function's docstring)
+    instead of `hs.load`."""
+    if mode not in ('sum', 'variance'):
+        raise ValueError(f"mode must be 'sum' or 'variance', got {mode!r}")
+    data = load_hdf5_generic(fn, lazy=True, logger=logger)
+    return _nav_img_from_dask(data, scanSize, det_mask=det_mask, fn_pattern=fn_pattern, mode=mode)
+
 def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
-                      n_threads=None, fn_pattern=None, det_shape=(512, 512), mode='sum'):
+                      n_threads=None, fn_pattern=None, det_shape=(512, 512), mode='sum',
+                      max_workers=None):
     """Dispatch navigation image computation to the format-specific function.
 
     Args:
@@ -282,6 +293,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             `.dm2`/`.dm3`/`.tif`/`.tiff` are already single 2D images with
             no per-position frame to take a variance over - raises
             ValueError for mode='variance' there.
+        max_workers: `.hdf5_eventem` only - see calculate_nav_img_hdf5_eventem's
+            docstring.
 
     Returns:
         numpy.ndarray of shape (ny, nx) representing the navigation image.
@@ -298,8 +311,10 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
     if scanSize is None and dtype not in SCAN_SIZE_NOT_APPLICABLE:
         scanSize = get_scan_size(fn, dtype)
 
-    if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo']:
+    if dtype in ['.zspy', '.hspy', '.mib', '.blo']:
         nav_img = calculate_nav_img_hs(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
+    elif dtype == '.hdf5':
+        nav_img = calculate_nav_img_hdf5_generic(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
     elif dtype == '.tpx3':
         if mode == 'variance':
             nav_img = calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
@@ -310,7 +325,8 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
                                              logger=logger, n_threads=n_threads,
                                              det_shape=det_shape)
     elif dtype == '.hdf5_eventem':
-        nav_img = calculate_nav_img_hdf5_eventem(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode)
+        nav_img = calculate_nav_img_hdf5_eventem(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode,
+                                                  max_workers=max_workers)
     elif dtype in ['.dm2', '.dm3', '.tif', '.tiff']:
         if mode == 'variance':
             raise ValueError(
@@ -367,7 +383,7 @@ def create_virtual_detector_multi(shape, detectors):
 
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detectors=None,
                              logger=None, n_threads=None, fn_pattern=None,
-                             det_shape=(512, 512), mode='sum'):
+                             det_shape=(512, 512), mode='sum', max_workers=None):
     """Compute a navigation image through one or several virtual detectors -
     the masked counterpart of `calculate_nav_img`.
 
@@ -393,6 +409,8 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
             required (see calculate_nav_img_variance_tpx3 - eventem's Var
             processor, unlike vSTEM, has no way to combine several regions
             into one pass); raises ValueError for more than one.
+        max_workers: `.hdf5_eventem` only - see calculate_nav_img_hdf5_eventem's
+            docstring.
 
     Returns:
         numpy.ndarray of shape (ny, nx).
@@ -440,7 +458,11 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         det_mask = create_virtual_detector_multi((det_y, det_x), detectors)
         if dtype == '.hdf5_eventem':
             return calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=det_mask,
-                                                   fn_pattern=fn_pattern, logger=logger, mode=mode)
+                                                   fn_pattern=fn_pattern, logger=logger, mode=mode,
+                                                   max_workers=max_workers)
+        if dtype == '.hdf5':
+            return calculate_nav_img_hdf5_generic(fn, scanSize, det_mask=det_mask,
+                                                  fn_pattern=fn_pattern, logger=logger, mode=mode)
         return calculate_nav_img_hs(fn, scanSize, det_mask=det_mask,
                                     fn_pattern=fn_pattern, logger=logger, mode=mode)
 

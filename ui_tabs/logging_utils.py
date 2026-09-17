@@ -148,13 +148,15 @@ class LogConsole(qtw.QPlainTextEdit):
     # comment on why that matters), not just error/warning ones.
     _DEFAULT_COLOR = '#d0d0d0'
 
-    def __init__(self, parent=None, height=140):
+    def __init__(self, parent=None):
         """Build the console widget (dark theme, 2000-line scrollback) and
-        start listening for log signals."""
+        start listening for log signals. Each embedding tab's own splitter
+        gives this an initial height (setSizes()) - deliberately not fixed
+        here, so the user can still drag that splitter handle to shrink it
+        down to its natural minimum afterward."""
         super().__init__(parent)
         self.setReadOnly(True)
         self.setMaximumBlockCount(2000)
-        self.setFixedHeight(height)
         self.setStyleSheet(
             "background-color: #1e1e1e; color: #d0d0d0;"
             "font-family: Consolas, monospace; font-size: 9pt;"

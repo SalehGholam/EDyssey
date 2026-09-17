@@ -21,6 +21,16 @@ matplotlib==3.10.9
 matplotlib-scalebar==0.9.0
 tifffile==2026.5.2
 h5py==3.15.1
+# libdeflate bindings - used by EDyssey/io_utils/hdf5_eventem_layout.py to
+# decompress '.hdf5_eventem' gzip chunks (both storage layouts) directly,
+# ~6x faster than HDF5's own stock-zlib pipeline (measured). Optional at
+# runtime (the module falls back to the normal, slower h5py read if this
+# isn't installed), but pinned here so it's actually present by default.
+deflate==0.9.0
+# Used by the same module to size its chunk-processing thread pool off the
+# host's actual free RAM rather than a fixed guess. Also optional at
+# runtime (falls back to a CPU-count-only cap if missing).
+psutil==7.2.2
 tqdm==4.67.3
 scipy==1.17.1
 scikit-image==0.26.0

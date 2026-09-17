@@ -39,7 +39,9 @@ import logging
 import matplotlib.pyplot as plt
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtGui import QFont
 from EDyssey.io_utils.app_dirs import writable_data_dir
+from .display_settings import DisplaySettings
 
 logger = logging.getLogger('EDyssey.app_theme')
 
@@ -209,6 +211,51 @@ def _save_json(path, data):
         logger.warning('Could not write %s: %s', path, e)
 
 
+_original_app_font = None  # the app's true ambient default, captured once
+
+
+def apply_font_scale():
+    """Set the QApplication's own default font size to the same reference/
+    scale every tab's own ribbon uses (TabBase.apply_display_settings'
+    base_pt=9 default * DisplaySettings.ribbon_text_scale).
+
+    A QDialog is a top-level window of its own for font-inheritance
+    purposes, even when constructed with a `parent` - confirmed by hand: it
+    does NOT inherit that parent's font the way a plain child widget would,
+    falling back to QApplication.font() instead. That's every dialog in
+    the app (Fine-Tune Mask, Test Methods, Set Up SAM2, Display
+    Preferences, Blob Settings, PETS2, Smart Scan Check, ...) - patching
+    each one individually would be permanently incomplete (a new dialog
+    added later would default back to the too-small ambient font unless
+    someone remembered to patch it too), so this sets the one shared root
+    they all actually fall back to instead. Call once at startup and again
+    on every DisplaySettings.changed, same as AppTheme.apply_qapp().
+
+    Every widget that already sets its OWN more specific font (each tab's
+    self.setFont() in apply_display_settings, the ribbon's own
+    setStyleSheet, small captions, LogConsole, ...) is unaffected - Qt
+    resolves an explicit font before falling back to an inherited/app
+    default one - so this only reaches genuinely unstyled widgets, the
+    same population every other piece of this font-scale work has
+    targeted. Safe to call before a QApplication exists (does nothing),
+    matching apply_qapp()'s own convention."""
+    global _original_app_font
+    app = qtw.QApplication.instance()
+    if app is None:
+        return
+    if _original_app_font is None:
+        # Captured the FIRST time this ever runs, before any scaling has
+        # touched it - every later call scales from this fixed reference,
+        # not from whatever app.font() currently is, so repeated calls
+        # (e.g. moving the ribbon_text_scale slider back and forth) can't
+        # compound drift the way re-reading app.font() each time would.
+        _original_app_font = QFont(app.font())
+    base_pt = round(9 * DisplaySettings.instance().ribbon_text_scale)
+    font = QFont(_original_app_font)
+    font.setPointSize(base_pt)
+    app.setFont(font)
+
+
 def build_stylesheet(palette):
     """The whole-app QSS - ported from EDyssey_MainWindow's own original
     hardcoded (dark-only) stylesheet, with every hex literal replaced by
@@ -218,6 +265,23 @@ def build_stylesheet(palette):
         QMainWindow, QWidget {{
             background-color: {p['bg']}; color: {p['fg']};
         }}
+        /* QMenuBar/QMenu need their own :selected rules - the QWidget rule
+        above alone switches Qt to its CSS rendering path for them (instead
+        of native Windows theming), which drops the native hover highlight
+        unless one is defined here explicitly. */
+        QMenuBar {{ background-color: {p['bg']}; color: {p['fg']}; }}
+        QMenuBar::item {{ background: transparent; padding: 4px 8px; }}
+        QMenuBar::item:selected, QMenuBar::item:pressed {{
+            background-color: {p['accent']}; color: {p['fg']};
+        }}
+        QMenu {{
+            background-color: {p['bg_alt']}; color: {p['fg']};
+            border: 1px solid {p['border']};
+        }}
+        QMenu::item {{ padding: 4px 24px 4px 12px; }}
+        QMenu::item:selected {{ background-color: {p['accent']}; color: {p['fg']}; }}
+        QMenu::item:disabled {{ color: {p['fg_disabled']}; }}
+        QMenu::separator {{ height: 1px; background: {p['border']}; margin: 4px 2px; }}
         QTabWidget::pane {{ border: 1px solid {p['border']}; }}
         QTabBar::tab {{
             background: {p['bg_alt']}; color: {p['fg']};

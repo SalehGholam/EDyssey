@@ -71,24 +71,27 @@ def calculate_nav_img_core(task):
     mode = task.get('mode') or 'sum'
     detectors = task.get('detectors')
 
-    # n_threads=1: eventem auto-sizes its own internal thread pool to the
-    # whole machine per instance unless told otherwise - fine for a single
-    # call, but this runs as one of several concurrent ProcessPoolExecutor
-    # workers within the same batch driver (or, for calculate_nav_img_worker
-    # below, one of several concurrent subprocesses), each of which would
-    # otherwise also try to claim the whole machine's threads for itself.
-    # Pinning each worker to 1 internal thread makes total concurrency
-    # match what the user actually configured (spinbox_cpuCores).
+    # n_threads=1 / max_workers=1: eventem auto-sizes its own internal thread
+    # pool to the whole machine per instance unless told otherwise, and
+    # hdf5_eventem_layout's chunk-processing thread pool auto-sizes off the
+    # host's CPU/RAM the same way - fine for a single call, but this runs as
+    # one of several concurrent ProcessPoolExecutor workers within the same
+    # batch driver (or, for calculate_nav_img_worker below, one of several
+    # concurrent subprocesses), each of which would otherwise also try to
+    # claim the whole machine's threads/RAM for itself. Pinning each worker
+    # to 1 makes total concurrency match what the user actually configured
+    # (spinbox_cpuCores).
     if detectors:
         detectors = [dict(d, center=tuple(d['center'])) for d in detectors]
         result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                              dwellTime=dwellTime, detectors=detectors,
                                              n_threads=1, fn_pattern=fn_pattern,
-                                             det_shape=det_shape, mode=mode)
+                                             det_shape=det_shape, mode=mode, max_workers=1)
     else:
         result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=dwellTime, n_threads=1,
-                                      fn_pattern=fn_pattern, det_shape=det_shape, mode=mode)
+                                      fn_pattern=fn_pattern, det_shape=det_shape, mode=mode,
+                                      max_workers=1)
     return result
 
 

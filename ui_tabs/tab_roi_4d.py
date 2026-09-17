@@ -38,8 +38,8 @@ from .ribbon import RibbonPanel, RibbonTool
 from .clipping_thresholds import ClippingThresholdsWidget
 from .denoise_widget import DenoiseBox
 from worker_extract_frame import load_dp
+from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 # import matplotlib.gridspec as gridspec
-# from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
 # from skimage import exposure
 #%% wdiget
 class Tab_ROI_on_4D(TabBase):
@@ -318,7 +318,58 @@ class Tab_ROI_on_4D(TabBase):
         self.box_edgeDetection, layout_edgeDetection = self._ribbon_group_start(layout_ribbon, stretch=0)
         self.box_edgeDetection.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
 
-        #%% SAM2 segmentation (first sub-section in this combined column)
+        #%% Threshold (first sub-section in this combined column) - segments
+        # the drawn ROI (self.roi) by intensity threshold instead of SAM2,
+        # same 3 controls (Method/ROI Blur/Deviation) as ROI Tracker's own
+        # Threshold section, just producing one untracked, full-image-shaped
+        # mask (see _roi_threshold_mask) instead of a per-frame ROI history.
+        layout_threshold_row_1 = qtw.QHBoxLayout()
+        self.checkbox_thresholdActivate = qtw.QCheckBox('Activate')
+        self.checkbox_thresholdActivate.setToolTip(
+            'Segment the drawn ROI by intensity threshold instead of SAM2')
+        layout_threshold_row_1.addWidget(self.checkbox_thresholdActivate)
+        self.checkbox_thresholdActivate.stateChanged.connect(self._on_threshold_control_changed)
+
+        self._ribbon_inline_separator(layout_threshold_row_1)
+        layout_threshold_row_1.addWidget(qtw.QLabel('Method'))
+        self.combo_thresh_method = qtw.QComboBox()
+        self.combo_thresh_method.addItems(['li', 'otsu', 'yen', 'mean'])
+        self.combo_thresh_method.setToolTip('Thresholding algorithm used to segment the ROI')
+        self.combo_thresh_method.currentIndexChanged.connect(self._on_threshold_control_changed)
+        layout_threshold_row_1.addWidget(self.combo_thresh_method)
+
+        self._ribbon_inline_separator(layout_threshold_row_1)
+        layout_threshold_row_1.addWidget(qtw.QLabel('ROI Blur'))
+        self.spinbox_roiBlur = qtw.QDoubleSpinBox()
+        self.spinbox_roiBlur.setFixedWidth(60)
+        # Same Gaussian-blur-sigma convention as ROI Tracker's identical
+        # control - 0 means no blur.
+        self.spinbox_roiBlur.setRange(0.0, 20.0)
+        self.spinbox_roiBlur.setSingleStep(0.1)
+        self.spinbox_roiBlur.setDecimals(1)
+        self.spinbox_roiBlur.setValue(0.0)
+        self.spinbox_roiBlur.valueChanged.connect(self._on_threshold_control_changed)
+        layout_threshold_row_1.addWidget(self.spinbox_roiBlur)
+        layout_edgeDetection.addLayout(layout_threshold_row_1)
+
+        layout_threshold_row_2 = qtw.QHBoxLayout()
+        layout_threshold_row_2.addWidget(qtw.QLabel('Deviation'))
+        self.slider_thresh = qtw.QSlider(Qt.Horizontal)
+        self.slider_thresh.setRange(0, 200)
+        self.slider_thresh.setValue(100)
+        self.slider_thresh.setToolTip(
+            "Scales the auto-threshold up/down (100% = the method's own value)")
+        self.slider_thresh.valueChanged.connect(self._on_threshold_control_changed)
+        layout_threshold_row_2.addWidget(self.slider_thresh)
+        layout_edgeDetection.addLayout(layout_threshold_row_2)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Threshold', stretch=False)
+
+        sep = qtw.QFrame()
+        sep.setFrameShape(qtw.QFrame.HLine)
+        sep.setFrameShadow(qtw.QFrame.Sunken)
+        layout_edgeDetection.addWidget(sep)
+
+        #%% SAM2 segmentation
         layout_segmentation_row = qtw.QHBoxLayout()
 
         self.button_segment_image = qtw.QPushButton('Segment Image')
@@ -346,7 +397,7 @@ class Tab_ROI_on_4D(TabBase):
         self.button_clear_roi.setDisabled(True)
         self.button_clear_roi.setToolTip('Temporarily deactivated (pending review)')
         layout_edgeDetection.addLayout(layout_segmentation_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', stretch=False)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'SAM2 Segmentation', separator=False)
 
         sep = qtw.QFrame()
         sep.setFrameShape(qtw.QFrame.HLine)
@@ -395,13 +446,6 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeDirection.valueChanged.connect(self._preview_edge_mask)
         layout_edgeDetection_row_2.addWidget(self.spinbox_edgeDirection)
 
-        self._ribbon_inline_separator(layout_edgeDetection_row_2)
-        self.button_computeEdgeDp = qtw.QPushButton('Recompute DP')
-        self.button_computeEdgeDp.setFixedSize(button_w, button_h)
-        self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
-        self.button_computeEdgeDp.setToolTip(
-            'Recompute the diffraction pattern with the settings above (slower, reads disk)')
-        layout_edgeDetection_row_2.addWidget(self.button_computeEdgeDp)
         layout_edgeDetection.addLayout(layout_edgeDetection_row_2)
         self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Edge Detection', separator=False, stretch=True)
 
@@ -410,7 +454,12 @@ class Tab_ROI_on_4D(TabBase):
         sep.setFrameShadow(qtw.QFrame.Sunken)
         layout_edgeDetection.addWidget(sep)
 
-        #%% Sum DP
+        #%% DP Computation (renamed from "Sum DP" - button_computeEdgeDp
+        # moved down here from Edge Detection above: it's a general
+        # "recompute the DP from whatever mask is currently active" action
+        # (SAM2 or ROI Threshold, refined by Edge Detection if enabled - see
+        # _refresh_edge_mask), not specific to Edge Detection itself, so it
+        # reads more naturally beside the other DP-producing buttons.
         layout_sumDp_row = qtw.QHBoxLayout()
         self.button_sumDpWhole = qtw.QPushButton('Sum DPs')
         self.button_sumDpWhole.setFixedSize(button_w, button_h)
@@ -426,8 +475,17 @@ class Tab_ROI_on_4D(TabBase):
             'Sum diffraction patterns at scan positions above a real-space threshold')
         layout_sumDp_row.addWidget(self.button_sumDpFromThreshold)
 
+        self._ribbon_inline_separator(layout_sumDp_row)
+        self.button_computeEdgeDp = qtw.QPushButton('Recompute DP')
+        self.button_computeEdgeDp.setFixedSize(button_w, button_h)
+        self.button_computeEdgeDp.clicked.connect(self._refresh_edge_mask)
+        self.button_computeEdgeDp.setToolTip(
+            'Recompute the diffraction pattern from the current SAM2/ROI-Threshold '
+            'mask, refined by Edge Detection above if enabled (slower, reads disk)')
+        layout_sumDp_row.addWidget(self.button_computeEdgeDp)
+
         layout_edgeDetection.addLayout(layout_sumDp_row)
-        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'Sum DP', separator=False, stretch=True)
+        self._ribbon_group_end(layout_ribbon, layout_edgeDetection, 'DP Computation', separator=False, stretch=True)
 
         sep = qtw.QFrame()
         sep.setFrameShape(qtw.QFrame.HLine)
@@ -652,8 +710,9 @@ class Tab_ROI_on_4D(TabBase):
             'Filter the file list below to one data type, AND (for a .hdf5 file '
             f'specifically) select which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" '
             "(eventem's own raw export layout) or plain \".hdf5\" (a conventional/"
-            'third-party HDF5 file, loaded via HyperSpy - both commonly share the '
-            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
+            'third-party HDF5 file, not natively readable via HyperSpy - its one 4D '
+            'dataset is found directly and loaded via dask instead - both commonly '
+            'share the same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
             '".tif" matches both .tif and .tiff files')
         self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
         layout_fileList.addWidget(self.combo_dtype)
@@ -744,6 +803,7 @@ class Tab_ROI_on_4D(TabBase):
         # the toolbar strip itself is no longer shown under the canvas.
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.toolbar.hide()
+        self._mirror_toolbar_coords_to_statusbar(self.toolbar)
 
         self.clip_dp = ClippingThresholdsWidget(title='DP Clipping\nThresh.')
         # Clipping Thresholds sit directly beside the canvas (Nav. Image is
@@ -759,7 +819,7 @@ class Tab_ROI_on_4D(TabBase):
         layout_canvas_row.addWidget(self.clip_nav)
         layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
         layout_canvas_row.addWidget(self.clip_dp)
-        layout_canvas.addWidget(_canvas_row_widget)
+        layout_canvas.addWidget(self.wrap_canvas_row_in_border(_canvas_row_widget))
         self.clip_nav.valueChanged.connect(lambda: self.update_canvas(ax='nav'))
         self.clip_dp.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
 
@@ -1386,15 +1446,23 @@ class Tab_ROI_on_4D(TabBase):
             height = abs(height)
             y0 = event.ydata
             
-        if width==0:
-            width = 1
-        if height==0:
-            height = 1
-        self.roi = (int(x0), int(y0), int(width), int(height))
+        # Clamp AFTER truncating to int, not before - a plain click (no
+        # real drag) releases at a position only a fraction of a pixel
+        # from the press, e.g. width=0.3, which the old `width == 0` check
+        # (on the untruncated float) let straight through, only for
+        # int(0.3) to truncate it to a genuinely empty 0-width ROI right
+        # after - silently produced a zero-size crop several steps later
+        # instead of the intended 1-pixel-wide ROI.
+        width = max(int(width), 1)
+        height = max(int(height), 1)
+        self.roi = (int(x0), int(y0), width, height)
 
         self.press = None
         self.canvas.draw()
         self.logger.info('ROI: %s', self.roi)
+        # Refresh the Threshold preview for the new ROI, if active - a
+        # no-op otherwise (see _on_threshold_control_changed).
+        self._on_threshold_control_changed()
         if not hasattr(self, 'dwellTime'):
             try:
                 self.dwellTime = self.spinbox_dwellTime.value()
@@ -1403,7 +1471,8 @@ class Tab_ROI_on_4D(TabBase):
         self._cancelling = False
         dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime, dtype,
-                                    self.get_fn_pattern(), self.get_detector_shape(self.fn))
+                                    self.get_fn_pattern(), self.get_detector_shape(self.fn),
+                                    tab_name=self._tab_name)
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
     
@@ -2359,7 +2428,7 @@ class Tab_ROI_on_4D(TabBase):
         self._cancelling = False
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
                                          self.scanSize, self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn))
+                                         self.get_detector_shape(self.fn), tab_name=self._tab_name)
         worker.signals.result.connect(self.get_dp_from_mask)
         self.threadpool.start(worker)
 
@@ -2408,8 +2477,8 @@ class Tab_ROI_on_4D(TabBase):
             self.logger.warning(
                 'Edge Only removed the entire mask (kernel too large for this mask\'s size).')
             return
-        self.show_seg_mask(mask, title='Threshold Mask' if self._mask_source == 'threshold'
-                                  else 'SAM2 Segmentation')
+        titles = {'threshold': 'Threshold Mask', 'roi_threshold': 'ROI Threshold'}
+        self.show_seg_mask(mask, title=titles.get(self._mask_source, 'SAM2 Segmentation'))
 
     def _refresh_edge_mask(self):
         """Re-derive the mask from the last raw SAM2 or threshold result
@@ -2429,11 +2498,50 @@ class Tab_ROI_on_4D(TabBase):
             self.logger.warning(
                 'Edge Only removed the entire mask (kernel too large for this mask\'s size).')
             return
-        if self._mask_source == 'sam2':
+        if self._mask_source in ('sam2', 'roi_threshold'):
             self.show_seg_mask(mask)
             self.compute_seg_dp(mask)
         elif self._mask_source == 'threshold':
             self.compute_sum_dp_from_threshold(mask, self._threshold_method)
+
+    def _roi_threshold_mask(self):
+        """Full-image-shaped boolean mask (True only inside the drawn
+        ROI's own thresholded blob) from the Threshold section's current
+        Method/ROI Blur/Deviation controls - the same blur+per-ROI-
+        threshold approach as ROI Tracker's own threshold_img(mode='roi'),
+        just for this tab's one untracked ROI instead of a per-frame ROI
+        history. Returns None if there's no ROI/navigation image yet."""
+        if self.roi is None or not hasattr(self, 'navImg'):
+            return None
+        x0, y0, w, h = self.roi
+        img_cut = self.navImg[y0:y0 + h, x0:x0 + w]
+        blur_sigma = self.spinbox_roiBlur.value()
+        img_cut_blur = io.denoise_image(img_cut, 'Gaussian Blur', blur_sigma) if blur_sigma > 0 else img_cut
+        threshold_methods = {'otsu': threshold_otsu, 'li': threshold_li,
+                             'yen': threshold_yen, 'mean': threshold_mean}
+        threshold_func = threshold_methods[self.combo_thresh_method.currentText()]
+        th = io.threshold_ignore_zero(threshold_func, img_cut_blur)
+        thresh = (self.slider_thresh.value() / 100) * th
+        mask = np.zeros(self.navImg.shape, dtype=bool)
+        mask[y0:y0 + h, x0:x0 + w] = img_cut_blur >= thresh
+        return mask
+
+    def _on_threshold_control_changed(self, *_args):
+        """Threshold Activate/Method/ROI Blur/Deviation changed: live-
+        preview the resulting mask on the "ROI Image" panel - cheap, no
+        disk read (mirrors Edge Detection's own _preview_edge_mask); the
+        actual DP computation only runs once "Recompute DP" is pressed.
+        A no-op while Activate is unchecked, or before a ROI/navigation
+        image exists yet (_roi_threshold_mask returns None then)."""
+        if not self.checkbox_thresholdActivate.isChecked():
+            return
+        mask = self._roi_threshold_mask()
+        if mask is None:
+            return
+        self.seg_mask = mask
+        self._mask_source = 'roi_threshold'
+        self._threshold_method = self.combo_thresh_method.currentText()
+        self._preview_edge_mask()
 
     def compute_sum_dp_from_threshold(self, mask, method):
         """Sum diffraction patterns only at the scan positions in `mask`
@@ -2459,7 +2567,8 @@ class Tab_ROI_on_4D(TabBase):
         self.button_cancel.setEnabled(True)
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
                                          self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn), patch_mode=True)
+                                         self.get_detector_shape(self.fn), patch_mode=True,
+                                         tab_name=self._tab_name)
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -2588,6 +2697,11 @@ class Tab_ROI_on_4D(TabBase):
             'revertMask': self.checkbox_revertMask.isChecked(),
             'edgeKernel': self.spinbox_edgeKernel.value(),
             'edgeDirection': self.spinbox_edgeDirection.value(),
+            # ROI Threshold
+            'thresholdActivate': self.checkbox_thresholdActivate.isChecked(),
+            'threshMethod': self.combo_thresh_method.currentText(),
+            'roiBlur': self.spinbox_roiBlur.value(),
+            'threshDeviation': self.slider_thresh.value(),
             # Contrast
             'clip_nav': self.clip_nav.get_state(),
             'clip_dp': self.clip_dp.get_state(),
@@ -2668,6 +2782,14 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_edgeKernel.setValue(state['edgeKernel'])
         self.spinbox_edgeDirection.setValue(state['edgeDirection'])
 
+        # ROI Threshold
+        idx = self.combo_thresh_method.findText(state['threshMethod'])
+        if idx >= 0:
+            self.combo_thresh_method.setCurrentIndex(idx)
+        self.spinbox_roiBlur.setValue(state['roiBlur'])
+        self.slider_thresh.setValue(state['threshDeviation'])
+        self.checkbox_thresholdActivate.setChecked(state['thresholdActivate'])
+
         # SAM2 point prompts (re-plotted the same way add_seg_point does)
         self.seg_points = [list(p) for p in state['seg_points']]
         self.seg_labels = list(state['seg_labels'])
@@ -2723,9 +2845,10 @@ class Worker_CalculateDP(QRunnable):
     """Background QRunnable that loads a rectangular ROI's diffraction
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
-    def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512)):
+    def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512),
+                tab_name='Tab_ROI_on_4D'):
         super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
         self.logger.info('calculating the dp...')
         self.fn = fn
@@ -2791,9 +2914,9 @@ class Worker_CalculateDP_Mask(QRunnable):
     covering its full (potentially huge/scattered) bounding box - see
     load_dp/load_tpx3_patches in worker_extract_frame.py."""
     def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
-                det_shape=(512, 512), patch_mode=False):
+                det_shape=(512, 512), patch_mode=False, tab_name='Tab_ROI_on_4D'):
         super().__init__()
-        self.logger = get_tab_logger('Tab_ROI_on_4D')
+        self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
         self.logger.info('calculating the dp from mask...')
         self.fn = fn
