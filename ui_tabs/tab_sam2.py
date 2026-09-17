@@ -90,7 +90,6 @@ class Tab_SAM2(TabBase):
         # self.device = self.check_torch_device()
         
     def init_ui(self):
-        spacer = qtw.QSpacerItem(40, 20, qtw.QSizePolicy.Expanding, qtw.QSizePolicy.Minimum)
         # Set the window title and dimensions
         self.setWindowTitle("SAM2 Segmentation")
         
@@ -157,8 +156,9 @@ class Tab_SAM2(TabBase):
             '(comment.txt, pattern files, logs), AND (for a .hdf5 file specifically) '
             f'selects which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" (eventem\'s '
             'own raw export layout) or plain ".hdf5" (a conventional/third-party '
-            'HDF5 file, loaded via HyperSpy - both commonly share the same on-disk '
-            '.hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
+            'HDF5 file, not natively readable via HyperSpy - its one 4D dataset is '
+            'found directly and loaded via dask instead - both commonly share the '
+            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
             'navigator\'s own recorded file list applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
@@ -538,8 +538,6 @@ class Tab_SAM2(TabBase):
         self.checkbox_autosave = qtw.QCheckBox('Autosave')
         layout_threadNum.addWidget(self.checkbox_autosave)
 
-        layout_threadNum.addSpacerItem(spacer)
-
         # Own row (rather than sharing layout_threadNum with the CPU/FPS/
         # Autosave row above) so the checkbox label has enough room and
         # doesn't get clipped by the left panel's fixed width.
@@ -578,7 +576,9 @@ class Tab_SAM2(TabBase):
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         layout_extract_button.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setToolTip(
-            'Compute the DP for the current frame only (not saved)')
+            'Compute the DP for the current frame only, and overwrite it in place in the '
+            '"Extract All" results (e.g. after fine-tuning a mask on just this frame) - '
+            'included the next time "Save Results" runs')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
         
         layout_ribbon_final = qtw.QVBoxLayout()
@@ -773,13 +773,13 @@ class Tab_SAM2(TabBase):
         self._current_frame_dp_preview = None
         self.img_display = {}
         self.img_display['nav'] = self.ax_nav.imshow(self.img_zero, cmap='gray')
-        self.ax_nav.set_title('Navigation')
+        self.ax_nav.set_title('(1) Navigation')
         self.img_display['seg'] = self.ax_seg.imshow(self.img_zero, cmap='gray')
         self.img_display['seg_mask'] = self.ax_seg.imshow(self.img_zero, cmap='gray')
-        self.ax_seg.set_title('Segmented')
+        self.ax_seg.set_title('(2) Segmented Object')
         self.img_display['dp'] = self.ax_dp.imshow(self.img_zero, cmap='inferno',
                                                     norm=SymLogNorm(linthresh=1))
-        self.ax_dp.set_title('Extracted DP')
+        self.ax_dp.set_title('(3) DP')
 
         # Created once here (not per-frame) - update_canvas() only updates
         # the underlying image data, which keeps these in sync for free.
@@ -812,7 +812,7 @@ class Tab_SAM2(TabBase):
         layout_canvas_row.setContentsMargins(0, 0, 0, 0)
         layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
         layout_canvas_row.addWidget(self.clip_dp)
-        layout_canvas.addWidget(_canvas_row_widget)
+        layout_canvas.addWidget(self.wrap_canvas_row_in_border(_canvas_row_widget))
         # The Ctrl+Scroll zoom hint applies to every axis on this canvas, so
         # it's a figure-wide supxlabel rather than repeated per-axis text.
         self.figure.supxlabel('Hold "Ctrl" + Scroll wheel to zoom the axis under the cursor',
@@ -3390,9 +3390,14 @@ class Tab_SAM2(TabBase):
     def extract_dp_current_frame(self):
         """Compute the diffraction pattern for just the selected object's
         mask at the frame the slider currently points to - the single-frame
-        equivalent of "Extract!" (extract_3ded), for quick data-checking.
-        Runs inline (WorkerThread_General on self.threadpool) rather than as
-        a QProcess, since it's a one-off single frame, not a whole series."""
+        equivalent of "Extract!" (extract_3ded), for quick data-checking or
+        to re-extract a few frames (e.g. after fine-tuning a mask on them)
+        without re-running the whole series - see _on_current_frame_dp,
+        which overwrites this (object, frame)'s entry in
+        self.df_obj['dp'] (the same per-object DP stack "Extract All"
+        itself fills in) so it sticks for "Save Results". Runs inline
+        (WorkerThread_General on self.threadpool) rather than as a
+        QProcess, since it's a one-off single frame, not a whole series."""
         try:
             item_selected = self.tree_objects.currentItem()
             obj_id = int(item_selected.text(1))
@@ -3465,11 +3470,27 @@ class Tab_SAM2(TabBase):
         self.threadpool.start(worker)
 
     def _on_current_frame_dp(self, dp, obj_id, imgNo):
-        """WorkerThread_General callback for extract_dp_current_frame(): show
-        the one-off DP via update_canvas(), then re-run auto-centering."""
+        """WorkerThread_General callback for extract_dp_current_frame():
+        overwrite this (object, frame)'s entry in self.df_obj['dp'] - the
+        same per-object DP stack extract_3ded()/_on_3ded_task_done fill
+        in - so a targeted re-extraction of a few fine-tuned frames sticks
+        for "Save Results" without re-running the whole "Extract All";
+        show the one-off DP via update_canvas(), then re-run auto-centering."""
         self.button_extractCurrentFrame.setEnabled(True)
         if hasattr(dp, 'compute'):
             dp = dp.compute()
+
+        n_frames = len(self.imgs)
+        dp_all = self.df_obj.loc[obj_id, 'dp']
+        if not (isinstance(dp_all, np.ndarray) and dp_all.shape == (n_frames, *dp.shape)):
+            # No "Extract All" result yet for this object (or a stale one
+            # from before the nav signal/detector shape changed) -
+            # allocate a fresh all-zero stack, same as extract_3ded's own
+            # reset, so this one frame's result has somewhere consistent
+            # to live.
+            dp_all = np.zeros((n_frames, *dp.shape), dtype='uint32')
+            self.df_obj.at[obj_id, 'dp'] = dp_all
+        dp_all[imgNo] = dp
         # Routed through update_canvas() (rather than drawn directly here)
         # so it's shown/cleared the exact same way as every other frame -
         # moving the slider (or changing the object selection) away from

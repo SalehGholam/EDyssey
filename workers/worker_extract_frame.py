@@ -10,6 +10,7 @@ import h5py
 from dask.distributed import Client, LocalCluster
 import os
 from dask import config
+import dask.array as da
 import numpy as np
 from dask.diagnostics import ProgressBar
 from scipy import ndimage
@@ -142,7 +143,9 @@ def load_dp(fn, **kwargs):
             result = load_tpx3(fn, **kwargs)
     elif dtype == '.hdf5_eventem':
         result = load_hdf5_eventem(fn, **kwargs)
-    elif dtype in ['.zspy', '.hspy', '.hdf5', '.blo']:
+    elif dtype == '.hdf5':
+        result = load_hdf5_generic(fn, **kwargs)
+    elif dtype in ['.zspy', '.hspy', '.blo']:
         result = load_hs(fn, **kwargs)
     elif dtype == '.mib':
         result = load_mib(fn, **kwargs)
@@ -337,7 +340,51 @@ def load_hdf5_eventem(fn, roi, mask, scanSize=None, max_eager_frames=10000, **kw
     with h5py.File(fn, 'r') as f:
         dp = hdf5_eventem_layout.sum_masked_positions(f, mask, max_eager_frames=max_eager_frames, max_workers=1)
     return dp
-    
+
+def load_hdf5_generic(fn, roi, mask, fn_pattern=None, **kwargs):
+    """Load a conventional/third-party '.hdf5' file and sum diffraction
+    patterns at mask-True scan pixels - mirrors load_hs below, but via a
+    plain h5py tree walk + dask instead of HyperSpy's own `load()`, which
+    can't parse this format's arbitrary internal layout (see
+    EDyssey.io_utils.loaders' module docstring - same one-4D-dataset
+    convention as its own load_hdf5_generic).
+
+    fn_pattern (smart-scan) isn't supported here, unlike load_hs's own
+    .hspy/.zspy path - no real acquisition needing this loader has used a
+    smart-scan pattern file in practice.
+
+    Args:
+        fn: Path to the .hdf5 file.
+        roi: (x, y, w, h) scan-space crop.
+        mask: 2-D boolean array matching the full scan dimensions.
+
+    Returns:
+        numpy.ndarray of shape (det_y, det_x).
+    """
+    with h5py.File(fn, 'r') as f:
+        datasets_4d = []
+        def _visit(name, obj):
+            # Any numeric kind or plain boolean (a thresholded/binary
+            # detector read is still meaningful data to sum) - see
+            # EDyssey.io_utils.loaders._is_dp_dtype.
+            if (isinstance(obj, h5py.Dataset) and obj.ndim == 4
+                    and (np.issubdtype(obj.dtype, np.number) or np.issubdtype(obj.dtype, np.bool_))):
+                datasets_4d.append(name)
+        f.visititems(_visit)
+        if len(datasets_4d) != 1:
+            raise ValueError(
+                f"Expected exactly one numerical 4D dataset in {fn!r}, found "
+                f"{len(datasets_4d)}.")
+        dset = f[datasets_4d[0]]
+        data = da.from_array(dset, chunks=dset.chunks if dset.chunks is not None else 'auto')
+        x, y, w, h = roi
+        data = data[y:y+h, x:x+w]
+        mask_crop = mask[y:y+h, x:x+w]
+        data = data.reshape(-1, *data.shape[-2:])
+        dp = data[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
+        dp = dp.compute()
+    return dp
+
 def load_hs(fn, roi, mask, fn_pattern=None, **kwargs):
     """Load a .hspy/.zspy file and sum diffraction patterns at mask-True scan pixels.
 

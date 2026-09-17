@@ -61,6 +61,11 @@ class ThresholdDialog(qtw.QDialog):
         self._roi_drag = None       # (x0, y0, value) while drawing a rectangle
         self._roi_rect_artist = None
         self._roi_bg = None
+        # Cached blit background for update_preview (see
+        # _blit_preview_display) - None means "needs (re)capture".
+        # Separate from _roi_bg above, which is the ROI-drag preview's own
+        # independent blit cache.
+        self._thresh_frame_bg = None
 
         layout = qtw.QVBoxLayout(self)
 
@@ -76,6 +81,20 @@ class ThresholdDialog(qtw.QDialog):
         self.ax.set_title(os.path.basename(fn), fontsize=9)
         self.colorbar = self.figure.colorbar(
             self.img_display, ax=self.ax, fraction=0.046, pad=0.04)
+        # Any real view change (Ctrl+scroll, or the toolbar's own Pan/Zoom
+        # below) shifts what's baked into the cached blit background (see
+        # _blit_preview_display); catching it here, on the axes' own
+        # xlim/ylim callbacks, covers both without hunting down every call
+        # site that can move the view.
+        self.ax.callbacks.connect('xlim_changed', lambda ax: setattr(self, '_thresh_frame_bg', None))
+        self.ax.callbacks.connect('ylim_changed', lambda ax: setattr(self, '_thresh_frame_bg', None))
+        # Resizing this (ordinarily resizable) dialog changes the canvas's
+        # own pixel dimensions without necessarily touching xlim/ylim, so
+        # the two callbacks above alone don't catch it - restoring a
+        # background cached at the OLD, smaller canvas size then leaves a
+        # visible stale rectangle (the old canvas's own edge) in a corner
+        # of the new, bigger one.
+        self.canvas.mpl_connect('resize_event', lambda evt: setattr(self, '_thresh_frame_bg', None))
         layout.addWidget(self.canvas)
         layout.addWidget(NavigationToolbar(self.canvas, self))
 
@@ -156,7 +175,9 @@ class ThresholdDialog(qtw.QDialog):
     def update_preview(self):
         """Recompute the mask from the current threshold/deviation/denoise
         settings, replay every manual Include/Exclude ROI edit on top (see
-        class docstring), and refresh the overlay on the displayed image."""
+        class docstring), and refresh the overlay on the displayed image -
+        blitted (_blit_preview_display) rather than a full canvas.draw_idle(),
+        since this fires on every single tick of the Deviation slider drag."""
         method = self.combo_threshMethod.currentText()
         threshold_funcs = {'otsu': threshold_otsu, 'li': threshold_li, 'yen': threshold_yen}
         dev = self.slider_threshDev.value()
@@ -170,7 +191,42 @@ class ThresholdDialog(qtw.QDialog):
         color = np.array([*mcolors.to_rgb('tab:orange'), 0.45])
         mask_image = self.mask.reshape(*self.mask.shape, 1) * color.reshape(1, 1, -1)
         self.img_display_overlay.set_data(mask_image)
-        self.canvas.draw_idle()
+        self._blit_preview_display()
+
+    def _blit_preview_display(self):
+        """Blit just the mask overlay onto the canvas - see
+        TabBase._blit_canvas. The base image, colorbar, and title never
+        change after this dialog is constructed, so they're safe to leave
+        baked into the cached background."""
+        self._blit_canvas(self.canvas, self.figure, '_thresh_frame_bg',
+                          [self.img_display_overlay],
+                          hide_for_background=[self.img_display_overlay])
+
+    def _blit_canvas(self, canvas, figure, bg_attr, artists,
+                     hide_for_background=(), titles_for_background=()):
+        """See TabBase._blit_canvas (ui_tabs/base_tab.py) - identical
+        logic, duplicated here since ThresholdDialog is a QDialog, not a
+        TabBase subclass."""
+        if getattr(self, bg_attr) is None:
+            prev_visible = [a.get_visible() for a in hide_for_background]
+            for a in hide_for_background:
+                a.set_visible(False)
+            prev_titles = [ax.get_title() for ax in titles_for_background]
+            for ax in titles_for_background:
+                ax.set_title('')
+
+            canvas.draw()
+            setattr(self, bg_attr, canvas.copy_from_bbox(figure.bbox))
+
+            for a, v in zip(hide_for_background, prev_visible):
+                a.set_visible(v)
+            for ax, t in zip(titles_for_background, prev_titles):
+                ax.set_title(t)
+
+        canvas.restore_region(getattr(self, bg_attr))
+        for artist in artists:
+            artist.axes.draw_artist(artist)
+        canvas.blit(figure.bbox)
 
     def _clear_manual_edits(self):
         self._manual_edits = []

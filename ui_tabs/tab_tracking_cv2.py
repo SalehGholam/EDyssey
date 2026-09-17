@@ -150,8 +150,9 @@ class Tab_Tracking_CV2(TabBase):
             '(comment.txt, pattern files, logs), AND (for a .hdf5 file specifically) '
             f'selects which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" (eventem\'s '
             'own raw export layout) or plain ".hdf5" (a conventional/third-party '
-            'HDF5 file, loaded via HyperSpy - both commonly share the same on-disk '
-            '.hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
+            'HDF5 file, not natively readable via HyperSpy - its one 4D dataset is '
+            'found directly and loaded via dask instead - both commonly share the '
+            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
             'navigator\'s own recorded file list applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
@@ -596,7 +597,9 @@ class Tab_Tracking_CV2(TabBase):
         layout_extract.addWidget(self.button_extractCurrentFrame)
         self.button_extractCurrentFrame.setFixedHeight(button_h_lrg)
         self.button_extractCurrentFrame.setToolTip(
-            'Compute the DP for the current frame only (not saved)')
+            'Compute the DP for the current frame only, and overwrite it in place in the '
+            '"Extract All" results (e.g. after fine-tuning a mask on just this frame) - '
+            'included the next time "Save Results" runs')
         self.button_extractCurrentFrame.clicked.connect(self.extract_dp_current_frame)
 
         for btn in (self.button_3ded, self.button_extractCurrentFrame):
@@ -817,9 +820,9 @@ class Tab_Tracking_CV2(TabBase):
         self.ax_mask = self.figure.add_subplot(1, 3, 2)
         self.ax_dp = self.figure.add_subplot(1, 3, 3)
 
-        # titles for axes
-        self.ax_nav.set_title('(1) Navigation / Tracking')
-        self.ax_mask.set_title('(2) Roi with Threshold')
+        # titles for axes - unified with SAM2 Tracker's own equivalent panels
+        self.ax_nav.set_title('(1) Navigation')
+        self.ax_mask.set_title('(2) Segmented Object')
         self.ax_dp.set_title('(3) DP')
         self.img_display = {}
         self.img_zero = np.zeros((512,512), dtype='uint16')
@@ -922,11 +925,7 @@ class Tab_Tracking_CV2(TabBase):
         self._dp_clip_initialized = False
         self.clip_dp.valueChanged.connect(self._update_dp_clip)
 
-        self._canvas_scroll = qtw.QScrollArea()
-        self._canvas_scroll.setWidget(self._canvas_stack_widget)
-        self._canvas_scroll.setWidgetResizable(True)
-        self._canvas_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        layout_canvas.addWidget(self._canvas_scroll)
+        layout_canvas.addWidget(self.wrap_canvas_row_in_border(self._canvas_stack_widget))
 
         # Connect mouse events - on_press/on_click_dp each already check
         # event.inaxes themselves and no-op outside their own axes, so both
@@ -1582,12 +1581,18 @@ class Tab_Tracking_CV2(TabBase):
         sets up nav_imgs, axis extents/clims, scale bars, and the frame
         slider for it."""
         self.s = result
+        # Set together, immediately - rescale_nav_signal/
+        # _refresh_current_frame_display only guard on `self.s` existing
+        # (not self.nav_imgs_raw) before reading self.nav_imgs_raw, so any
+        # call that re-enters between the two (e.g. a queued Qt signal
+        # processed while set_data_range/convert_to_8bit below run) would
+        # otherwise hit an AttributeError on a still-mid-load tab.
+        self.nav_imgs_raw = self.s.data
         # Anchor the clip-threshold sliders to this signal's raw range before
         # reading get_kwargs() below - a previous signal's clip values would
         # otherwise carry over onto a dataset with a different intensity scale.
         self.box_contrast.set_data_range(self.s.data.min(), self.s.data.max())
         self.s_8bit = io.convert_to_8bit(self.s, **self.box_contrast.get_kwargs())
-        self.nav_imgs_raw = self.s.data
         self.nav_imgs = deepcopy(self.s_8bit.data)
         self.dp_center = None  # a new signal may have a different DP shape/center
         self._dp_center_cache_key = None
@@ -4061,9 +4066,14 @@ class Tab_Tracking_CV2(TabBase):
     def extract_dp_current_frame(self):
         """Compute the diffraction pattern for just the selected ROI at the
         frame the slider currently points to - the single-frame equivalent
-        of "Extract!" (extract_3ded), for quick data-checking. Runs inline
-        (WorkerThread_General on self.threadpool) rather than as a QProcess,
-        since it's a one-off single frame, not a whole series."""
+        of "Extract!" (extract_3ded), for quick data-checking or to
+        re-extract a few frames (e.g. after fine-tuning a mask on them)
+        without re-running the whole series - see _on_current_frame_dp,
+        which overwrites this (ROI, frame)'s entry in self.df_rois['dp']
+        (the same per-object DP stack "Extract All" itself fills in) so it
+        sticks for "Save Results". Runs inline (WorkerThread_General on
+        self.threadpool) rather than as a QProcess, since it's a one-off
+        single frame, not a whole series."""
         selected_items = self.tree_objects.selectedItems()
         if not selected_items:
             qtw.QMessageBox.warning(self, 'No ROI Selected', 'Select a tracked ROI first.')
@@ -4130,11 +4140,26 @@ class Tab_Tracking_CV2(TabBase):
         self.threadpool.start(worker)
 
     def _on_current_frame_dp(self, dp, idx, i_fr):
-        """Callback for the "Extract DP (Current Frame)" worker: store the
-        computed DP as a one-off preview and refresh the display."""
+        """Callback for the "Extract DP (Current Frame)" worker: overwrite
+        this (ROI, frame)'s entry in self.df_rois['dp'] - the same per-
+        object DP stack extract_3ded()/_on_3ded_task_done fill in - so a
+        targeted re-extraction of a few fine-tuned frames sticks for "Save
+        Results" without re-running the whole "Extract All"; store the
+        computed DP as a one-off preview too, and refresh the display."""
         self.button_extractCurrentFrame.setEnabled(True)
         if hasattr(dp, 'compute'):
             dp = dp.compute()
+
+        n_frames = len(self.nav_imgs)
+        dp_all = self.df_rois.loc[idx, 'dp']
+        if not (isinstance(dp_all, np.ndarray) and dp_all.shape == (n_frames, *dp.shape)):
+            # No "Extract All" result yet for this ROI (or a stale one from
+            # before the nav signal/detector shape changed) - allocate a
+            # fresh all-zero stack, same as extract_3ded's own reset, so
+            # this one frame's result has somewhere consistent to live.
+            dp_all = np.zeros((n_frames, *dp.shape), dtype='uint32')
+            self.df_rois.at[idx, 'dp'] = dp_all
+        dp_all[i_fr] = dp
         # Routed through update_canvas() (rather than drawn directly here)
         # so it's shown/cleared by the exact same blit path as every other
         # frame - moving the slider (or changing the ROI selection) away

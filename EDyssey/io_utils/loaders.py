@@ -9,9 +9,13 @@ than this module auto-detecting from the filename:
   - '.hdf5_eventem': eventem's own export layout - a raw `f['4D']` dataset
     (plus `f['shape']`/`f['dose_image']`), read directly via h5py/dask
     (load_hdf5_eventem below).
-  - '.hdf5': a conventional/third-party HDF5 4D-STEM file, loaded the same
-    way as '.hspy'/'.zspy'/'.mib'/'.blo' - via HyperSpy's own `hs.load`
-    (load_hs below), which recognizes those formats itself.
+  - '.hdf5': a conventional/third-party HDF5 4D-STEM file - NOT natively
+    readable via HyperSpy's own `hs.load` (unlike '.hspy'/'.zspy'/'.mib'/
+    '.blo', which are), since its internal dataset layout/naming varies by
+    whatever tool wrote it. Instead, the one 4D numeric dataset anywhere in
+    the file is found via a plain h5py tree walk and wrapped in dask
+    (load_hdf5_generic below) - same lazy-by-default convention as
+    load_hdf5_eventem, just without assuming eventem's own fixed layout.
 """
 import numpy as np
 import os
@@ -43,7 +47,9 @@ def load_signal(fn, **kwargs):
         result = load_tpx3(fn, **kwargs)
     elif dtype == '.hdf5_eventem':
         result = load_hdf5_eventem(fn, **kwargs)
-    elif dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo']:
+    elif dtype == '.hdf5':
+        result = load_hdf5_generic(fn, **kwargs)
+    elif dtype in ['.zspy', '.hspy', '.mib', '.blo']:
         result = load_hs(fn, **kwargs)
     else:
         _log_or_print(kwargs.get('logger'), f'The data type {dtype} is not implemented for the analysis!')
@@ -158,6 +164,78 @@ def load_hdf5_eventem(fn, roi=None, scanSize=None, lazy=False, max_eager_frames=
         s = h5ev.read_roi(f, roi, max_eager_frames=max_eager_frames, lazy=lazy, max_workers=max_workers)
     return s
 
+def _is_dp_dtype(dtype):
+    """Whether `dtype` is plausible diffraction-pattern data - any numeric
+    kind (int/uint/float/complex) or plain boolean (a thresholded/binary
+    detector read is still meaningful array data to sum/threshold further,
+    even though numpy doesn't consider bool a `np.number` subtype).
+    Excludes strings/bytes/compound/object dtypes, which can't be."""
+    return np.issubdtype(dtype, np.number) or np.issubdtype(dtype, np.bool_)
+
+def _find_4d_dataset(f):
+    """Return the name of the one 4D dataset of plausible diffraction-
+    pattern data (see _is_dp_dtype) anywhere in h5py.File `f` - a
+    conventional/third-party '.hdf5' 4D-STEM file's internal layout varies
+    by whatever tool wrote it, unlike eventem's own fixed 'f["4D"]' layout
+    (see load_hdf5_eventem) or a real HyperSpy-native format, so this is
+    the one thing every such file is assumed to share: exactly one 4D
+    array somewhere in its tree. Shared by load_hdf5_generic/get_scan_size/
+    get_det_size so all three agree on which dataset a given file means.
+
+    Raises ValueError if there's none, or more than one (ambiguous - this
+    module has no way to guess which one a caller wants)."""
+    datasets_4d = []
+    def _visit(name, obj):
+        if isinstance(obj, h5py.Dataset) and obj.ndim == 4 and _is_dp_dtype(obj.dtype):
+            datasets_4d.append(name)
+    f.visititems(_visit)
+    if not datasets_4d:
+        raise ValueError(f'No numerical 4D dataset found in {f.filename!r}.')
+    if len(datasets_4d) > 1:
+        raise ValueError(
+            f'Multiple numerical 4D datasets found in {f.filename!r} '
+            f'({", ".join(datasets_4d)}) - expected exactly one.')
+    return datasets_4d[0]
+
+def load_hdf5_generic(fn, roi=None, lazy=True, logger=None, **kwargs):
+    """Load a conventional/third-party '.hdf5' 4D-STEM file - one HyperSpy's
+    own `hs.load` can't parse directly, unlike '.hspy'/'.zspy'/'.blo' (see
+    this module's docstring) - by finding its one 4D dataset (see
+    _find_4d_dataset) and wrapping it in dask, chunked by the dataset's own
+    on-disk chunking if it has one.
+
+    lazy=True (the default) returns that dask array still lazy: unlike
+    load_hdf5_eventem, `f` is deliberately never closed here in this case
+    (no `with` block) - dask only reads from the underlying dataset on
+    demand, so the file has to stay open for as long as the returned array
+    (or anything built from it) might still be computed. h5py keeps it
+    alive via the dataset's own reference for as long as something holds
+    onto that array; once nothing does, it's garbage-collected and closed,
+    the same as HyperSpy's own lazy `hs.load(..., lazy=True)` HDF5 readers.
+
+    lazy=False fully reads it into memory (through dask, so peak memory use
+    still follows the dataset's own chunking rather than one giant read)
+    and closes `f` before returning, since nothing needs it open anymore."""
+    f = h5py.File(fn, 'r')
+    try:
+        name = _find_4d_dataset(f)
+    except ValueError:
+        f.close()
+        raise
+    dset = f[name]
+    _log_or_print(logger, f'Loading 4D dataset {name!r} from {fn}')
+    data = da.from_array(dset, chunks=dset.chunks if dset.chunks is not None else 'auto')
+
+    if roi is not None:
+        x, y, w, h = roi
+        data = data[y:y+h, x:x+w]
+
+    if not lazy:
+        with LoggingProgressBar(logger, 'Loading 4D signal'):
+            data = data.compute()
+        f.close()
+    return data
+
 def load_hs(fn, roi=None, lazy=True, logger=None,
            fn_pattern=None, scanSize=None, **kwargs):
     """Load a .hspy/.zspy HyperSpy signal; supports lazy loading, ROI crop, and DP summation.
@@ -259,8 +337,11 @@ def get_scan_size(fn, dtype):
     read at all - see calculate_nav_img's own dtype dispatch) are
     deliberately not handled here; callers for those formats should never
     reach this function in the first place - see SCAN_SIZE_NOT_APPLICABLE."""
-    if dtype in ['.hspy', '.zspy', '.hdf5', '.blo']:
+    if dtype in ['.hspy', '.zspy', '.blo']:
         scanSize = hs.load(fn, lazy=True).data.shape[:2]
+    elif dtype == '.hdf5':
+        with h5py.File(fn, 'r') as f:
+            scanSize = tuple(f[_find_4d_dataset(f)].shape[:2])
     elif dtype == '.mib':
         fn_hdr = _resolve_mib_hdr(fn)
         if fn_hdr is None:
@@ -306,6 +387,12 @@ def get_det_size(fn, dtype=None):
             # f['shape'][-2:] == (det_x, det_y) - same [nx, ny, det_x, det_y]
             # convention as get_scan_size above, no axis swap needed here.
             det_shape = tuple(int(x) for x in f['shape'][-2:])
+    elif dtype == '.hdf5':
+        with h5py.File(fn, 'r') as f:
+            shape = f[_find_4d_dataset(f)].shape
+        # Same (..., det_y, det_x) -> (det_x, det_y) swap as the else branch
+        # below - a raw dataset's own axis order matches a dense signal's.
+        det_shape = (shape[-1], shape[-2])
     else:
         s = load_hs(fn, lazy=True)
         # A dense array's own axis order is (..., det_y, det_x) - the last
@@ -343,9 +430,15 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
                            mask=mask, det_shape=det_shape)
             dp = np.array(dp.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
     
-    if dtype in ['.hspy', '.zspy', '.mib', '.hdf5', '.blo']:
+    if dtype in ['.hspy', '.zspy', '.mib', '.blo']:
         s = load_hs(fn, roi=roi, logger=logger, fn_pattern=fn_pattern,
                     scanSize=scanSize)
+        dp = s.sum(axis=(0,1))
+        with LoggingProgressBar(logger, 'Loading 4D signal'):
+            dp = dp.compute()
+
+    if dtype == '.hdf5':
+        s = load_hdf5_generic(fn, roi=roi, logger=logger, lazy=True)
         dp = s.sum(axis=(0,1))
         with LoggingProgressBar(logger, 'Loading 4D signal'):
             dp = dp.compute()

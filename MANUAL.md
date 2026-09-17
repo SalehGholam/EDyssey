@@ -45,8 +45,10 @@ installer, or run from source). Launch `EDyssey.exe` (installer) or
   picks which of two loaders to use, since both commonly share the same
   on-disk `.hdf5` extension:
   - `.hdf5 (eventem)`: eventem's own raw export layout.
-  - `.hdf5`: a conventional/third-party HDF5 4D-STEM file, loaded via
-    HyperSpy.
+  - `.hdf5`: a conventional/third-party HDF5 4D-STEM file - not natively
+    readable via HyperSpy (its internal layout varies by whatever tool
+    wrote it), so its one 4D dataset is found directly and loaded lazily
+    via dask instead.
 
   Also supported: `.tpx3`, `.hspy`, `.zspy`, `.mib`, `.blo` (loaded via
   HyperSpy, same as `.hspy`/`.zspy`), and (Navigator only) `.tif`.

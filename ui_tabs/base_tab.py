@@ -97,8 +97,8 @@ def resolve_hdf5_dtype(fn, combo_selection=None):
 
     eventem's own export layout (a raw `f['4D']` dataset, internal dtype
     identifier '.hdf5_eventem') and a conventional/third-party HDF5
-    4D-STEM file loadable via HyperSpy ('.hdf5') both commonly live on
-    disk as a plain '.hdf5' file - nothing in the file's name or extension
+    4D-STEM file ('.hdf5') both commonly live on disk as a plain '.hdf5'
+    file - nothing in the file's name or extension
     distinguishes them (see EDyssey.io_utils.loaders' module docstring),
     so a '.hdf5' file can only be resolved by asking the user:
     `combo_selection` is the tab's own "Data Type" combo's currently
@@ -125,7 +125,7 @@ def glob_ext_for_dtype(dtype):
     combo selection - identity for every entry except HDF5_EVENTEM_LABEL,
     which (see resolve_hdf5_dtype) is not a real extension: eventem's own
     export layout physically lives in a plain '.hdf5' file, same as a
-    conventional/HyperSpy-loadable one, so both combo entries must glob the
+    conventional/third-party one, so both combo entries must glob the
     same '*.hdf5' pattern."""
     return '.hdf5' if dtype == HDF5_EVENTEM_LABEL else dtype
 
@@ -434,6 +434,28 @@ class TabBase(qtw.QWidget):
         scroll.setFrameShape(qtw.QFrame.NoFrame)
         canvas._edyssey_scroll_area = scroll
         return scroll
+
+    def wrap_canvas_row_in_border(self, widget):
+        """Wrap `widget` (a tab's whole canvas row - the canvas itself
+        plus any Clipping Thresholds widgets beside it) in a plain QFrame
+        styled to match Qt's own default sunken-panel look (the same
+        border a QScrollArea draws by default) - just for that border,
+        no scrolling involved. A QScrollArea was tried first (matching
+        ROI Tracker's own original, accidental border - it alone used an
+        extra outer QScrollArea, while the other 3 tabs' canvas rows went
+        straight into their layout), but a QScrollArea's viewport refuses
+        to shrink its content below the content's own sizeHint - it shows
+        scrollbars instead - which stopped the canvas from shrinking to
+        fit a smaller tab/window the way it did before this border
+        existed. A plain QFrame has no such viewport, so `widget` (and
+        the canvas inside it) is free to shrink exactly as before."""
+        frame = qtw.QFrame()
+        frame.setFrameShape(qtw.QFrame.StyledPanel)
+        frame.setFrameShadow(qtw.QFrame.Sunken)
+        layout = qtw.QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(widget)
+        return frame
 
     def _mirror_toolbar_coords_to_statusbar(self, toolbar):
         """`toolbar`'s own hover coordinate/pixel-value readout (its

@@ -53,6 +53,11 @@ class BlobSegmentationDialog(qtw.QDialog):
         self._labels = None  # recomputed by _redraw()
         self._param_widgets = {}  # key -> widget
         self._overlay_artists = []
+        # Cached blit background for _redraw (see _blit_blob_display) -
+        # None means "needs (re)capture". The base mask/intensity image
+        # never changes after _build_ui() and there's no zoom/pan here, so
+        # once captured this never needs invalidating.
+        self._blob_frame_bg = None
         self._build_ui()
         self._redraw()
 
@@ -100,6 +105,12 @@ class BlobSegmentationDialog(qtw.QDialog):
         self.ax.set_yticks([])
         bg = self._img_cut if self._img_cut is not None else self._mask.astype(float)
         self.ax.imshow(bg, cmap='gray')
+        # Resizing this (ordinarily resizable) dialog changes the canvas's
+        # own pixel dimensions - restoring a background cached at the OLD,
+        # smaller size would leave a visible stale rectangle (the old
+        # canvas's own edge) in a corner of the new, bigger one; there's no
+        # zoom/pan here to also need an xlim/ylim-callback guard for.
+        self.canvas.mpl_connect('resize_event', lambda evt: setattr(self, '_blob_frame_bg', None))
         self.canvas.mpl_connect('button_press_event', self._on_canvas_click)
 
         self.label_status = qtw.QLabel()
@@ -211,7 +222,41 @@ class BlobSegmentationDialog(qtw.QDialog):
             self.label_status.setText(
                 f'{n} blobs detected - click one above to choose it (green); '
                 'with none chosen, the largest is used.')
-        self.canvas.draw_idle()
+        self._blit_blob_display()
+
+    def _blit_blob_display(self):
+        """Blit the fresh contour/number overlay onto the canvas - see
+        TabBase._blit_canvas. The base mask/intensity image never changes
+        after this dialog is constructed (no zoom/pan here either), so
+        it's safe to leave permanently baked into the cached background."""
+        self._blit_canvas(self.canvas, self.figure, '_blob_frame_bg',
+                          self._overlay_artists, hide_for_background=self._overlay_artists)
+
+    def _blit_canvas(self, canvas, figure, bg_attr, artists,
+                     hide_for_background=(), titles_for_background=()):
+        """See TabBase._blit_canvas (ui_tabs/base_tab.py) - identical
+        logic, duplicated here since BlobSegmentationDialog is a QDialog,
+        not a TabBase subclass."""
+        if getattr(self, bg_attr) is None:
+            prev_visible = [a.get_visible() for a in hide_for_background]
+            for a in hide_for_background:
+                a.set_visible(False)
+            prev_titles = [ax.get_title() for ax in titles_for_background]
+            for ax in titles_for_background:
+                ax.set_title('')
+
+            canvas.draw()
+            setattr(self, bg_attr, canvas.copy_from_bbox(figure.bbox))
+
+            for a, v in zip(hide_for_background, prev_visible):
+                a.set_visible(v)
+            for ax, t in zip(titles_for_background, prev_titles):
+                ax.set_title(t)
+
+        canvas.restore_region(getattr(self, bg_attr))
+        for artist in artists:
+            artist.axes.draw_artist(artist)
+        canvas.blit(figure.bbox)
 
     # ----------------------------------------------------------------- API
     def result(self):

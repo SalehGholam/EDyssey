@@ -66,7 +66,13 @@ class _TransposedColumnItem:
         return item.text() if item is not None else ''
 
     def setText(self, row, value):
-        self._cell(row).setText(str(value))
+        text = str(value)
+        item = self._cell(row)
+        item.setText(text)
+        # Cells are a fixed narrow width (see addTopLevelItem) so long
+        # values (e.g. a wide frame range) get elided - the tooltip is the
+        # only way to read the full value without widening every column.
+        item.setToolTip(text)
 
     def checkState(self, row):
         item = self._cell(row, create=False)

@@ -626,6 +626,10 @@ class Tab_Create_NavSignal(TabBase):
         self.rect_navsig = None
         self._navsig_press = None
         self._navsig_bg = None
+        # Cached blit background for the per-frame slider scrub (see
+        # update_canvas/_blit_nav_frame_display) - None means "needs
+        # (re)capture", same convention as _navsig_bg/_mask_bg above.
+        self._nav_frame_bg = None
 
         #%% canvas (below the ribbon, using the tab's full width)
         self._right_widget = qtw.QWidget()
@@ -660,8 +664,9 @@ class Tab_Create_NavSignal(TabBase):
             'Filter the file list below to one data type, AND (for a .hdf5 file '
             f'specifically) select which of the two loaders to use - "{HDF5_EVENTEM_LABEL}" '
             "(eventem's own raw export layout) or plain \".hdf5\" (a conventional/"
-            'third-party HDF5 file, loaded via HyperSpy - both commonly share the '
-            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
+            'third-party HDF5 file, not natively readable via HyperSpy - its one 4D '
+            'dataset is found directly and loaded via dask instead - both commonly '
+            'share the same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
             '".tif" matches both .tif and .tiff files')
         self.combo_dtype.currentIndexChanged.connect(self.refresh_file_list)
         layout_fileList.addWidget(self.combo_dtype)
@@ -745,7 +750,7 @@ class Tab_Create_NavSignal(TabBase):
         layout_canvas_row.addWidget(self.clip_nav)
         layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
         layout_canvas_row.addWidget(self.clip_dp)
-        layout_canvas.addWidget(_canvas_row_widget)
+        layout_canvas.addWidget(self.wrap_canvas_row_in_border(_canvas_row_widget))
 
         #%% ribbon
         # Docked along the right edge - an additional way to reach the same
@@ -1283,8 +1288,6 @@ class Tab_Create_NavSignal(TabBase):
     def _on_test_result(self, result, fn):
         """Display a completed test navigation image (from test_selected_file)
         on the main canvas and reset the toolbar's Home view to match."""
-        fig, ax = plt.subplots()
-        ax.imshow(result)
         self._last_test_fn = fn
         self._last_test_img = result
         self.img_display.set_data(result)
@@ -1856,6 +1859,10 @@ class Tab_Create_NavSignal(TabBase):
         rely = (cur_ylim[1] - event.ydata) / (cur_ylim[1] - cur_ylim[0])
         ax.set_xlim([event.xdata - new_width * (1 - relx), event.xdata + new_width * relx])
         ax.set_ylim([event.ydata - new_height * (1 - rely), event.ydata + new_height * rely])
+        if ax is self.ax:
+            # View changed - force the per-frame blit background (see
+            # _blit_nav_frame_display) to be recaptured at the new zoom.
+            self._nav_frame_bg = None
         self.canvas.draw_idle()
 
     def _on_ribbon_tool_changed(self, tool_id):
@@ -2303,6 +2310,10 @@ class Tab_Create_NavSignal(TabBase):
             return
         self.nav_imgs = np.stack(valid)
         self._set_nav_contrast_range(self.nav_imgs)
+        # New data may be a different shape/extent than whatever this tab
+        # last showed - force the per-frame blit background (see
+        # _blit_nav_frame_display) to be recaptured for it.
+        self._nav_frame_bg = None
         self.update_canvas(0)
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
@@ -2528,6 +2539,10 @@ class Tab_Create_NavSignal(TabBase):
         # Computed nav-image stack
         self.nav_imgs = state['nav_imgs']
         self.clip_nav.set_state(state['clip_nav'])
+        # Loaded data may be a different shape/extent than whatever this
+        # tab last showed - force the per-frame blit background (see
+        # _blit_nav_frame_display) to be recaptured for it.
+        self._nav_frame_bg = None
         self.slider_imgNo.setRange(0, len(self.nav_imgs) - 1)
         self.lineEdit_imgNo.setValidator(QIntValidator(0, len(self.nav_imgs)))
         self.slider_imgNo.setValue(state['imgNo'])
@@ -2667,7 +2682,10 @@ class Tab_Create_NavSignal(TabBase):
 
     def update_canvas(self, imgNo):
         """Display frame `imgNo` of the computed nav-image stack (self.nav_imgs)
-        on the main canvas, with the current display contrast and scale bar."""
+        on the main canvas, with the current display contrast - blitted
+        (see _blit_nav_frame_display) rather than a full canvas.draw(),
+        since this fires on every single frame-scrub tick (slider_imgNo.
+        valueChanged, wired in init_widget)."""
         if hasattr(self, 'nav_imgs') and isinstance(self.nav_imgs, np.ndarray):
             self.img_display.set_data(self.nav_imgs[imgNo])
             # clim comes from the contrast sliders (display-only, user-
@@ -2680,8 +2698,35 @@ class Tab_Create_NavSignal(TabBase):
             shape_x, shape_y = self.nav_imgs[imgNo].shape
             self.img_display.set_extent([0, shape_y, shape_x, 0])
             self.ax.set_title(f'Image No. {imgNo+1:d}')
-            self._update_nav_scalebar(redraw=False)
-            self.canvas.draw()
+            # The scale bar is static across frames (same real-world scale
+            # for every index in one nav-image stack) - it's kept in sync
+            # by its own textChanged connection and by _update_nav_scalebar's
+            # other one-off call sites instead of being re-added here on
+            # every tick (see _update_nav_scalebar's own invalidation of
+            # _nav_frame_bg).
+            self._blit_nav_frame_display()
+
+    def _blit_nav_frame_display(self):
+        """Blit just the nav image, its per-frame title text, and the
+        scan-space ROI rectangle (self.rect_navsig, if one is drawn) onto
+        the canvas - see TabBase._blit_canvas. Everything else on this
+        axis (colorbar, scale bar, axis chrome) is static between frames,
+        so it only needs to be part of the cached background, not redrawn
+        on every single slider tick. self.rect_navsig is deliberately kept
+        out of that cached background too (hidden during (re)capture, like
+        the image) and instead read fresh on every call - it can be
+        created/moved/cleared by on_press_navsig/on_release_navsig/
+        clear_navsig_roi in between frame scrubs, and those already redraw
+        it correctly themselves via their own full canvas.draw(); reading
+        it fresh here just keeps it visible across a *subsequent* frame
+        scrub without needing every one of those call sites to also
+        invalidate this cache."""
+        dynamic = [self.img_display]
+        if self.rect_navsig is not None:
+            dynamic.append(self.rect_navsig)
+        self._blit_canvas(
+            self.canvas, self.figure, '_nav_frame_bg', dynamic + [self.ax.title],
+            hide_for_background=dynamic, titles_for_background=[self.ax])
 
     def _update_nav_scalebar(self, redraw=True):
         """(Re)draw the scale bar on the nav/test image axis to match the
@@ -2696,6 +2741,11 @@ class Tab_Create_NavSignal(TabBase):
             io.remove_scalebar(self.ax)
         else:
             io.add_readable_scalebar(self.ax, scale_real, 'nm')
+        # The scale bar is static across frames and baked into the cached
+        # blit background (see _blit_nav_frame_display) - invalidate it so
+        # the next frame scrub recaptures a background reflecting this
+        # change, instead of a full canvas.draw() every single time.
+        self._nav_frame_bg = None
         if redraw:
             self.canvas.draw_idle()
 
@@ -2726,6 +2776,12 @@ class Tab_Create_NavSignal(TabBase):
         self.img_display.set_clim(vmin, vmax)
         self.img_display.set_cmap('viridis_r' if self.checkbox_revertContrast.isChecked() else 'viridis')
         if redraw:
+            # A real contrast/cmap change (not the per-frame call from
+            # update_canvas, which passes redraw=False since vmin/vmax/cmap
+            # don't themselves change between frames) - the colorbar
+            # reflecting it is baked into the cached blit background (see
+            # _blit_nav_frame_display), so force that to be recaptured too.
+            self._nav_frame_bg = None
             self.canvas.draw_idle()
 
     def _update_dp_display_clim(self):

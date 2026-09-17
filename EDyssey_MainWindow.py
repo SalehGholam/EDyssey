@@ -78,7 +78,7 @@ AppTheme.instance().apply_qapp()
 # process to compute it. A plain source constant (not computed at run
 # time) so it's visible directly in the repo on GitHub, not just at
 # runtime. Shown only in the About dialog (Help > About EDyssey).
-APP_VERSION = '2.1.20260909.1300'
+APP_VERSION = '2.1.20260917.1336'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
