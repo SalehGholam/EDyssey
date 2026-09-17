@@ -1459,8 +1459,15 @@ class Tab_Tracking_CV2(TabBase):
         the result of) any still-running previous background rescale - see
         ContrastScalingBox.rescale_async. Also used as
         _apply_denoise_to_all_frames's own worker - both end up wanting
-        exactly this same full-stack-refresh-from-current-settings."""
-        if not hasattr(self, 's'):
+        exactly this same full-stack-refresh-from-current-settings.
+
+        Guards on nav_imgs, not just `s` - both are set together, late in
+        initiate_processing(), well after `self.s` itself, and a stray
+        settingsChanged emission (e.g. a clip slider's value getting
+        clamped mid-range-change - see ContrastScalingBox.set_data_range)
+        during that window would otherwise hit an AttributeError on a
+        still-mid-load tab."""
+        if not hasattr(self, 's') or not hasattr(self, 'nav_imgs'):
             return
         self._refresh_current_frame_display()
         self.box_contrast.set_denoise_apply_all_busy(True)
@@ -1482,8 +1489,11 @@ class Tab_Tracking_CV2(TabBase):
         canvas itself, so no trailing canvas.draw_idle() belongs here: that
         used to schedule a full, unblitted redraw of the whole figure right
         after the cheap blit, silently undoing it and making every single
-        Denoise parameter nudge as expensive as a full draw."""
-        if not hasattr(self, 's'):
+        Denoise parameter nudge as expensive as a full draw.
+
+        Guards on nav_imgs_raw/nav_imgs too, not just `s` - see
+        rescale_nav_signal's identical guard for why."""
+        if not hasattr(self, 's') or not hasattr(self, 'nav_imgs_raw') or not hasattr(self, 'nav_imgs'):
             return
         if imgNo is None:
             imgNo = self.slider_imgNo.value()
@@ -3608,7 +3618,6 @@ class Tab_Tracking_CV2(TabBase):
                 if flags:
                     flagged_summary[idx] = flags
 
-            # self.slider_imgNo.setValue(0)
             # activating widgets
             self.slider_thresh.setEnabled(True)
             self.slider_thresh.setValue(100)
@@ -3616,7 +3625,12 @@ class Tab_Tracking_CV2(TabBase):
             # self.checkbox_roiInRoi.setEnabled(True)
             item = self.tree_objects.topLevelItem(0)
             item.setSelected(True)
-            self.update_canvas(0)
+            # Whichever frame the slider is already on, not frame 0 - this
+            # tracking run only just finished for a signal that was already
+            # loaded and possibly being scrubbed through, so jumping back
+            # to the start is disorienting; update_canvas() with no
+            # argument already defaults to the slider's current value.
+            self.update_canvas()
             self.canvas.draw()
             self.spinner.stop()
             self.button_cancel.setDisabled(True)
@@ -4054,6 +4068,15 @@ class Tab_Tracking_CV2(TabBase):
             self.logger.info(
                 '3DED extraction completed successfully (%d frame(s)) in %s.',
                 self.tomo_counter_total, io.format_duration_hms(duration))
+        # Freshly-extracted DPs replace every frame's data, likely with a
+        # very different intensity range than whatever was last displayed
+        # (a placeholder, or an earlier extraction) - force update_canvas's
+        # own update_ax to re-anchor clip_dp's actual threshold *values* to
+        # it (reset=True), not just the slider bounds (see update_ax's own
+        # comment on the not-yet-initialized-vs-scrubbing distinction),
+        # rather than silently keeping stale values that clip the new data
+        # to solid black/white until the user clicks clip_dp's own Reset.
+        self._dp_clip_initialized = False
         self.update_canvas()
         # Freshly-extracted DPs may have a different center than whatever
         # was last found - re-run auto-centering now if enabled.

@@ -204,13 +204,28 @@ class ContrastScalingBox(qtw.QGroupBox):
         raw intensity range, resetting them to "no clip" - the previous
         dataset's clip values would otherwise be meaningless (wrong scale, or
         even outside the new range) on a new signal. Raw detector counts are
-        integers, so the sliders (and the thresholds they produce) are too."""
+        integers, so the sliders (and the thresholds they produce) are too.
+
+        Signals are blocked around setRange() too, not just around
+        reset_clip_thresholds()'s own setValue() calls below: if the
+        slider's *current* value falls outside the new range, Qt clamps it
+        and fires valueChanged right there, inside setRange() - which
+        reaches _on_clip_slider_changed() -> settingsChanged.emit(), the
+        exact notification `emit=False` below is trying to suppress.
+        Callers (e.g. Tab_Tracking_CV2.initiate_processing) rely on this
+        method never firing settingsChanged - it runs before the new
+        signal's own nav_imgs/nav_imgs_raw exist yet, and settingsChanged
+        is connected straight to rescale_nav_signal(), which reads them."""
         self._data_min = int(round(vmin))
         self._data_max = int(round(vmax))
         if self._data_max <= self._data_min:
             self._data_max = self._data_min + 1
+        self.slider_clip_low.blockSignals(True)
+        self.slider_clip_high.blockSignals(True)
         self.slider_clip_low.setRange(self._data_min, self._data_max)
         self.slider_clip_high.setRange(self._data_min, self._data_max)
+        self.slider_clip_low.blockSignals(False)
+        self.slider_clip_high.blockSignals(False)
         self.reset_clip_thresholds(emit=False)
 
     def reset_clip_thresholds(self, emit=True):

@@ -3693,6 +3693,14 @@ class Tab_SAM2(TabBase):
             self.logger.info(
                 '3DED extraction completed successfully (%d frame(s)) in %s.',
                 self.tomo_counter_total, io.format_duration_hms(duration))
+        # Freshly-extracted DPs replace every frame's data, likely with a
+        # very different intensity range than whatever was last displayed
+        # (a placeholder, or an earlier extraction) - force update_canvas's
+        # own DP-clip update to re-anchor clip_dp's actual threshold
+        # *values* to it (reset=True), not just the slider bounds, rather
+        # than silently keeping stale values that clip the new data to
+        # solid black/white until the user clicks clip_dp's own Reset.
+        self._dp_clip_initialized = False
         self.update_canvas()
         # Freshly-extracted DPs may have a different center than whatever
         # was last found - re-run auto-centering now if enabled.

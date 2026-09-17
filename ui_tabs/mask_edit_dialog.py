@@ -755,44 +755,18 @@ class MaskEditDialog(qtw.QDialog):
         row_tilt.addWidget(self.label_tiltAxis)
         row_tilt.addStretch(1)
 
-        # Everything below the frame slider (D-pad, Threshold/Edge
-        # Detection, Mesh, ...) sits in an independently-scrolling area
-        # instead of the dialog's own top-level layout (see bug fix in the
-        # class docstring / item 0 of the originating request): a QDialog
-        # can't be resized smaller than the sum of its children's minimum
-        # size hints, and the canvas's own 480px minimum plus every
-        # groupbox's natural height can together exceed a smaller/laptop
-        # screen's available height, pushing row_buttons (Save && Close/
-        # Cancel) off-screen with no way to reach it. QScrollArea's own
-        # minimumSizeHint is small (frame + scrollbar allowance) regardless
-        # of how tall its contents are, so wrapping them here - instead of
-        # adding them to `layout` directly - guarantees the canvas (top) and
-        # row_buttons (bottom, added straight to `layout` below) always both
-        # fit, however many control groupboxes exist or however short the
-        # screen is; only the controls in between ever need to scroll.
-        # The left panel (Denoise, Grow/Shrink Mask, Threshold, Edge
-        # Detection, Dilate/Erode, Mesh - one column, in that order) scrolls
-        # independently instead of being added to `outer_layout` directly
-        # (see the class docstring's layout note, item 0 of the originating
-        # request): a QDialog can't be resized smaller than the sum of its
-        # children's minimum size hints, and this many groupboxes stacked in
-        # one column can together exceed a smaller/laptop screen's available
-        # height, pushing row_buttons (Save && Close/Cancel) off-screen with
-        # no way to reach it. QScrollArea's own minimumSizeHint is small
-        # (frame + scrollbar allowance) regardless of how tall its contents
-        # are, so wrapping them here guarantees the canvas (right column)
-        # and row_buttons (bottom, spanning both columns) always both fit,
-        # however many groupboxes exist or however short the screen is;
-        # only the left panel's own controls ever need to scroll.
-        scroll_controls = qtw.QScrollArea()
-        scroll_controls.setWidgetResizable(True)
-        scroll_controls.setFrameShape(qtw.QFrame.NoFrame)
-        scroll_content = qtw.QWidget()
-        grid_boxes = qtw.QVBoxLayout(scroll_content)
+        # The left panel's own controls (Denoise, Grow/Shrink Mask,
+        # Threshold, Edge Detection, Dilate/Erode, Mesh) go straight into
+        # left_layout, stretch-factor 1 so they claim any leftover height
+        # below Tilt Axis above - no independent scroll area around them
+        # (an earlier version had one, to protect against a short screen
+        # pushing row_buttons off-screen, but it also kicked in - showing
+        # an unwanted scrollbar and clipping labels against it - on
+        # perfectly tall-enough screens; removed at the user's request).
+        grid_boxes = qtw.QVBoxLayout()
         grid_boxes.setContentsMargins(0, 0, 0, 0)
         grid_boxes.setSpacing(8)
-        scroll_controls.setWidget(scroll_content)
-        left_layout.addWidget(scroll_controls, 1)
+        left_layout.addLayout(grid_boxes, 1)
 
         grid_boxes.addWidget(self.box_denoise)
 
@@ -1106,10 +1080,7 @@ class MaskEditDialog(qtw.QDialog):
                        self.spinbox_meshCellSize.valueChanged, self.checkbox_meshCenterInitial.stateChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
-        # Full dialog width, below both columns - always reachable
-        # regardless of how tall the left panel's own scroll area gets (see
-        # its own comment above), same reasoning as before this dialog had
-        # two columns at all.
+        # Full dialog width, below both columns.
         row_buttons = qtw.QHBoxLayout()
         outer_layout.addLayout(row_buttons)
         row_buttons.addStretch(1)
