@@ -57,3 +57,12 @@ Pillow==12.2.0
 # plain array if it's absent. Install it yourself for richer
 # ElectronDiffraction2D output instead of the plain-array fallback:
 # pyxem==0.21.0
+
+# pyeventem: pure-Python/numba alternative .tpx3 analysis backend (see
+# EDyssey/io_utils/eventem_backend.py and the Edit menu's "Analysis Backend
+# & Declustering..." dialog) - a sibling repo during development
+# (../pyeventem), not yet a published package; install with
+# `pip install -e ../pyeventem` (or wherever your checkout lives) until it
+# is. numba is pyeventem's own required dependency (its fast decode/
+# declustering kernels).
+numba>=0.60

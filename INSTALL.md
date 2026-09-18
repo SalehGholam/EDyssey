@@ -71,6 +71,26 @@ them - `.hdf5 (eventem)` (eventem's own export layout, internally the
 '.hdf5_eventem' dtype) is read directly via h5py/dask, not the compiled
 eventem extension itself, despite the name.
 
+### 3b. New eventem / pyeventem (optional alternative .tpx3 backends)
+
+The Edit menu's "Analysis Backend & Declustering..." dialog lets you pick
+between three .tpx3 analysis engines: **Old eventem** (the bundled binary
+above, no declustering support), **New eventem** (a rebuilt, bug-fixed
+version of the same C++ - see the `evenTem` repo - with declustering), and
+**pyeventem** (a separate pure-Python/numba package, also with
+declustering). Old eventem is the default and needs nothing extra.
+
+- **New eventem**: like old eventem's own `.pyd`, `EDyssey/io_utils/eventem_new/eventem_new.cp3XX-<platform>.pyd`
+  is not tracked in git (same `.pyd`-excluding `.gitignore` rule) - build it
+  yourself from the `evenTem` repo with `-DBUILD_EVENTEM_NEW=ON` (see that
+  repo's `BuildTools/CMakeLists.txt`) and place the resulting `.pyd` next to
+  the `h5en.dll`/`hdf5_cpp.dll` already here. Selecting "New eventem"
+  without it present fails the same way old eventem does on a mismatched
+  platform/Python version (see above).
+- **pyeventem**: `pip install -e path/to/pyeventem` (or add it to your own
+  requirements once it's published) - see `requirements.txt`'s comment.
+  Needs `numba`, already listed as a dependency.
+
 ### 4. ffmpeg (optional, for video export)
 
 The clip-export functions (`EDyssey/io_utils/video.py`) pipe frames to

@@ -56,7 +56,7 @@ import re
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from ui_tabs import (Tab_Create_NavSignal, Tab_Tracking_CV2,
-                     Tab_ROI_on_4D, Tab_SAM2, EditSettingsDialog)
+                     Tab_ROI_on_4D, Tab_SAM2, EditSettingsDialog, BackendSettingsDialog)
 from ui_tabs.logging_utils import install_excepthook, shutdown_qt_log_handler, get_tab_logger
 from ui_tabs.app_theme import AppTheme, THEME_LABELS, apply_font_scale
 from ui_tabs.display_settings import DisplaySettings
@@ -112,6 +112,7 @@ class MainWindow(qtw.QMainWindow):
         # Display Size lives in the Edit menu (see show_display_size_dialog),
         # not a tab of its own - created lazily on first use.
         self._display_size_dialog = None
+        self._backend_settings_dialog = None
 
         # Every tab instance that currently exists: the 4 fixed ones above,
         # plus any duplicates opened via the File menu - closeEvent below
@@ -196,6 +197,11 @@ class MainWindow(qtw.QMainWindow):
         action_display_size = menu_edit.addAction('Display Preferences...')
         action_display_size.setToolTip('Theme, colormaps, and ribbon/plot text/icon size, across every tab')
         action_display_size.triggered.connect(self.show_display_size_dialog)
+
+        action_backend_settings = menu_edit.addAction('Analysis Backend && Declustering...')
+        action_backend_settings.setToolTip(
+            'Choose old eventem / new eventem / pyeventem for .tpx3 analysis, and configure declustering')
+        action_backend_settings.triggered.connect(self.show_backend_settings_dialog)
 
         menu_edit.addSeparator()
         self._build_theme_menu(menu_edit)
@@ -418,9 +424,22 @@ class MainWindow(qtw.QMainWindow):
         self._display_size_dialog.raise_()
         self._display_size_dialog.activateWindow()
 
+    def show_backend_settings_dialog(self):
+        """Open (or re-raise, if already open) the singleton Analysis
+        Backend & Declustering dialog - Edit menu > Analysis Backend &
+        Declustering... Same non-modal, lazy-singleton pattern as
+        show_display_size_dialog above."""
+        if self._backend_settings_dialog is None:
+            self._backend_settings_dialog = BackendSettingsDialog(self)
+        self._backend_settings_dialog.show()
+        self._backend_settings_dialog.raise_()
+        self._backend_settings_dialog.activateWindow()
+
     def closeEvent(self, event):
         if self._display_size_dialog is not None:
             self._display_size_dialog.close()
+        if self._backend_settings_dialog is not None:
+            self._backend_settings_dialog.close()
         for tab in self._all_tabs:
             try:
                 tab.cleanup()
