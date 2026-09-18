@@ -456,6 +456,24 @@ class MainWindow(qtw.QMainWindow):
         gc.collect()
         event.accept()
 
+        # Hard-exit instead of letting the interpreter shut down normally:
+        # a long-running in-process computation (a QThreadPool QRunnable
+        # can't be forcibly killed - see on_release's own docstring for why
+        # "Compute Virtual Image" uses a real subprocess instead; the
+        # pyeventem-parallel-declustering path spawns its own
+        # concurrent.futures.ThreadPoolExecutor threads on top of that,
+        # which CPython's own atexit machinery additionally *waits* for
+        # before letting the process exit at all) would otherwise keep
+        # running - and keep the whole python.exe process alive - for
+        # however long it takes to finish, with no window left to show for
+        # it (confirmed reproducible: closing EDyssey mid-declustering left
+        # the process running). os._exit() skips that wait entirely,
+        # abandoning any in-flight background computation outright - the
+        # cleanup above (tab.cleanup()/shutdown_qt_log_handler()/gc.collect())
+        # already ran, so nothing meaningful is lost by skipping the rest of
+        # the normal interpreter teardown.
+        os._exit(0)
+
 if __name__ == "__main__":
     # Belt-and-suspenders alongside the --multiprocessing-fork check above
     # (which already handles the frozen-build spawn-bootstrap case before
