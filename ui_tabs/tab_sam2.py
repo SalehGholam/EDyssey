@@ -3471,7 +3471,8 @@ class Tab_SAM2(TabBase):
                                       det_shape=self.get_detector_shape(fn),
                                       backend=backend_settings.backend,
                                       decluster_cfg=backend_settings.decluster_cfg(),
-                                      n_threads=backend_settings.n_threads)
+                                      n_threads=backend_settings.n_threads,
+                                      logger=self.logger)
         worker.signals.results.connect(
             lambda dp, _idx, obj_id=obj_id, imgNo=imgNo: self._on_current_frame_dp(dp, obj_id, imgNo))
         worker.signals.error.connect(self._on_current_frame_dp_failed)

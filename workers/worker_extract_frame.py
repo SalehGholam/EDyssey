@@ -176,7 +176,7 @@ def load_dp(fn, **kwargs):
     return result
 
 def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_shape=None,
-              backend=None, decluster_cfg=None, n_threads=None, **kwargs):
+              backend=None, decluster_cfg=None, n_threads=None, logger=None, **kwargs):
     """Load a .tpx3 file and return the diffraction pattern summed over
     mask-True scan pixels.
 
@@ -224,6 +224,15 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
             worker_extract_frame_batch.py) - leaving it unset would
             oversubscribe the machine exactly like the equivalent
             worker_nav_img.py comment explains.
+        logger: optional logger the eventem/pyeventem console progress is
+            redirected into (see eventem_backend.run_roi/run_roi_masked's
+            own logger_ param) - only meaningful for the single-frame,
+            in-process "Extract Current Frame" caller (tab_sam2.py/
+            tab_tracking_cv2.py), which has a real Qt-console logger to
+            hand it; the batch/subprocess callers never pass one (a plain
+            Python logger object isn't JSON-serializable through
+            tasks.json anyway), so this is None there and no different
+            from before.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
@@ -241,6 +250,7 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
         result = io.eb.run_roi_masked(
             fn, scanSize, mask, dwell_time_ns=dwellTime * 1000, det_shape=det_shape,
             backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads, bitdepth=16,
+            logger_=logger,
         )
         return np.asarray(result.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
 
@@ -260,7 +270,7 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
     result = io.eb.run_roi(
         fn, scanSize, roi_rect=(x, y, w, h), dwell_time_ns=dwellTime * 1000, det_shape=det_shape,
         fn_pattern=fn_pattern, get_4d=True, backend=backend, decluster_cfg=decluster_cfg,
-        n_threads=n_threads,
+        n_threads=n_threads, logger_=logger,
     )
     s = np.asarray(result.get_4D())
 
@@ -270,7 +280,7 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
     return dp
 
 def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shape=None,
-                      backend=None, decluster_cfg=None, n_threads=None, **kwargs):
+                      backend=None, decluster_cfg=None, n_threads=None, logger=None, **kwargs):
     """Sum diffraction patterns over an arbitrary (possibly large/scattered)
     .tpx3 mask, for a *smart-scanned* caller with no small ROI of their own
     to begin with - "Summed DP from Threshold" is the only one today, since
@@ -317,7 +327,8 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
         patch_mask = labeled == patch_id
         dp_total += load_tpx3(fn, mask=patch_mask, scanSize=scanSize, roi=patch_roi,
                               dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape,
-                              backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads)
+                              backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+                              logger=logger)
     return dp_total
 
 def load_hdf5_eventem(fn, roi, mask, scanSize=None, max_eager_frames=10000, **kwargs):

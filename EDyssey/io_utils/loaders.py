@@ -402,7 +402,7 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
         if mask is None and roi is None:
             dp = get_dp_tpx3_full(fn, scanSize=scanSize, fn_pattern=fn_pattern,
                                   det_shape=det_shape, backend=backend,
-                                  decluster_cfg=decluster_cfg, n_threads=n_threads)
+                                  decluster_cfg=decluster_cfg, n_threads=n_threads, logger=logger)
         elif mask is None:
             dp = load_tpx3(fn, roi=roi, scanSize=scanSize, dwellTime=dwellTime,
                            fn_pattern=fn_pattern, logger=logger, get_4d=False,

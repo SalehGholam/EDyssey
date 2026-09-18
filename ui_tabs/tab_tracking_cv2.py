@@ -4164,7 +4164,8 @@ class Tab_Tracking_CV2(TabBase):
                                       det_shape=self.get_detector_shape(fn),
                                       backend=backend_settings.backend,
                                       decluster_cfg=backend_settings.decluster_cfg(),
-                                      n_threads=backend_settings.n_threads)
+                                      n_threads=backend_settings.n_threads,
+                                      logger=self.logger)
         worker.signals.results.connect(
             lambda dp, _idx, idx=idx, i_fr=i_fr: self._on_current_frame_dp(dp, idx, i_fr))
         worker.signals.error.connect(self._on_current_frame_dp_failed)
