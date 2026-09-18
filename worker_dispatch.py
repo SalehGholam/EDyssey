@@ -16,6 +16,7 @@ WORKER_SCRIPTS = {
     'nav_img': 'worker_nav_img.py',
     'nav_img_batch': 'worker_nav_img_batch.py',
     'sam': 'worker_sam.py',
+    'eventem_call': 'worker_eventem_call.py',
 }
 
 

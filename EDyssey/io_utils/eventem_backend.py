@@ -83,31 +83,118 @@ def _new_eventem():
         # wiring. A real fix needs a debugger session against the evenTem
         # C++ source/build - not diagnosable further from here.
         #
-        # This only affects the GUI process itself (every PyQt5 import goes
-        # through 'PyQt5.QtCore' first) - the Qt-free QProcess subprocess
-        # workers (worker_extract_frame*.py/worker_nav_img*.py) never import
-        # PyQt5 at all, so New eventem still works correctly there ("Extract!",
-        # "Calculate All", "Compute Virtual Image" - see each worker's own
-        # module docstring for why they're Qt-free). Failing loudly here
-        # turns a whole-process crash into a catchable, in-app error message
-        # for every OTHER call site (Sum DP, Test navigation image, Extract
-        # Current Frame, etc., which run in-process via WorkerThread_General/
-        # QRunnable, not a real subprocess).
-        if 'PyQt5.QtCore' in sys.modules:
-            raise RuntimeError(
-                "'New eventem' cannot be used here: importing it in a process that already "
-                "has PyQt5 loaded (i.e. the main EDyssey GUI process) is a known, 100%-"
-                "reproducible crash (segfault) - see eventem_backend._new_eventem's own "
-                "comment. It still works for batch operations that run as a separate "
-                "subprocess (\"Extract!\", \"Calculate All\", \"Compute Virtual Image\") - "
-                "use 'Old eventem' or 'pyeventem' for anything computed directly in the app "
-                "(Sum DP, Test navigation image, Extract Current Frame, ...) until this is "
-                "fixed upstream in the evenTem C++ build.")
+        # Every run_*() function below checks _new_eventem_needs_subprocess()
+        # BEFORE ever reaching this function, and delegates the whole call to
+        # a real, separate, Qt-free subprocess instead (see
+        # _run_new_eventem_via_subprocess) - so by the time this actually
+        # runs, either PyQt5 genuinely isn't loaded in this process (a batch
+        # worker, or the dedicated subprocess itself), or a caller reached
+        # this directly without going through run_*() at all, which is a
+        # caller bug, not something to paper over here.
         if _EVENTEM_NEW_DIR not in sys.path:
             sys.path.insert(0, _EVENTEM_NEW_DIR)
         import eventem_new
         _eventem_new_mod = eventem_new
     return _eventem_new_mod
+
+
+def _to_jsonable(value):
+    """Recursively convert tuples (anywhere - top level or nested inside a
+    list of (x, y) pairs) to lists, and numpy scalars to plain Python ones,
+    so a run_*() argument that's normally a tuple/list of tuples (r_in/
+    r_out/offset) round-trips through json.dump cleanly. None and plain
+    scalars pass through unchanged."""
+    if isinstance(value, (tuple, list)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _new_eventem_needs_subprocess() -> bool:
+    """True once PyQt5 is loaded in this process - see _new_eventem's own
+    comment for why importing eventem_new directly is then guaranteed to
+    segfault, and _run_new_eventem_via_subprocess for the actual fix."""
+    return 'PyQt5.QtCore' in sys.modules
+
+
+def _run_new_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=None, logger_=None):
+    """Run one run_*() call for backend=BACKEND_NEW in a real, separate,
+    Qt-free process (workers/worker_eventem_call.py) instead of importing
+    eventem_new directly here - see _new_eventem_needs_subprocess/
+    _new_eventem's own comments for why this is necessary, not optional.
+    Every other backend/sink combination stays in-process; this is New
+    eventem's own, otherwise-invisible, workaround.
+
+    `kwargs` must already be JSON-serializable (tuples become lists automatically;
+    None/bool/int/float/str all pass through as-is) - the caller builds it
+    from the same arguments it would have passed to the in-process backend
+    directly. `mask_array`, if given (run_roi_masked only), is written to
+    its own temp .npy and referenced by path instead - a boolean array
+    isn't JSON-serializable, and round-tripping it as nested lists would
+    bloat the request file for no reason.
+
+    Subprocess console output (eventem_new's own native progress bar, or
+    the request itself failing) is piped back through `logger_` live via
+    pipe_process_output_to_logger, the same way redirect_console_to_logger
+    already does for genuinely in-process calls - so New eventem's progress
+    shows up in the Qt log console exactly like every other backend's does,
+    despite now running in a different process entirely.
+
+    Assigned to a Windows Job Object with KILL_ON_JOB_CLOSE, the same
+    mechanism worker_pool_utils.py's own batch drivers already use for
+    "Cancel" - here, its purpose is different: since this call blocks the
+    calling QThreadPool worker thread until the subprocess exits, there is
+    no user-facing Cancel button for it at all yet, but if EDyssey's own
+    process is closed/killed while this is running, Windows closes the job
+    handle as part of tearing down the process that created it, which -
+    because of KILL_ON_JOB_CLOSE - kills this subprocess too, instead of
+    leaving it as an orphaned process still declustering in the background
+    with no window left to show for it (confirmed reproducible before this:
+    closing EDyssey mid-declustering left the child process running).
+    """
+    import json
+    import subprocess
+    import tempfile
+    from ui_tabs.worker_launch import worker_command
+    from .progress import pipe_process_output_to_logger
+    import worker_pool_utils as wpu
+
+    with tempfile.TemporaryDirectory(prefix='edyssey_eventem_new_') as tmp_dir:
+        request_path = os.path.join(tmp_dir, 'request.json')
+        result_path = os.path.join(tmp_dir, 'result.npz')
+        request_kwargs = dict(kwargs)
+        if mask_array is not None:
+            mask_path = os.path.join(tmp_dir, 'mask.npy')
+            np.save(mask_path, np.asarray(mask_array))
+            request_kwargs['mask_path'] = mask_path
+        with open(request_path, 'w', encoding='utf-8') as f:
+            json.dump({'func': func_name, 'kwargs': request_kwargs}, f)
+
+        program, arguments = worker_command('eventem_call', [request_path, result_path])
+        proc = subprocess.Popen([program, *arguments], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        job_handle = wpu.create_job_object()
+        if job_handle is not None:
+            wpu.assign_process_to_job(job_handle, proc.pid)
+        try:
+            returncode, tail_lines = pipe_process_output_to_logger(proc, logger_, 'Loading tpx3 (New eventem)')
+        finally:
+            wpu.kill_job(job_handle)
+        if returncode != 0:
+            detail = '\n'.join(tail_lines) or '(no output captured)'
+            raise RuntimeError(
+                f"New eventem's subprocess failed (exit code {returncode}):\n{detail}")
+
+        # `with np.load(...)`, not a bare call - np.load() on a .npz lazily
+        # keeps the file open (it's a zip archive read on demand), and
+        # TemporaryDirectory's own cleanup below fails with WinError 32
+        # ("used by another process") if that handle is still open when it
+        # tries to delete the directory.
+        with np.load(result_path) as data:
+            if func_name in ('run_pacbed', 'run_vstem', 'run_var'):
+                return np.array(data['array'])
+            roi_4d = np.array(data['roi_4d']) if 'roi_4d' in data.files else None
+            return RoiResult(np.array(data['scan_image']), np.array(data['diffraction_pattern']), roi_4d)
 
 
 def _pyeventem():
@@ -261,6 +348,13 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'pacbed')
 
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return _run_new_eventem_via_subprocess('run_pacbed', dict(
+            fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns, det_shape=list(det_shape),
+            fn_pattern=fn_pattern, repetitions=repetitions, backend=backend,
+            decluster_cfg=decluster_cfg, n_threads=n_threads,
+        ), logger_=logger_)
+
     if backend in (BACKEND_OLD, BACKEND_NEW):
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         dp = mod.Pacbed(repetitions=repetitions)
@@ -304,6 +398,14 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
     decluster_on = _decluster_active(backend, decluster_cfg, 'vstem')
     inner = list(r_in) if isinstance(r_in, (list, tuple)) else [r_in]
     outer = list(r_out) if isinstance(r_out, (list, tuple)) else [r_out]
+
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return _run_new_eventem_via_subprocess('run_vstem', dict(
+            fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns,
+            r_in=_to_jsonable(r_in), r_out=_to_jsonable(r_out), offset=_to_jsonable(offset),
+            det_shape=list(det_shape), fn_pattern=fn_pattern, repetitions=repetitions,
+            backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+        ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
@@ -355,6 +457,14 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
     multi-detector variant). Returns a (ny, nx) array."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'var')
+
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return _run_new_eventem_via_subprocess('run_var', dict(
+            fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns,
+            r_in=_to_jsonable(r_in), r_out=_to_jsonable(r_out), offset=_to_jsonable(offset),
+            det_shape=list(det_shape), fn_pattern=fn_pattern, repetitions=repetitions,
+            backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+        ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
@@ -436,6 +546,14 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
     else:
         x, y, w, h = roi_rect
 
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return _run_new_eventem_via_subprocess('run_roi', dict(
+            fn=fn, scan_size=list(scan_size), roi_rect=list(roi_rect) if roi_rect is not None else None,
+            dwell_time_ns=dwell_time_ns, det_shape=list(det_shape), fn_pattern=fn_pattern,
+            repetitions=repetitions, get_4d=get_4d, backend=backend, decluster_cfg=decluster_cfg,
+            n_threads=n_threads, bitdepth=bitdepth,
+        ), logger_=logger_)
+
     if backend in (BACKEND_OLD, BACKEND_NEW):
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=get_4d)
@@ -483,6 +601,13 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     mask = np.asarray(mask)
+
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return _run_new_eventem_via_subprocess('run_roi_masked', dict(
+            fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns, det_shape=list(det_shape),
+            fn_pattern=fn_pattern, repetitions=repetitions, backend=backend,
+            decluster_cfg=decluster_cfg, n_threads=n_threads, bitdepth=bitdepth,
+        ), mask_array=mask, logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()

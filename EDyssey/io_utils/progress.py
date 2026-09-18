@@ -209,3 +209,69 @@ def redirect_console_to_logger(logger, label=''):
 
     with _capture_fd(1, _on_line), _capture_fd(2, _on_line):
         yield
+
+
+def pipe_process_output_to_logger(proc, logger, label='', tail_lines=20):
+    """Block until `proc` (a subprocess.Popen with stdout=PIPE,
+    stderr=STDOUT) exits, forwarding its combined output to `logger` the
+    same way redirect_console_to_logger does for in-process console writes
+    - same \\r/\\n splitting and dedup, same progress_key collapsing
+    (see that function's own docstring) - used for a computation that has
+    to run in a genuinely separate process (eventem_backend's New-eventem
+    subprocess delegation) rather than one whose own stdout/stderr fds this
+    process can capture directly.
+
+    A plain `for line in proc.stdout` would not work here: it only splits
+    on '\\n', but a live progress bar (eventem's own, or tqdm's) updates via
+    bare '\\r' with no '\\n' between ticks - every intermediate update would
+    silently vanish, arriving only once as one giant blob at the final
+    '\\n'. Reads raw bytes instead and splits on both, exactly like
+    _capture_fd's own pump.
+
+    Prints to the real stdout instead of logging when `logger` is None -
+    unlike redirect_console_to_logger's own no-op in that case (which
+    leaves an in-process write to reach the *already-visible* real
+    console/terminal on its own), this process's output would otherwise be
+    silently swallowed by the very act of piping it for capture.
+
+    Returns `(returncode, last_lines)` - `last_lines` is up to the final
+    `tail_lines` distinct lines seen (most useful on failure: eventem_new's
+    own progress ticks dominate the full output, so the caller doesn't have
+    to sift through it to find the actual Python traceback at the end).
+    """
+    progress_key = f'{label or "console"}-{uuid.uuid4().hex[:8]}' if logger else None
+    last_line = [None]
+    seen = []
+
+    def _record(line):
+        if logger is not None:
+            logger.info('%s%s', f'{label}: ' if label else '', line, extra={'progress_key': progress_key})
+        else:
+            print(line)
+        seen.append(line)
+        if len(seen) > tail_lines:
+            del seen[0]
+
+    buf = b''
+    fd = proc.stdout.fileno()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        buf += chunk
+        while True:
+            idx_n = buf.find(b'\n')
+            idx_r = buf.find(b'\r')
+            candidates = [i for i in (idx_n, idx_r) if i != -1]
+            if not candidates:
+                break
+            idx = min(candidates)
+            line = buf[:idx].decode('utf-8', errors='replace').strip()
+            buf = buf[idx + 1:]
+            if line and line != last_line[0]:
+                last_line[0] = line
+                _record(line)
+    tail = buf.decode('utf-8', errors='replace').strip()
+    if tail and tail != last_line[0]:
+        _record(tail)
+    return proc.wait(), seen

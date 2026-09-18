@@ -64,11 +64,11 @@ class BackendSettingsDialog(qtw.QDialog):
         backend_layout.addWidget(note)
 
         new_eventem_note = qtw.QLabel(
-            "'New eventem' currently only works for batch operations that run as their own "
-            "process (\"Extract!\", \"Calculate All\", \"Compute Virtual Image\") - using it for "
-            "anything computed directly in the app (Sum DP, Test navigation image, Extract "
-            "Current Frame, ...) fails with a clear error instead of the crash it used to be, "
-            "pending a real fix upstream in the evenTem C++ build.")
+            "'New eventem' runs in a separate background process for anything computed "
+            "directly in the app (Sum DP, Test navigation image, Extract Current Frame, ...) - "
+            "a one-time workaround for a crash in the compiled eventem_new build when it's "
+            "imported in the main GUI process directly, pending a real fix upstream in the "
+            "evenTem C++ build. Transparent otherwise, just a little slower to start each call.")
         new_eventem_note.setWordWrap(True)
         new_eventem_note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
         backend_layout.addWidget(new_eventem_note)

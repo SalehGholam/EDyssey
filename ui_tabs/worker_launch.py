@@ -35,7 +35,7 @@ from ui_tabs.python_finder import find_bundled_python, find_system_python, read_
 # Repo root - two levels up from this file (ui_tabs/worker_launch.py).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-_WORKER_NAMES = {'extract_frame', 'extract_frame_batch', 'nav_img', 'nav_img_batch', 'sam'}
+_WORKER_NAMES = {'extract_frame', 'extract_frame_batch', 'nav_img', 'nav_img_batch', 'sam', 'eventem_call'}
 
 
 def _sam_command_frozen(str_args):
@@ -67,7 +67,7 @@ def worker_command(worker_name, args):
 
     Args:
         worker_name: One of 'extract_frame', 'extract_frame_batch',
-            'nav_img', 'nav_img_batch', 'sam' - see
+            'nav_img', 'nav_img_batch', 'sam', 'eventem_call' - see
             worker_dispatch.WORKER_SCRIPTS for the name -> script mapping.
         args: Positional arguments to pass to the worker script, in the same
             order its own `if __name__ == '__main__':` block expects them.
