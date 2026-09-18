@@ -89,7 +89,15 @@ declustering). Old eventem is the default and needs nothing extra.
   platform/Python version (see above).
 - **pyeventem**: `pip install -e path/to/pyeventem` (or add it to your own
   requirements once it's published) - see `requirements.txt`'s comment.
-  Needs `numba`, already listed as a dependency.
+  Needs `numba`, already listed as a dependency. Because that's an
+  *editable* install, which pyeventem branch is checked out silently
+  decides what EDyssey runs - declustering in particular is ~5x faster on
+  `feature/fast-declustering` than on `main` (indexed candidate
+  enumeration, bit-identical output - see that repo's `BENCHMARKS.md` and
+  `Examples/06_declustering_speedup.ipynb`). Measured through this app's
+  own ROI path on a 379M-hit file: 250s -> 50s single-threaded, 90s -> 25s
+  with CPU cores set to 4, same diffraction pattern either way.
+  Declustering being slow without an obvious reason is usually this.
 
 ### 4. ffmpeg (optional, for video export)
 
