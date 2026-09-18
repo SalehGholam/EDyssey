@@ -170,7 +170,8 @@ def test_pyeventem_run_sequential_when_n_threads_none():
     calls = []
     fake_pe = types.SimpleNamespace(
         run=lambda source, sinks, **kw: calls.append(('run', source, sinks)),
-        run_parallel=lambda source, sinks, n_workers: calls.append(('run_parallel', n_workers)),
+        run_parallel=lambda source, sinks, **kw: calls.append(('run_parallel', kw)),
+        decluster_source=lambda source, declusterer: source,
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=None, decluster_on=False)
     assert calls == [('run', 'SRC', ['SINK'])]
@@ -180,7 +181,8 @@ def test_pyeventem_run_sequential_when_n_threads_is_one():
     calls = []
     fake_pe = types.SimpleNamespace(
         run=lambda source, sinks, **kw: calls.append('run'),
-        run_parallel=lambda source, sinks, n_workers: calls.append('run_parallel'),
+        run_parallel=lambda source, sinks, **kw: calls.append('run_parallel'),
+        decluster_source=lambda source, declusterer: source,
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=1, decluster_on=False)
     assert calls == ['run']
@@ -190,20 +192,34 @@ def test_pyeventem_run_parallel_when_multiple_threads_and_no_declustering():
     calls = []
     fake_pe = types.SimpleNamespace(
         run=lambda source, sinks, **kw: calls.append('run'),
-        run_parallel=lambda source, sinks, n_workers: calls.append(('run_parallel', n_workers)),
+        run_parallel=lambda source, sinks, **kw: calls.append(('run_parallel', kw)),
+        decluster_source=lambda source, declusterer: source,
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=4, decluster_on=False)
-    assert calls == [('run_parallel', 4)]
+    assert calls == [('run_parallel', {'n_workers': 4, 'declusterer': None, 'progress': True})]
 
 
-def test_pyeventem_run_sequential_when_declustering_even_with_many_threads():
-    # A declustered source is a plain generator with no control-stream
-    # structure to checkpoint-seed - run_parallel() can't be used regardless
-    # of n_threads (see eventem_backend._pyeventem_run's own docstring).
+def test_pyeventem_run_parallel_declustered_when_multiple_threads():
+    # Bounded-memory parallel declustering: each of n_threads chunks
+    # declustered independently via pe.run_parallel(declusterer=...), not
+    # a decluster_source()-wrapped sequential pe.run() (see
+    # eventem_backend._pyeventem_run's own docstring for the trade-off).
     calls = []
     fake_pe = types.SimpleNamespace(
         run=lambda source, sinks, **kw: calls.append('run'),
-        run_parallel=lambda source, sinks, n_workers: calls.append('run_parallel'),
+        run_parallel=lambda source, sinks, **kw: calls.append(('run_parallel', kw)),
+        decluster_source=lambda source, declusterer: calls.append('decluster_source') or source,
     )
-    eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=8, decluster_on=True)
-    assert calls == ['run']
+    eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=8, decluster_on=True, declusterer='DECL')
+    assert calls == [('run_parallel', {'n_workers': 8, 'declusterer': 'DECL', 'progress': True})]
+
+
+def test_pyeventem_run_sequential_declustered_when_single_threaded():
+    calls = []
+    fake_pe = types.SimpleNamespace(
+        run=lambda source, sinks, **kw: calls.append(('run', source, kw)),
+        run_parallel=lambda source, sinks, **kw: calls.append('run_parallel'),
+        decluster_source=lambda source, declusterer: f'DECLUSTERED({source},{declusterer})',
+    )
+    eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=1, decluster_on=True, declusterer='DECL')
+    assert calls == [('run', 'DECLUSTERED(SRC,DECL)', {'progress': True})]
