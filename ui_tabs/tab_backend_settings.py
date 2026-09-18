@@ -63,6 +63,16 @@ class BackendSettingsDialog(qtw.QDialog):
         note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
         backend_layout.addWidget(note)
 
+        new_eventem_note = qtw.QLabel(
+            "'New eventem' currently only works for batch operations that run as their own "
+            "process (\"Extract!\", \"Calculate All\", \"Compute Virtual Image\") - using it for "
+            "anything computed directly in the app (Sum DP, Test navigation image, Extract "
+            "Current Frame, ...) fails with a clear error instead of the crash it used to be, "
+            "pending a real fix upstream in the evenTem C++ build.")
+        new_eventem_note.setWordWrap(True)
+        new_eventem_note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
+        backend_layout.addWidget(new_eventem_note)
+
         cores_row = qtw.QHBoxLayout()
         cores_row.addWidget(qtw.QLabel('CPU cores:'))
         self.spinbox_nThreads = qtw.QSpinBox()

@@ -68,6 +68,41 @@ def _old_eventem():
 def _new_eventem():
     global _eventem_new_mod
     if _eventem_new_mod is None:
+        # KNOWN CRASH (reproduced 100% of the time, isolated 2026-09-18):
+        # importing eventem_new in a process that already has PyQt5 loaded
+        # segfaults immediately, inside the import itself - before any
+        # eventem_new code (Roi/Pacbed/etc.) ever runs, and regardless of
+        # n_threads, declustering, or which .tpx3 file. Reproduced in a
+        # minimal 3-line repro (import PyQt5.QtCore; import eventem_new)
+        # with nothing else involved, and confirmed NOT caused by the
+        # h5en.dll/hdf5_cpp.dll rename (swapping in old eventem's proven-
+        # good h5ev.dll/hdf5_cpp.dll pair alongside the same eventem_new.pyd
+        # still crashed) - the bug is in eventem_new.pyd's own compiled code
+        # (something in its module-load-time initialization only manifests
+        # once Qt's DLLs are also in the process), not in this Python
+        # wiring. A real fix needs a debugger session against the evenTem
+        # C++ source/build - not diagnosable further from here.
+        #
+        # This only affects the GUI process itself (every PyQt5 import goes
+        # through 'PyQt5.QtCore' first) - the Qt-free QProcess subprocess
+        # workers (worker_extract_frame*.py/worker_nav_img*.py) never import
+        # PyQt5 at all, so New eventem still works correctly there ("Extract!",
+        # "Calculate All", "Compute Virtual Image" - see each worker's own
+        # module docstring for why they're Qt-free). Failing loudly here
+        # turns a whole-process crash into a catchable, in-app error message
+        # for every OTHER call site (Sum DP, Test navigation image, Extract
+        # Current Frame, etc., which run in-process via WorkerThread_General/
+        # QRunnable, not a real subprocess).
+        if 'PyQt5.QtCore' in sys.modules:
+            raise RuntimeError(
+                "'New eventem' cannot be used here: importing it in a process that already "
+                "has PyQt5 loaded (i.e. the main EDyssey GUI process) is a known, 100%-"
+                "reproducible crash (segfault) - see eventem_backend._new_eventem's own "
+                "comment. It still works for batch operations that run as a separate "
+                "subprocess (\"Extract!\", \"Calculate All\", \"Compute Virtual Image\") - "
+                "use 'Old eventem' or 'pyeventem' for anything computed directly in the app "
+                "(Sum DP, Test navigation image, Extract Current Frame, ...) until this is "
+                "fixed upstream in the evenTem C++ build.")
         if _EVENTEM_NEW_DIR not in sys.path:
             sys.path.insert(0, _EVENTEM_NEW_DIR)
         import eventem_new
