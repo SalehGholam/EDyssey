@@ -1478,6 +1478,7 @@ class Tab_ROI_on_4D(TabBase):
                                     decluster_cfg=backend_settings.decluster_cfg(),
                                     n_threads=backend_settings.n_threads)
         worker.signals.result.connect(self.get_dp)
+        worker.signals.error.connect(self._on_calculate_dp_failed)
         self.threadpool.start(worker)
     
     def get_dp(self, result):
@@ -1507,6 +1508,18 @@ class Tab_ROI_on_4D(TabBase):
         self._reset_dp_clip_range()
         self.update_canvas(roiUpdate=True)
         self.update_virtual_mask_overlay()
+
+    def _on_calculate_dp_failed(self, traceback_text):
+        """Slot for Worker_CalculateDP's error signal - previously
+        unconnected, so a failure here (e.g. selecting a backend that
+        can't compute this in-process, like New eventem - see
+        eventem_backend._new_eventem's own RuntimeError) was only visible
+        by reading the log console; this surfaces it immediately."""
+        if self._cancelling:
+            return
+        self.logger.error('Failed to calculate diffraction pattern:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Diffraction Pattern Failed',
+            f'Computing the diffraction pattern failed:\n\n{traceback_text.strip().splitlines()[-1]}')
 
     def _reset_dp_clip_range(self):
         """(Re)anchor clip_dp's Clipping Thresholds to the freshly-loaded
@@ -2445,6 +2458,7 @@ class Tab_ROI_on_4D(TabBase):
                                          decluster_cfg=backend_settings.decluster_cfg(),
                                          n_threads=backend_settings.n_threads)
         worker.signals.result.connect(self.get_dp_from_mask)
+        worker.signals.error.connect(self._on_calculate_dp_failed)
         self.threadpool.start(worker)
 
     def get_dp_from_mask(self, dp):
@@ -2916,8 +2930,10 @@ class Worker_CalculateDP(QRunnable):
                 if hasattr(navImg_cut, 'compute'): # lazy signals
                     navImg_cut = navImg_cut.compute()
         except Exception:
+            import traceback
             self.logger.exception('Failed to calculate diffraction pattern after %s.',
                                    io.format_duration_hms(perf_counter() - self._tic))
+            self.signals.error.emit(traceback.format_exc())
             return
         self.signals.result.emit((dp, navImg_cut))
         self.logger.info('Diffraction pattern calculated successfully in %s.',
