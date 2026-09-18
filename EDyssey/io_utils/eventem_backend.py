@@ -177,14 +177,19 @@ def _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads):
     return pe.Tpx3Raster(fn, nx=scan_size[0], ny=scan_size[1], dwell_time_ns=dwell_time_ns or 0.0)
 
 
-def _pyeventem_run(pe, source, sink, n_threads):
-    """Sequential pe.run() - the checkpoint-seeded pe.run_parallel() path
-    only supports Tpx3Raster/Tpx3Pixeltrig sources with clone()/merge()-
-    capable sinks and its own n_workers knob, which doesn't map cleanly onto
-    this app's existing `n_threads` concept; not wired in here (a real
-    follow-up, not a correctness gap - see BENCHMARKS.md's own parallel-
-    decode numbers for the win available)."""
-    pe.run(source, [sink])
+def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False):
+    """pe.run_parallel() when undeclustered and n_threads > 1 (source is
+    still the raw Tpx3Raster/Tpx3Pixeltrig here, and every sink this module
+    builds - Pacbed/VSTEM/Var/Roi - implements clone()/merge()). Falls back
+    to sequential pe.run() otherwise: n_threads in (None, 0, 1), or
+    declustering is on - decluster_source() wraps the source in a plain
+    generator with no control-stream structure of its own, so it can't be
+    checkpoint-seeded the way run_parallel requires (see
+    cluster/__init__.py::decluster_source, pipeline.py::run_parallel)."""
+    if not decluster_on and n_threads and n_threads > 1:
+        pe.run_parallel(source, [sink], n_workers=n_threads)
+    else:
+        pe.run(source, [sink])
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +227,7 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
     sink = pe.Pacbed(detector_size=det_shape[0])
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
-    _pyeventem_run(pe, source, sink, n_threads)
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on)
     return np.asarray(sink.image)
 
 
@@ -278,7 +283,7 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
                     centers=centers, detector_size=det_shape[0])
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
-    _pyeventem_run(pe, source, sink, n_threads)
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on)
     return np.asarray(sink.images[0])
 
 
@@ -329,7 +334,7 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
                   center=center, detector_size=det_shape[0])
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
-    _pyeventem_run(pe, source, sink, n_threads)
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on)
     return np.asarray(sink.image)
 
 
@@ -406,7 +411,7 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
                   detector_size=det_shape[0], extract_4d=get_4d, **roi_kwargs)
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
-    _pyeventem_run(pe, source, sink, n_threads)
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on)
     roi_4d = sink.roi_4d if get_4d else None
     return RoiResult(sink.scan_image, sink.diffraction_pattern, roi_4d)
 
@@ -450,5 +455,5 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
     sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask)
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
-    _pyeventem_run(pe, source, sink, n_threads)
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on)
     return RoiResult(sink.scan_image, sink.diffraction_pattern)

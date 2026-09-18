@@ -31,11 +31,14 @@ SETTINGS_FILE = os.path.join(_CONFIG_DIR, 'analysis_backend_settings.json')
 SINK_KEYS = ('pacbed', 'roi', 'vstem', 'var')
 SINK_LABELS = {'pacbed': 'Pacbed', 'roi': 'Roi', 'vstem': 'vSTEM', 'var': 'Var'}
 
+_UNSET = object()  # set_values()'s "argument not passed" marker - distinct from None, which n_threads uses to mean "Auto"
+
 
 def _default_state():
     cfg = eb.default_decluster_cfg()
     return {
         'backend': eb.BACKEND_OLD,
+        'n_threads': None,  # None = "Auto" - don't override the backend's own default
         'decluster_enabled': cfg['enabled'],
         'dspace': cfg['dspace'],
         'dtime_ns': cfg['dtime_ns'],
@@ -82,6 +85,8 @@ class AnalysisBackendSettings(QObject):
         self.backend = state.get('backend', defaults['backend'])
         if self.backend not in eb.BACKENDS:
             self.backend = defaults['backend']
+        n_threads = state.get('n_threads', defaults['n_threads'])
+        self.n_threads = int(n_threads) if n_threads else None
         self.decluster_enabled = bool(state.get('decluster_enabled', defaults['decluster_enabled']))
         self.dspace = state.get('dspace', defaults['dspace'])
         self.dtime_ns = state.get('dtime_ns', defaults['dtime_ns'])
@@ -94,6 +99,7 @@ class AnalysisBackendSettings(QObject):
     def _current_state(self):
         return {
             'backend': self.backend,
+            'n_threads': self.n_threads,
             'decluster_enabled': self.decluster_enabled,
             'dspace': self.dspace,
             'dtime_ns': self.dtime_ns,
@@ -126,13 +132,30 @@ class AnalysisBackendSettings(QObject):
             'sinks': dict(self.sinks),
         }
 
-    def set_values(self, backend=None, decluster_enabled=None, dspace=None, dtime_ns=None,
+    def analysis_kwargs(self) -> dict:
+        """The full `backend`/`decluster_cfg`/`n_threads` triple every
+        eventem_backend.run_*/loaders.py/nav_image.py call takes - one call
+        site only needs `**AnalysisBackendSettings.instance().analysis_kwargs()`
+        instead of reading each field separately. `n_threads` also travels
+        through tasks.json unchanged to subprocess workers (plain int or
+        None), same as decluster_cfg."""
+        return {
+            'backend': self.backend,
+            'decluster_cfg': self.decluster_cfg(),
+            'n_threads': self.n_threads,
+        }
+
+    def set_values(self, backend=None, n_threads=_UNSET, decluster_enabled=None, dspace=None, dtime_ns=None,
                    cluster_range=None, tot_per_electron=None, lut_file=None, sinks=None):
         """Update whichever values are given (None = leave unchanged), then
         emit `changed` once and persist - the dialog's Apply button calls
-        this once with every control's current value."""
+        this once with every control's current value. `n_threads` uses a
+        private sentinel default (rather than None) since None is itself a
+        valid, meaningful value here ("Auto")."""
         if backend is not None:
             self.backend = backend
+        if n_threads is not _UNSET:
+            self.n_threads = int(n_threads) if n_threads else None
         if decluster_enabled is not None:
             self.decluster_enabled = decluster_enabled
         if dspace is not None:

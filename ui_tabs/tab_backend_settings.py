@@ -11,11 +11,14 @@ See ui_tabs/analysis_backend_settings.py for the persisted state this
 writes to, and EDyssey/io_utils/eventem_backend.py for what actually
 consumes it.
 """
+import os
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from .analysis_backend_settings import AnalysisBackendSettings, SINK_KEYS, SINK_LABELS
 from .app_theme import AppTheme
 from EDyssey.io_utils import eventem_backend as eb
+
+_CPU_COUNT = os.cpu_count() or 1
 
 
 class BackendSettingsDialog(qtw.QDialog):
@@ -59,6 +62,23 @@ class BackendSettingsDialog(qtw.QDialog):
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
         backend_layout.addWidget(note)
+
+        cores_row = qtw.QHBoxLayout()
+        cores_row.addWidget(qtw.QLabel('CPU cores:'))
+        self.spinbox_nThreads = qtw.QSpinBox()
+        self.spinbox_nThreads.setRange(0, _CPU_COUNT)
+        self.spinbox_nThreads.setSpecialValueText('Auto')
+        self.spinbox_nThreads.setValue(settings.n_threads or 0)
+        self.spinbox_nThreads.setToolTip(
+            f'Worker threads used to decode the file (this machine has {_CPU_COUNT}). '
+            "\"Auto\" leaves it at the selected backend's own default. Old/New eventem use this "
+            'directly (n_threads); pyeventem uses it to decode with several threads in parallel, '
+            'but only while declustering is off - a declustered pyeventem run always decodes '
+            'sequentially, since resolving clusters needs each hit in original time order.')
+        cores_row.addWidget(self.spinbox_nThreads)
+        cores_row.addStretch(1)
+        backend_layout.addLayout(cores_row)
+
         self.layout.addWidget(backend_box)
 
         # --- Declustering -------------------------------------------------
@@ -204,6 +224,7 @@ class BackendSettingsDialog(qtw.QDialog):
         lut_file = self.lineedit_lutFile.text().strip() if self.radio_lutFile.isChecked() else ''
         AnalysisBackendSettings.instance().set_values(
             backend=self._selected_backend(),
+            n_threads=self.spinbox_nThreads.value() or None,
             decluster_enabled=self.checkbox_enabled.isChecked(),
             dspace=self.spinbox_dspace.value(),
             dtime_ns=self.spinbox_dtime.value(),
@@ -219,6 +240,7 @@ class BackendSettingsDialog(qtw.QDialog):
         AnalysisBackendSettings.instance().reset()
         settings = AnalysisBackendSettings.instance()
         self._backend_buttons[settings.backend].setChecked(True)
+        self.spinbox_nThreads.setValue(settings.n_threads or 0)
         self.checkbox_enabled.setChecked(settings.decluster_enabled)
         self.spinbox_dspace.setValue(settings.dspace)
         self.spinbox_dtime.setValue(settings.dtime_ns)
