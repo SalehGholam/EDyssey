@@ -7,6 +7,7 @@ terminal - so a Qt log console can show them live.
 import os
 import sys
 import threading
+import time
 import contextlib
 import uuid
 import datetime
@@ -184,7 +185,7 @@ def _capture_fd(fd, on_line):
 
 
 @contextlib.contextmanager
-def redirect_console_to_logger(logger, label=''):
+def redirect_console_to_logger(logger, label='', min_interval=0.3):
     """Capture both real stdout and stderr (OS fds 1 and 2) and forward
     everything written to either, line by line, to a Python logger instead
     of the terminal - eventem's native progress output has been observed on
@@ -196,22 +197,57 @@ def redirect_console_to_logger(logger, label=''):
     `progress_key`, so consecutive progress updates collapse onto one
     updating line in the Qt log console (see LogConsole._append_log) instead
     of accumulating as one appended line per update.
+
+    `min_interval`: forwarding is throttled to at most one logger.info() per
+    `min_interval` seconds (plus one guaranteed final call once the wrapped
+    block exits - see below), not one per line. A live progress bar (tqdm's
+    default ~0.1s tick, or eventem's own) updates far more often than a
+    cross-thread, GUI-queued Qt signal should be emitted - LogConsole's own
+    _append_log does real work per call (HTML formatting, a QTextCursor
+    block replace) on the GUI thread, and _pump here runs on a background
+    thread with no backpressure of its own, so an unthrottled multi-minute
+    run can queue far more of these than the GUI thread drains in the same
+    time. Suspected (not confirmed with a debugger, but consistent with
+    everything observed) explanation for a real report: after a first
+    declustered run, a *second* run's own progress bar stayed stuck on its
+    very first tick - indistinguishable from a hung computation - while the
+    same sequence outside the GUI (no Qt log console attached) never
+    reproduced any hang at all. Exposed as a parameter mainly so tests can
+    use a tiny value instead of waiting on the real one.
     """
     if logger is None:
         yield
         return
 
     progress_key = f'{label or "console"}-{uuid.uuid4().hex[:8]}'
+    _last_emit_time = [0.0]
+    _last_line_seen = [None]
+    _last_line_emitted = [None]
+
+    def _emit(line):
+        logger.info('%s%s', f'{label}: ' if label else '', line, extra={'progress_key': progress_key})
+        _last_line_emitted[0] = line
 
     def _on_line(line):
-        logger.info('%s%s', f'{label}: ' if label else '', line,
-                    extra={'progress_key': progress_key})
+        _last_line_seen[0] = line
+        now = time.monotonic()
+        if now - _last_emit_time[0] < min_interval:
+            return
+        _last_emit_time[0] = now
+        _emit(line)
 
     with _capture_fd(1, _on_line), _capture_fd(2, _on_line):
         yield
 
+    # A throttled-away final line (the actual "N events processed"/"done"
+    # summary, not just an intermediate tick) would otherwise never reach
+    # the log console at all - always emit whatever was last seen, once,
+    # after the real computation has fully finished.
+    if _last_line_seen[0] is not None and _last_line_seen[0] != _last_line_emitted[0]:
+        _emit(_last_line_seen[0])
 
-def pipe_process_output_to_logger(proc, logger, label='', tail_lines=20):
+
+def pipe_process_output_to_logger(proc, logger, label='', tail_lines=20, min_interval=0.3):
     """Block until `proc` (a subprocess.Popen with stdout=PIPE,
     stderr=STDOUT) exits, forwarding its combined output to `logger` the
     same way redirect_console_to_logger does for in-process console writes
@@ -238,19 +274,32 @@ def pipe_process_output_to_logger(proc, logger, label='', tail_lines=20):
     `tail_lines` distinct lines seen (most useful on failure: eventem_new's
     own progress ticks dominate the full output, so the caller doesn't have
     to sift through it to find the actual Python traceback at the end).
+
+    Forwarding to `logger` is throttled the same way redirect_console_to_
+    logger's own is (see that function's docstring for why) - the `seen`
+    tail used for error reporting on a nonzero exit is tracked separately
+    and unthrottled, so a failure's actual traceback is never among the
+    lines silently dropped by the throttle.
     """
     progress_key = f'{label or "console"}-{uuid.uuid4().hex[:8]}' if logger else None
     last_line = [None]
     seen = []
+    _last_emit_time = [0.0]
+    _last_line_emitted = [None]
 
     def _record(line):
-        if logger is not None:
-            logger.info('%s%s', f'{label}: ' if label else '', line, extra={'progress_key': progress_key})
-        else:
-            print(line)
         seen.append(line)
         if len(seen) > tail_lines:
             del seen[0]
+        if logger is None:
+            print(line)
+            return
+        now = time.monotonic()
+        if now - _last_emit_time[0] < min_interval:
+            return
+        _last_emit_time[0] = now
+        _last_line_emitted[0] = line
+        logger.info('%s%s', f'{label}: ' if label else '', line, extra={'progress_key': progress_key})
 
     buf = b''
     fd = proc.stdout.fileno()
@@ -274,4 +323,10 @@ def pipe_process_output_to_logger(proc, logger, label='', tail_lines=20):
     tail = buf.decode('utf-8', errors='replace').strip()
     if tail and tail != last_line[0]:
         _record(tail)
-    return proc.wait(), seen
+    returncode = proc.wait()
+    # Same as redirect_console_to_logger's own final flush: a throttled-away
+    # last line must still reach the log console once, now that the
+    # subprocess has actually finished.
+    if logger is not None and last_line[0] is not None and last_line[0] != _last_line_emitted[0]:
+        logger.info('%s%s', f'{label}: ' if label else '', last_line[0], extra={'progress_key': progress_key})
+    return returncode, seen

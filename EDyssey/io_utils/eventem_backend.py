@@ -370,9 +370,20 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
         if decluster_on:
             _apply_decluster_eventem(dp, decluster_cfg)
         from .progress import redirect_console_to_logger
-        with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            dp.run()
-        return np.array(dp.Pacbed_image).reshape(det_shape[1], det_shape[0])
+        # close_socket() (every LiveProcessor-derived class - Pacbed/vSTEM/
+        # Var/Roi - has one, live-streaming or not) was dropped when this
+        # facade was written, unlike the direct eventem.Roi construction
+        # worker_extract_frame.py used to do before it was rewired through
+        # here - restored, in a finally so it still runs if .run() itself
+        # raises. Uncertain this alone explains every repeated-call hang
+        # reported against this facade, but it's a real, previously-dropped
+        # cleanup call, not optional.
+        try:
+            with redirect_console_to_logger(logger_, 'Loading tpx3'):
+                dp.run()
+            return np.array(dp.Pacbed_image).reshape(det_shape[1], det_shape[0])
+        finally:
+            dp.close_socket()
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
@@ -428,9 +439,12 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         if decluster_on:
             _apply_decluster_eventem(vstem, decluster_cfg)
         from .progress import redirect_console_to_logger
-        with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            vstem.run()
-        return vstem.get_image()
+        try:
+            with redirect_console_to_logger(logger_, 'Loading tpx3'):
+                vstem.run()
+            return vstem.get_image()
+        finally:
+            vstem.close_socket()
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
@@ -489,9 +503,12 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         if decluster_on:
             _apply_decluster_eventem(var, decluster_cfg)
         from .progress import redirect_console_to_logger
-        with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            var.run()
-        return np.array(var.Var_image).reshape(scan_size[1], scan_size[0])
+        try:
+            with redirect_console_to_logger(logger_, 'Loading tpx3'):
+                var.run()
+            return np.array(var.Var_image).reshape(scan_size[1], scan_size[0])
+        finally:
+            var.close_socket()
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
@@ -572,10 +589,13 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
         if decluster_on:
             _apply_decluster_eventem(roi_obj, decluster_cfg)
         from .progress import redirect_console_to_logger
-        with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            roi_obj.run()
-        roi_4d = roi_obj.get_4D() if get_4d else None
-        return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern, roi_4d)
+        try:
+            with redirect_console_to_logger(logger_, 'Loading tpx3'):
+                roi_obj.run()
+            roi_4d = roi_obj.get_4D() if get_4d else None
+            return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern, roi_4d)
+        finally:
+            roi_obj.close_socket()
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
@@ -627,9 +647,12 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
         if decluster_on:
             _apply_decluster_eventem(roi_obj, decluster_cfg)
         from .progress import redirect_console_to_logger
-        with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            roi_obj.run()
-        return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern)
+        try:
+            with redirect_console_to_logger(logger_, 'Loading tpx3'):
+                roi_obj.run()
+            return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern)
+        finally:
+            roi_obj.close_socket()
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
