@@ -24,11 +24,11 @@ import hyperspy.api as hs
 import dask.array as da
 import dask
 import h5py
-import eventem
 from scipy.ndimage import gaussian_filter
 
-from .progress import redirect_console_to_logger, LoggingProgressBar, _log_or_print
+from .progress import LoggingProgressBar, _log_or_print
 from . import hdf5_eventem_layout as h5ev
+from . import eventem_backend as eb
 
 def get_4d_files(path_4d_datasets, dtype):
     """Return sorted list of 4D-STEM files matching *dtype* in *path_4d_datasets* (recursive)."""
@@ -58,8 +58,16 @@ def load_signal(fn, **kwargs):
 
 def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
               repetitions=1, logger=None, n_threads=None, fn_pattern=None,
-              get_4d=False, mask=None, det_shape=(512, 512), **kwargs):
-    """Load a .tpx3 4D-STEM file via eventem; returns a HyperSpy Signal2D or summed nav image.
+              get_4d=False, mask=None, det_shape=(512, 512), backend=eb.BACKEND_OLD,
+              decluster_cfg=None, **kwargs):
+    """Load a .tpx3 4D-STEM file via eventem_backend; returns a RoiResult
+    (or, with a mask, the same via run_roi_masked - see eventem_backend.py).
+
+    `backend`: one of eventem_backend.BACKENDS (default: old eventem,
+    preserving this function's prior behavior exactly for any caller that
+    doesn't pass this).
+    `decluster_cfg`: optional eventem_backend decluster_cfg dict. None =
+    declustering off.
 
     `det_shape`: (det_x, det_y) detector pixel dimensions. Only actually
     applied (via `.detector_size_x`/`.detector_size_y`) when it differs from
@@ -87,39 +95,18 @@ def load_tpx3(fn, roi=None, scanSize=(512,512), dwellTime=1, bitDepth=16,
     acquisition into its full (ny, nx, det, det) grid. None (default) treats
     the file as a normal dense raster, matching prior behaviour.
     """
-    # Deliberately not named `roi` here - that name is this function's own
-    # `roi=(x, y, w, h)` crop parameter above, and reusing it for the
-    # eventem object clobbered that parameter before it could ever be read
-    # (every call ended up treating the crop as "full frame", the `roi is
-    # None` branch, since `roi` was always this object, never None, by the
-    # time it was checked).
-    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=get_4d)
-    if n_threads is not None:
-        roi_obj.n_threads = n_threads
-    roi_obj.set_bitdepth(bitDepth)
-    roi_obj.nx = scanSize[0]
-    roi_obj.ny = scanSize[1]
-    roi_obj.set_file(fn)
-    if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
-        roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
-    if fn_pattern is not None:
-        roi_obj.set_pattern_file(fn_pattern)
-
-    if mask is None:
-        if roi is None:
-            x, y, w, h = 0, 0, scanSize[0], scanSize[1]
-        else:
-            x, y, w, h = roi
-        roi_obj.set_roi(x=x, y=y, width=w, height=h)
-    else:
-        roi_obj.set_roi_mask([mask.flatten()])
-
-    roi_obj.set_dwell_time(dwellTime*1000)
-    with redirect_console_to_logger(logger, 'Loading tpx3'):
-        roi_obj.run()
-    # s = np.asarray(roi_obj.get_4D())
-    # s = hs.signals.Signal2D(s)
-    return roi_obj
+    dwell_time_ns = dwellTime * 1000
+    if mask is not None:
+        return eb.run_roi_masked(
+            fn, scanSize, mask, dwell_time_ns=dwell_time_ns, det_shape=det_shape,
+            fn_pattern=fn_pattern, repetitions=repetitions, backend=backend,
+            decluster_cfg=decluster_cfg, logger_=logger, n_threads=n_threads,
+        )
+    return eb.run_roi(
+        fn, scanSize, roi_rect=roi, dwell_time_ns=dwell_time_ns, det_shape=det_shape,
+        fn_pattern=fn_pattern, repetitions=repetitions, get_4d=get_4d, backend=backend,
+        decluster_cfg=decluster_cfg, logger_=logger, n_threads=n_threads, bitdepth=bitDepth,
+    )
 
 def load_hdf5_eventem(fn, roi=None, scanSize=None, lazy=False, max_eager_frames=10000,
                       logger=None, max_workers=None, **kwargs):
@@ -463,23 +450,13 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
     return dp
 
 def get_dp_tpx3_full(fn_tpx3, scanSize, dwellTime=1, fn_pattern=None,
-                     repititions=1, logger=None, det_shape=(512, 512)):
-    dp = eventem.Pacbed(repetitions=repititions)
-    dp.set_file(fn_tpx3)
-    dp.nx = scanSize[0]
-    dp.ny = scanSize[1]
-    # Only actually applied when it differs from what eventem itself already
-    # reports (reflecting the real file's own hardware layout) - see
-    # load_tpx3's docstring for why a genuine mismatch segfaults .run().
-    if det_shape != (dp.detector_size_x, dp.detector_size_y):
-        dp.detector_size_x, dp.detector_size_y = det_shape
-    dp.set_dwell_time(dwellTime*1000)
-    if fn_pattern is not None:
-        dp.set_pattern_file(fn_pattern)
-
-    with redirect_console_to_logger(logger, 'Loading tpx3'):
-        dp.run()
-    dp = np.array(dp.Pacbed_image).reshape(det_shape[1], det_shape[0])
+                     repititions=1, logger=None, det_shape=(512, 512),
+                     backend=eb.BACKEND_OLD, decluster_cfg=None):
+    dp = eb.run_pacbed(
+        fn_tpx3, scanSize, dwell_time_ns=dwellTime*1000, det_shape=det_shape,
+        fn_pattern=fn_pattern, repetitions=repititions, backend=backend,
+        decluster_cfg=decluster_cfg, logger_=logger,
+    )
     return dp
 
 def find_dp_center_blurred(dp, sigma=15):

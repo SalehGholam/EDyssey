@@ -311,7 +311,10 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         if fn_pattern:
             var.set_pattern_file(fn_pattern)
         if offset:
-            var.set_offset(offset[0], offset[1])
+            # (x, y) passed through as-is, as a single [x, y] list -
+            # set_offset takes one std::array<float,2>, not two args - see
+            # calculate_nav_img_variance_tpx3's identical, already-verified call.
+            var.set_offset([offset[0], offset[1]])
         if decluster_on:
             _apply_decluster_eventem(var, decluster_cfg)
         from .progress import redirect_console_to_logger
@@ -321,7 +324,9 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
-    sink = pe.Var(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0])
+    center = (float(offset[0]), float(offset[1])) if offset else None
+    sink = pe.Var(nx=scan_size[0], ny=scan_size[1], inner_radius=float(r_in), outer_radius=float(r_out),
+                  center=center, detector_size=det_shape[0])
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
     _pyeventem_run(pe, source, sink, n_threads)
@@ -332,20 +337,38 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 # Roi (rectangular and arbitrary-mask)
 # ---------------------------------------------------------------------------
 
-def _roi_result_dict(scan_image, diffraction_pattern):
-    return {'scan_image': np.asarray(scan_image), 'diffraction_pattern': np.asarray(diffraction_pattern)}
+class RoiResult:
+    """Duck-types the fields of old/new eventem's own Roi object
+    (Roi_scan_image/Roi_diffraction_pattern/get_4D()) so every existing
+    caller of load_tpx3 (loaders.py's own get_dp, tab_roi_4d.py,
+    tracking_utils_ui.py) keeps working unchanged regardless of which
+    backend actually produced the result - old/new eventem's Roi run_roi/
+    run_roi_masked return this wrapping their own object's real attributes;
+    pyeventem's plain numpy arrays are wrapped in one of these directly,
+    since its Roi sink has no equivalent object of its own."""
+
+    def __init__(self, scan_image, diffraction_pattern, roi_4d=None):
+        self.Roi_scan_image = np.asarray(scan_image)
+        self.Roi_diffraction_pattern = np.asarray(diffraction_pattern)
+        self._roi_4d = None if roi_4d is None else np.asarray(roi_4d)
+
+    def get_4D(self):
+        if self._roi_4d is None:
+            raise RuntimeError('This Roi result was not computed with get_4d=True')
+        return self._roi_4d
 
 
 def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 512),
             fn_pattern=None, repetitions=1, get_4d=False, backend=BACKEND_OLD,
-            decluster_cfg=None, logger_=None, n_threads=None):
+            decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None):
     """Rectangular ROI extraction: scan image + diffraction pattern (and,
     if get_4d, a sub-cube). ``roi_rect`` is (x, y, width, height); None =
-    the whole scan. Returns the eventem object itself for old/new eventem
-    (matching load_tpx3's existing contract - callers read
-    ``.Roi_scan_image``/``.Roi_diffraction_pattern``/``.get_4D()``), or a
-    dict with the same two arrays (plus 'roi_4d' if requested) for
-    pyeventem, whose Roi sink exposes plain numpy properties instead."""
+    the whole scan. Returns a :class:`RoiResult`, matching load_tpx3's
+    existing contract regardless of backend (callers read
+    ``.Roi_scan_image``/``.Roi_diffraction_pattern``/``.get_4D()``).
+    ``bitdepth``: old/new eventem's accumulator bit depth (``set_bitdepth``);
+    pyeventem's equivalent constructor arg (default 64/uint64 in both if
+    left None)."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     if roi_rect is None:
@@ -358,6 +381,8 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=get_4d)
         if n_threads is not None:
             roi_obj.n_threads = n_threads
+        if bitdepth is not None:
+            roi_obj.set_bitdepth(bitdepth)
         roi_obj.nx = scan_size[0]
         roi_obj.ny = scan_size[1]
         _set_detector_size(roi_obj, backend, det_shape)
@@ -371,19 +396,19 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
         from .progress import redirect_console_to_logger
         with redirect_console_to_logger(logger_, 'Loading tpx3'):
             roi_obj.run()
-        return roi_obj
+        roi_4d = roi_obj.get_4D() if get_4d else None
+        return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern, roi_4d)
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
+    roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
     sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], x=x, y=y, width=w, height=h,
-                  detector_size=det_shape[0], extract_4d=get_4d)
+                  detector_size=det_shape[0], extract_4d=get_4d, **roi_kwargs)
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
     _pyeventem_run(pe, source, sink, n_threads)
-    out = _roi_result_dict(sink.scan_image, sink.diffraction_pattern)
-    if get_4d:
-        out['roi_4d'] = np.asarray(sink.roi_4d)
-    return out
+    roi_4d = sink.roi_4d if get_4d else None
+    return RoiResult(sink.scan_image, sink.diffraction_pattern, roi_4d)
 
 
 def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 512),
@@ -391,14 +416,11 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
                     decluster_cfg=None, logger_=None, n_threads=None):
     """Arbitrary-mask ROI extraction (ROI Tracker / SAM2's masked/patched
     3DED extraction). ``mask``: 2-D array, shape (ny, nx), truthy = included
-    scan position. Returns a dict with 'scan_image'/'diffraction_pattern' -
-    unlike run_roi, always this plain-array shape (not an eventem object),
-    since old/new eventem's ``set_roi_mask`` doesn't populate ``Roi_scan_image``
-    with a meaningful per-pixel layout the same way a rectangular ROI does
-    (mask mode's "scan image" is effectively meaningless - one accumulated
-    diffraction pattern for the whole mask - callers of this path only ever
-    use the diffraction pattern; scan_image is included for a uniform return
-    shape with run_roi, not because it's meaningful here)."""
+    scan position. Returns a :class:`RoiResult` (``.Roi_scan_image`` here is
+    effectively meaningless - one accumulated diffraction pattern for the
+    whole mask, not a real per-pixel layout - callers of this path only
+    ever use ``.Roi_diffraction_pattern``; included anyway for a uniform
+    return type with run_roi)."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     mask = np.asarray(mask)
@@ -421,7 +443,7 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
         from .progress import redirect_console_to_logger
         with redirect_console_to_logger(logger_, 'Loading tpx3'):
             roi_obj.run()
-        return _roi_result_dict(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern)
+        return RoiResult(roi_obj.Roi_scan_image, roi_obj.Roi_diffraction_pattern)
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
@@ -429,4 +451,4 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
     _pyeventem_run(pe, source, sink, n_threads)
-    return _roi_result_dict(sink.scan_image, sink.diffraction_pattern)
+    return RoiResult(sink.scan_image, sink.diffraction_pattern)

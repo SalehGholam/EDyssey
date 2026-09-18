@@ -7,7 +7,7 @@ fallbacks for everything else).
 import numpy as np
 import os
 import h5py
-import eventem
+from . import eventem_backend as eb
 import hyperspy.api as hs
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -16,7 +16,7 @@ from skimage.draw import disk
 from scipy.ndimage import center_of_mass, gaussian_filter
 from dask.diagnostics import ProgressBar
 import dask.array as da
-from .progress import redirect_console_to_logger, LoggingProgressBar
+from .progress import LoggingProgressBar
 from .loaders import get_scan_size, get_det_size, load_hdf5_generic, SCAN_SIZE_NOT_APPLICABLE
 from . import hdf5_eventem_layout as h5ev
 
@@ -51,7 +51,8 @@ def create_nav_signal_from_haadf(fns):
 
 def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
                            offset=None, repetitions=1, fn_pattern=None, logger=None,
-                           n_threads=None, det_shape=(512, 512)):
+                           n_threads=None, det_shape=(512, 512), backend=eb.BACKEND_OLD,
+                           decluster_cfg=None):
     """Compute a virtual STEM (vSTEM) navigation image from a .tpx3 file using
     one or several annular detectors.
 
@@ -61,11 +62,13 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
         dwellTime: Dwell time per pixel in microseconds (multiplied by 1000 internally).
         r_in: Inner radius of the annular detector in pixels, or a list of
             inner radii for several virtual detectors at once (paired by
-            position with r_out/offset).
+            position with r_out/offset). Only the first entry is used when
+            declustering is active - see eventem_backend.run_vstem's
+            docstring for why (single-detector only in that mode).
         r_out: Outer radius, or a matching list of outer radii.
         offset: (x, y) absolute center of the virtual detector, in detector
             pixels, or a list of centers matching r_in/r_out. None = a
-            single detector covering the whole frame. 
+            single detector covering the whole frame.
         repetitions: Number of scan repetitions encoded in the file.
         fn_pattern: Optional path to a pattern/calibration file (passed through
             to eventem, when the acquisition needs one).
@@ -74,44 +77,27 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
         n_threads: Optional override for eventem's own internal thread pool
             (see load_tpx3's docstring for why this matters for concurrent
             callers).
+        backend: one of eventem_backend.BACKENDS - which analysis engine to
+            use (default: old eventem, preserving this function's prior
+            behavior exactly for any caller that doesn't pass this).
+        decluster_cfg: optional eventem_backend decluster_cfg dict (see
+            eventem_backend.default_decluster_cfg / AnalysisBackendSettings
+            .decluster_cfg()). None = declustering off.
 
     Returns:
         numpy.ndarray of shape (ny, nx) with float values.
     """
-    vstem = eventem.vSTEM(repetitions)
-    if n_threads is not None:
-        vstem.n_threads = n_threads
-    vstem.b_cumulative = True
-    vstem.set_file(fn)
-    vstem.nx = scanSize[0]
-    vstem.ny = scanSize[1]
-    # Only actually applied when it differs from what eventem itself already
-    # reports (reflecting the real file's own hardware layout) - a genuine
-    # mismatch segfaults .run() instead of gracefully reshaping/cropping.
-    if det_shape != (vstem.detector_size_x, vstem.detector_size_y):
-        vstem.detector_size_x, vstem.detector_size_y = det_shape
-    vstem.inner_radia = list(r_in) if isinstance(r_in, (list, tuple)) else [r_in]
-    vstem.outer_radia = list(r_out) if isinstance(r_out, (list, tuple)) else [r_out]
-    vstem.set_dwell_time(dwellTime*1000)
-    if fn_pattern:
-        vstem.set_pattern_file(fn_pattern)
-    if offset:
-        offsets = offset if isinstance(offset[0], (list, tuple)) else [offset]
-        # eventem's set_offsets takes (x, y) pairs directly, same order as
-        # this function's own `offset` docstring - no axis flip. Confirmed
-        # wrong against real hardware (the virtual detector's actual center
-        # was swapped relative to the requested Center X/Y) - previously
-        # flipped to [y, x] here, inherited unverified from an earlier
-        # rewrite (see git history), never actually confirmed correct.
-        vstem.set_offsets([[o[0], o[1]] for o in offsets])
-    with redirect_console_to_logger(logger, 'Loading tpx3'):
-        vstem.run()
-    nav_image = vstem.get_image()
-    return nav_image
+    return eb.run_vstem(
+        fn, scanSize, dwell_time_ns=(dwellTime * 1000 if dwellTime is not None else 0.0),
+        r_in=r_in, r_out=r_out, offset=offset, det_shape=det_shape, fn_pattern=fn_pattern,
+        repetitions=repetitions, backend=backend, decluster_cfg=decluster_cfg,
+        logger_=logger, n_threads=n_threads,
+    )
 
 def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
                                     offset=None, repetitions=1, fn_pattern=None, logger=None,
-                                    n_threads=None, det_shape=(512, 512)):
+                                    n_threads=None, det_shape=(512, 512), backend=eb.BACKEND_OLD,
+                                    decluster_cfg=None):
     """Compute a per-scan-position variance image from a .tpx3 file using
     eventem's Var processor - the variance-mode counterpart of
     calculate_nav_img_tpx3's vSTEM-based sum.
@@ -133,40 +119,12 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
     Returns:
         numpy.ndarray of shape (ny, nx) with float values.
     """
-    var = eventem.Var(repetitions)
-    if n_threads is not None:
-        var.n_threads = n_threads
-    var.b_cumulative = True
-    var.set_file(fn)
-    var.nx = scanSize[0]
-    var.ny = scanSize[1]
-    # See calculate_nav_img_tpx3's identical guard - only applied when it
-    # differs from what eventem itself already reports, since a genuine
-    # mismatch segfaults .run() instead of gracefully reshaping/cropping.
-    if det_shape != (var.detector_size_x, var.detector_size_y):
-        var.detector_size_x, var.detector_size_y = det_shape
-    var.inner_radius = r_in
-    var.outer_radius = r_out
-    var.set_dwell_time(dwellTime*1000)
-    if fn_pattern:
-        var.set_pattern_file(fn_pattern)
-    if offset:
-        # (x, y) passed through as-is - see calculate_nav_img_tpx3's
-        # identical fix; confirmed against real hardware that eventem wants
-        # (x, y) directly here too, not a [y, x] flip.
-        var.set_offset([offset[0], offset[1]])
-    with redirect_console_to_logger(logger, 'Loading tpx3'):
-        var.run()
-    # Unlike vSTEM.get_image() (a wrapper method - already returns a
-    # properly-shaped (ny, nx) array), Var_image is a raw property with no
-    # such wrapper and comes back flat (confirmed against real hardware
-    # data: a (512, 512) scan returned shape (262144,), i.e. nx*ny with no
-    # reshape applied internally) - reshaped here to match every other
-    # nav-image function's documented (ny, nx) return shape.
-    var_image = np.asarray(var.Var_image)
-    if var_image.ndim == 1:
-        var_image = var_image.reshape(scanSize[1], scanSize[0])
-    return var_image
+    return eb.run_var(
+        fn, scanSize, dwell_time_ns=(dwellTime * 1000 if dwellTime is not None else 0.0),
+        r_in=r_in, r_out=r_out, offset=offset, det_shape=det_shape, fn_pattern=fn_pattern,
+        repetitions=repetitions, backend=backend, decluster_cfg=decluster_cfg,
+        logger_=logger, n_threads=n_threads,
+    )
 
 def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum',
                                     max_workers=None):
