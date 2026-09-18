@@ -169,7 +169,7 @@ pe = pytest.importorskip('pyeventem')
 def test_pyeventem_run_sequential_when_n_threads_none():
     calls = []
     fake_pe = types.SimpleNamespace(
-        run=lambda source, sinks: calls.append(('run', source, sinks)),
+        run=lambda source, sinks, **kw: calls.append(('run', source, sinks)),
         run_parallel=lambda source, sinks, n_workers: calls.append(('run_parallel', n_workers)),
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=None, decluster_on=False)
@@ -179,7 +179,7 @@ def test_pyeventem_run_sequential_when_n_threads_none():
 def test_pyeventem_run_sequential_when_n_threads_is_one():
     calls = []
     fake_pe = types.SimpleNamespace(
-        run=lambda source, sinks: calls.append('run'),
+        run=lambda source, sinks, **kw: calls.append('run'),
         run_parallel=lambda source, sinks, n_workers: calls.append('run_parallel'),
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=1, decluster_on=False)
@@ -189,7 +189,7 @@ def test_pyeventem_run_sequential_when_n_threads_is_one():
 def test_pyeventem_run_parallel_when_multiple_threads_and_no_declustering():
     calls = []
     fake_pe = types.SimpleNamespace(
-        run=lambda source, sinks: calls.append('run'),
+        run=lambda source, sinks, **kw: calls.append('run'),
         run_parallel=lambda source, sinks, n_workers: calls.append(('run_parallel', n_workers)),
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=4, decluster_on=False)
@@ -202,7 +202,7 @@ def test_pyeventem_run_sequential_when_declustering_even_with_many_threads():
     # of n_threads (see eventem_backend._pyeventem_run's own docstring).
     calls = []
     fake_pe = types.SimpleNamespace(
-        run=lambda source, sinks: calls.append('run'),
+        run=lambda source, sinks, **kw: calls.append('run'),
         run_parallel=lambda source, sinks, n_workers: calls.append('run_parallel'),
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=8, decluster_on=True)
