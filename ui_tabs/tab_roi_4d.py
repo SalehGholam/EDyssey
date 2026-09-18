@@ -1464,6 +1464,18 @@ class Tab_ROI_on_4D(TabBase):
         # Refresh the Threshold preview for the new ROI, if active - a
         # no-op otherwise (see _on_threshold_control_changed).
         self._on_threshold_control_changed()
+        self._compute_roi_dp()
+
+    def _compute_roi_dp(self):
+        """(Re)compute the diffraction pattern for the currently drawn
+        rectangle ROI (self.roi) - factored out of on_release so "Recompute
+        DP" (button_computeEdgeDp, via _refresh_edge_mask) can trigger the
+        exact same computation again without redrawing the ROI, e.g. to
+        compare results after toggling declustering/backend settings."""
+        if self.roi is None:
+            qtw.QMessageBox.critical(self, 'No ROI',
+                'Hold Ctrl and drag on the navigation/test image to draw a scan-space ROI first.')
+            return
         if not hasattr(self, 'dwellTime'):
             try:
                 self.dwellTime = self.spinbox_dwellTime.value()
@@ -1480,7 +1492,7 @@ class Tab_ROI_on_4D(TabBase):
         worker.signals.result.connect(self.get_dp)
         worker.signals.error.connect(self._on_calculate_dp_failed)
         self.threadpool.start(worker)
-    
+
     def get_dp(self, result):
         """Slot for Worker_CalculateDP's result: store the rectangle-ROI
         diffraction pattern/nav crop and refresh the display."""
@@ -1511,10 +1523,8 @@ class Tab_ROI_on_4D(TabBase):
 
     def _on_calculate_dp_failed(self, traceback_text):
         """Slot for Worker_CalculateDP's error signal - previously
-        unconnected, so a failure here (e.g. selecting a backend that
-        can't compute this in-process, like New eventem - see
-        eventem_backend._new_eventem's own RuntimeError) was only visible
-        by reading the log console; this surfaces it immediately."""
+        unconnected, so any failure here was only visible by reading the
+        log console; this surfaces it immediately."""
         if self._cancelling:
             return
         self.logger.error('Failed to calculate diffraction pattern:\n%s', traceback_text)
@@ -2516,8 +2526,17 @@ class Tab_ROI_on_4D(TabBase):
         _preview_edge_mask, called right after a new mask is produced
         (segmentation finishes, a threshold is accepted) and by
         button_computeEdgeDp ("Compute") once the user is done tuning
-        Activate/Directional/Revert Mask/Kernel/Angle above."""
+        Activate/Directional/Revert Mask/Kernel/Angle above.
+
+        Falls back to recomputing the plain rectangle ROI (self.roi, drawn
+        via Ctrl+drag) when there's no SAM2/threshold mask at all - lets
+        "Recompute DP" also re-run a rectangle ROI already on screen (e.g.
+        after toggling declustering/backend settings) without needing to
+        redraw it or fake up a mask first."""
         if self.seg_mask is None or self._mask_source is None:
+            if self.roi is not None:
+                self._compute_roi_dp()
+                return
             qtw.QMessageBox.critical(self, 'No Mask',
                 'Segment an image (SAM2) or set a threshold (Summed DP from Threshold) '
                 'first - Edge Detection refines one of those, it doesn\'t create one.')
