@@ -38,6 +38,7 @@ from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
 from .display_settings import DisplaySettings
+from .analysis_backend_settings import AnalysisBackendSettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .pets2_dialog import Pets2ParamsDialog
 from .transposed_object_table import TransposedObjectTable
@@ -3352,6 +3353,7 @@ class Tab_SAM2(TabBase):
         # each object's own batch launches (see _launch_next_object_batch),
         # into that batch's own fresh temp dir - not eagerly here for
         # every object at once.
+        backend_settings = AnalysisBackendSettings.instance()
         self._obj_queue = deque()
         self._obj_task_specs = {}
         for idx in df.index:
@@ -3368,6 +3370,8 @@ class Tab_SAM2(TabBase):
                     'roi': [int(v) for v in df.loc[idx, 'rois'][i_fr]],
                     'dtype': dtype, 'scanSize': list(scanSize),
                     'fn_pattern': fn_pattern, 'det_shape': [shape_d_x, shape_d_y],
+                    'backend': backend_settings.backend,
+                    'decluster_cfg': backend_settings.decluster_cfg(),
                 })
             if specs:
                 self._obj_queue.append(idx)
@@ -3461,9 +3465,13 @@ class Tab_SAM2(TabBase):
         self.logger.info('Extracting DP for object %d, frame %d (current-frame check)...',
                          obj_id, imgNo)
         self.button_extractCurrentFrame.setDisabled(True)
+        backend_settings = AnalysisBackendSettings.instance()
         worker = WorkerThread_General(load_dp, 0, fn, roi=roi, mask=mask, dtype=dtype,
                                       scanSize=scanSize, fn_pattern=fn_pattern,
-                                      det_shape=self.get_detector_shape(fn))
+                                      det_shape=self.get_detector_shape(fn),
+                                      backend=backend_settings.backend,
+                                      decluster_cfg=backend_settings.decluster_cfg(),
+                                      n_threads=backend_settings.n_threads)
         worker.signals.results.connect(
             lambda dp, _idx, obj_id=obj_id, imgNo=imgNo: self._on_current_frame_dp(dp, obj_id, imgNo))
         worker.signals.error.connect(self._on_current_frame_dp_failed)

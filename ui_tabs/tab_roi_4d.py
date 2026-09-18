@@ -30,6 +30,7 @@ from dask.diagnostics import ProgressBar
 from .logging_utils import get_tab_logger, LogConsole
 from .base_tab import TabBase, resolve_hdf5_dtype, glob_ext_for_dtype, HDF5_EVENTEM_LABEL
 from .display_settings import DisplaySettings
+from .analysis_backend_settings import AnalysisBackendSettings
 from .threshold_dialog import ThresholdDialog
 from .smart_scan_dialog import SmartScanCheckDialog
 from .worker_thread import ProcessStderrBuffer, WorkerThread_General
@@ -1470,9 +1471,12 @@ class Tab_ROI_on_4D(TabBase):
                 self.dwellTime = None
         self._cancelling = False
         dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
+        backend_settings = AnalysisBackendSettings.instance()
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime, dtype,
                                     self.get_fn_pattern(), self.get_detector_shape(self.fn),
-                                    tab_name=self._tab_name)
+                                    tab_name=self._tab_name, backend=backend_settings.backend,
+                                    decluster_cfg=backend_settings.decluster_cfg(),
+                                    n_threads=backend_settings.n_threads)
         worker.signals.result.connect(self.get_dp)
         self.threadpool.start(worker)
     
@@ -2069,6 +2073,10 @@ class Tab_ROI_on_4D(TabBase):
         args += [self.get_fn_pattern() or '']
         args += [str(self.get_detector_shape(self.fn))]
         args += [mode]
+        backend_settings = AnalysisBackendSettings.instance()
+        args += [backend_settings.backend]
+        args += [json.dumps(backend_settings.decluster_cfg())]
+        args += [str(backend_settings.n_threads) if backend_settings.n_threads else 'None']
         program, arguments = worker_command('nav_img', args)
         self._process_vi = QProcess()
         self._process_vi.setProgram(program)
@@ -2152,10 +2160,13 @@ class Tab_ROI_on_4D(TabBase):
             return
         self.logger.info('Computing Sum DP (whole signal) for %s...', self.fn)
         self.button_sumDpWhole.setDisabled(True)
+        backend_settings = AnalysisBackendSettings.instance()
         worker = WorkerThread_General(
             io.get_dp, 0, self.fn, dtype=dtype, scanSize=self.scanSize,
             dwellTime=self.dwellTime, roi=None, logger=self.logger,
-            fn_pattern=self.get_fn_pattern(), det_shape=self.get_detector_shape(self.fn))
+            fn_pattern=self.get_fn_pattern(), det_shape=self.get_detector_shape(self.fn),
+            backend=backend_settings.backend, decluster_cfg=backend_settings.decluster_cfg(),
+            n_threads=backend_settings.n_threads)
         worker.signals.results.connect(self._on_sum_dp_whole_computed)
         worker.signals.error.connect(self._on_sum_dp_whole_failed)
         self.threadpool.start(worker)
@@ -2426,9 +2437,13 @@ class Tab_ROI_on_4D(TabBase):
         self.logger.info('Computing diffraction pattern summed over SAM2 mask...')
         dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         self._cancelling = False
+        backend_settings = AnalysisBackendSettings.instance()
         worker = Worker_CalculateDP_Mask(self.fn, self.seg_roi, mask, dtype,
                                          self.scanSize, self.dwellTime, self.get_fn_pattern(),
-                                         self.get_detector_shape(self.fn), tab_name=self._tab_name)
+                                         self.get_detector_shape(self.fn), tab_name=self._tab_name,
+                                         backend=backend_settings.backend,
+                                         decluster_cfg=backend_settings.decluster_cfg(),
+                                         n_threads=backend_settings.n_threads)
         worker.signals.result.connect(self.get_dp_from_mask)
         self.threadpool.start(worker)
 
@@ -2565,10 +2580,13 @@ class Tab_ROI_on_4D(TabBase):
         self.button_sumDpFromThreshold.setDisabled(True)
         self._cancelling = False
         self.button_cancel.setEnabled(True)
+        backend_settings = AnalysisBackendSettings.instance()
         worker = Worker_CalculateDP_Mask(self.fn, roi, mask, dtype, self.scanSize,
                                          self.dwellTime, self.get_fn_pattern(),
                                          self.get_detector_shape(self.fn), patch_mode=True,
-                                         tab_name=self._tab_name)
+                                         tab_name=self._tab_name, backend=backend_settings.backend,
+                                         decluster_cfg=backend_settings.decluster_cfg(),
+                                         n_threads=backend_settings.n_threads)
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -2846,7 +2864,7 @@ class Worker_CalculateDP(QRunnable):
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
     def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512),
-                tab_name='Tab_ROI_on_4D'):
+                tab_name='Tab_ROI_on_4D', backend='old_eventem', decluster_cfg=None, n_threads=None):
         super().__init__()
         self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
@@ -2858,6 +2876,13 @@ class Worker_CalculateDP(QRunnable):
         self.dtype = dtype
         self.fn_pattern = fn_pattern
         self.det_shape = det_shape
+        # Read on the GUI thread (this constructor), not later in run() (a
+        # QThreadPool worker thread) - AnalysisBackendSettings is a QObject,
+        # and its plain-attribute values could change out from under an
+        # in-flight run() if the user reopens the dialog mid-computation.
+        self.backend = backend
+        self.decluster_cfg = decluster_cfg
+        self.n_threads = n_threads
 
         self.signals = WorkerSignals()
 
@@ -2874,7 +2899,8 @@ class Worker_CalculateDP(QRunnable):
                 roi_obj = io.load_tpx3(self.fn, roi=self.roi, scanSize=self.scanSize,
                                        dwellTime=self.dwellTime, fn_pattern=self.fn_pattern,
                                        logger=self.logger, get_4d=False,
-                                       det_shape=self.det_shape)
+                                       det_shape=self.det_shape, backend=self.backend,
+                                       decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
                 dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(
                     self.det_shape[1], self.det_shape[0])
                 navImg_cut = np.array(roi_obj.Roi_scan_image).reshape(h, w)
@@ -2914,7 +2940,8 @@ class Worker_CalculateDP_Mask(QRunnable):
     covering its full (potentially huge/scattered) bounding box - see
     load_dp/load_tpx3_patches in worker_extract_frame.py."""
     def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
-                det_shape=(512, 512), patch_mode=False, tab_name='Tab_ROI_on_4D'):
+                det_shape=(512, 512), patch_mode=False, tab_name='Tab_ROI_on_4D',
+                backend='old_eventem', decluster_cfg=None, n_threads=None):
         super().__init__()
         self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
@@ -2928,6 +2955,11 @@ class Worker_CalculateDP_Mask(QRunnable):
         self.fn_pattern = fn_pattern
         self.det_shape = det_shape
         self.patch_mode = patch_mode
+        # Read on the GUI thread (this constructor) - see Worker_CalculateDP's
+        # identical comment for why.
+        self.backend = backend
+        self.decluster_cfg = decluster_cfg
+        self.n_threads = n_threads
         self.signals = WorkerSignals()
 
     def run(self):
@@ -2935,7 +2967,8 @@ class Worker_CalculateDP_Mask(QRunnable):
             dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
                         scanSize=self.scanSize, dwellTime=self.dwellTime,
                         fn_pattern=self.fn_pattern, det_shape=self.det_shape,
-                        patch_mode=self.patch_mode)
+                        patch_mode=self.patch_mode, backend=self.backend,
+                        decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:

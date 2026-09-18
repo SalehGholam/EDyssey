@@ -418,14 +418,14 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
 
 def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 512),
                     fn_pattern=None, repetitions=1, backend=BACKEND_OLD,
-                    decluster_cfg=None, logger_=None, n_threads=None):
+                    decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None):
     """Arbitrary-mask ROI extraction (ROI Tracker / SAM2's masked/patched
     3DED extraction). ``mask``: 2-D array, shape (ny, nx), truthy = included
     scan position. Returns a :class:`RoiResult` (``.Roi_scan_image`` here is
     effectively meaningless - one accumulated diffraction pattern for the
     whole mask, not a real per-pixel layout - callers of this path only
     ever use ``.Roi_diffraction_pattern``; included anyway for a uniform
-    return type with run_roi)."""
+    return type with run_roi). ``bitdepth``: see run_roi's docstring."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     mask = np.asarray(mask)
@@ -435,6 +435,8 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=False)
         if n_threads is not None:
             roi_obj.n_threads = n_threads
+        if bitdepth is not None:
+            roi_obj.set_bitdepth(bitdepth)
         roi_obj.nx = scan_size[0]
         roi_obj.ny = scan_size[1]
         _set_detector_size(roi_obj, backend, det_shape)
@@ -452,7 +454,8 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
 
     pe = _pyeventem()
     source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
-    sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask)
+    roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
+    sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask, **roi_kwargs)
     if decluster_on:
         source = pe.decluster_source(source, _make_declusterer(decluster_cfg))
     _pyeventem_run(pe, source, sink, n_threads, decluster_on)

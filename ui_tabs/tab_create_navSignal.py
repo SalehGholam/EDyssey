@@ -31,6 +31,7 @@ from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
 from .display_settings import DisplaySettings
+from .analysis_backend_settings import AnalysisBackendSettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
 from .worker_launch import worker_command
@@ -1272,16 +1273,21 @@ class Tab_Create_NavSignal(TabBase):
         det_shape = self.get_detector_shape(fn)
         mode = self.combo_virtualMode.currentText().lower()
         self.logger.info('Testing navigation image for %s (mode=%s)...', fn, mode)
+        backend_settings = AnalysisBackendSettings.instance()
         if self.checkbox_useMask.isChecked():
             worker = WorkerThread_General(
                 io.calculate_nav_img_masked, 0, fn, dtype=dtype, scanSize=scanSize,
                 dwellTime=dwellTime, detectors=self.get_active_detectors(), mode=mode,
-                logger=self.logger, fn_pattern=fn_pattern, det_shape=det_shape)
+                logger=self.logger, fn_pattern=fn_pattern, det_shape=det_shape,
+                n_threads=backend_settings.n_threads, backend=backend_settings.backend,
+                decluster_cfg=backend_settings.decluster_cfg())
         else:
             worker = WorkerThread_General(io.calculate_nav_img, 0, fn, dtype=dtype,
                                           scanSize=scanSize, dwellTime=dwellTime, mode=mode,
                                           logger=self.logger, fn_pattern=fn_pattern,
-                                          det_shape=det_shape)
+                                          det_shape=det_shape, n_threads=backend_settings.n_threads,
+                                          backend=backend_settings.backend,
+                                          decluster_cfg=backend_settings.decluster_cfg())
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
         QThreadPool.globalInstance().start(worker)
 
@@ -1331,10 +1337,14 @@ class Tab_Create_NavSignal(TabBase):
         self.logger.info('Computing Summed DP (summed diffraction pattern) from %s...', fn)
         self.button_computeSumDp.setDisabled(True)
         self._sum_dp_tic = perf_counter()
+        backend_settings = AnalysisBackendSettings.instance()
         worker = WorkerThread_General(io.get_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self._get_dwell_time_for(fn), roi=None,
                                       logger=self.logger, fn_pattern=self._get_fn_pattern_for(fn),
-                                      det_shape=self.get_detector_shape(fn))
+                                      det_shape=self.get_detector_shape(fn),
+                                      backend=backend_settings.backend,
+                                      decluster_cfg=backend_settings.decluster_cfg(),
+                                      n_threads=backend_settings.n_threads)
         worker.signals.results.connect(self._on_sum_dp_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1366,11 +1376,15 @@ class Tab_Create_NavSignal(TabBase):
         self.button_computeSumDp.setDisabled(True)
         self.button_sumDpFromRoi.setDisabled(True)
         self._sum_dp_tic = perf_counter()
+        backend_settings = AnalysisBackendSettings.instance()
         worker = WorkerThread_General(io.get_dp, 0, fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=self._get_dwell_time_for(fn),
                                       roi=self.roi_navsig, logger=self.logger,
                                       fn_pattern=self._get_fn_pattern_for(fn),
-                                      det_shape=self.get_detector_shape(fn))
+                                      det_shape=self.get_detector_shape(fn),
+                                      backend=backend_settings.backend,
+                                      decluster_cfg=backend_settings.decluster_cfg(),
+                                      n_threads=backend_settings.n_threads)
         worker.signals.results.connect(self._on_sum_dp_from_roi_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -2170,6 +2184,7 @@ class Tab_Create_NavSignal(TabBase):
         # .tpx3) - dtype itself is already uniform across this whole batch,
         # so one lookup from the first file covers the batch.
         det_shape = self.get_detector_shape(fns[0])
+        backend_settings = AnalysisBackendSettings.instance()
         tasks = []
         for i, fn in enumerate(fns):
             fn_pattern = fns_pattern[i] if fns_pattern is not None else None
@@ -2178,6 +2193,8 @@ class Tab_Create_NavSignal(TabBase):
                 'scanSize': list(scanSize) if scanSize is not None else None,
                 'dwellTime': dwellTime, 'detectors': mask_params,
                 'fn_pattern': fn_pattern, 'det_shape': list(det_shape), 'mode': mode,
+                'backend': backend_settings.backend,
+                'decluster_cfg': backend_settings.decluster_cfg(),
             })
         tasks_path = os.path.join(self._navimg_temp_dir, 'tasks.json')
         wpu.write_tasks_json(tasks_path, tasks)

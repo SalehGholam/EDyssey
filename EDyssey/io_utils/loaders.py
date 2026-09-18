@@ -389,7 +389,8 @@ def get_det_size(fn, dtype=None):
     return det_shape
 #%% dp related
 def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
-           logger=None, mask=None, dwellTime=1, det_shape=(512, 512)):
+           logger=None, mask=None, dwellTime=1, det_shape=(512, 512),
+           backend=eb.BACKEND_OLD, decluster_cfg=None, n_threads=None):
     if dtype is None:
         dtype = os.path.splitext(fn)[1]
     if dtype not in ('.tpx3', '.hspy', '.zspy', '.mib', '.hdf5', '.hdf5_eventem', '.blo'):
@@ -400,11 +401,13 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
     if dtype == '.tpx3':
         if mask is None and roi is None:
             dp = get_dp_tpx3_full(fn, scanSize=scanSize, fn_pattern=fn_pattern,
-                                  det_shape=det_shape)
+                                  det_shape=det_shape, backend=backend,
+                                  decluster_cfg=decluster_cfg, n_threads=n_threads)
         elif mask is None:
             dp = load_tpx3(fn, roi=roi, scanSize=scanSize, dwellTime=dwellTime,
                            fn_pattern=fn_pattern, logger=logger, get_4d=False,
-                           det_shape=det_shape)
+                           det_shape=det_shape, backend=backend,
+                           decluster_cfg=decluster_cfg, n_threads=n_threads)
             dp = np.array(dp.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
         else:
             if mask.shape != scanSize:
@@ -414,7 +417,8 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
                 mask = mask_temp
             dp = load_tpx3(fn, roi=None, scanSize=scanSize, dwellTime=dwellTime,
                            fn_pattern=fn_pattern, logger=logger, get_4d=False,
-                           mask=mask, det_shape=det_shape)
+                           mask=mask, det_shape=det_shape, backend=backend,
+                           decluster_cfg=decluster_cfg, n_threads=n_threads)
             dp = np.array(dp.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
     
     if dtype in ['.hspy', '.zspy', '.mib', '.blo']:
@@ -451,11 +455,11 @@ def get_dp(fn, dtype=None, roi=None, scanSize=None, fn_pattern=None,
 
 def get_dp_tpx3_full(fn_tpx3, scanSize, dwellTime=1, fn_pattern=None,
                      repititions=1, logger=None, det_shape=(512, 512),
-                     backend=eb.BACKEND_OLD, decluster_cfg=None):
+                     backend=eb.BACKEND_OLD, decluster_cfg=None, n_threads=None):
     dp = eb.run_pacbed(
         fn_tpx3, scanSize, dwell_time_ns=dwellTime*1000, det_shape=det_shape,
         fn_pattern=fn_pattern, repetitions=repititions, backend=backend,
-        decluster_cfg=decluster_cfg, logger_=logger,
+        decluster_cfg=decluster_cfg, logger_=logger, n_threads=n_threads,
     )
     return dp
 

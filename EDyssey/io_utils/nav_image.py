@@ -230,7 +230,7 @@ def calculate_nav_img_hdf5_generic(fn, scanSize, det_mask=None, fn_pattern=None,
 
 def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
                       n_threads=None, fn_pattern=None, det_shape=(512, 512), mode='sum',
-                      max_workers=None):
+                      max_workers=None, backend=eb.BACKEND_OLD, decluster_cfg=None):
     """Dispatch navigation image computation to the format-specific function.
 
     Args:
@@ -253,6 +253,11 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             ValueError for mode='variance' there.
         max_workers: `.hdf5_eventem` only - see calculate_nav_img_hdf5_eventem's
             docstring.
+        backend: one of eventem_backend.BACKENDS - `.tpx3` only (default: old
+            eventem, preserving this function's prior behavior exactly for
+            any caller that doesn't pass this).
+        decluster_cfg: optional eventem_backend decluster_cfg dict - `.tpx3`
+            only. None = declustering off.
 
     Returns:
         numpy.ndarray of shape (ny, nx) representing the navigation image.
@@ -277,11 +282,13 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
         if mode == 'variance':
             nav_img = calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                                        logger=logger, n_threads=n_threads,
-                                                       det_shape=det_shape)
+                                                       det_shape=det_shape, backend=backend,
+                                                       decluster_cfg=decluster_cfg)
         else:
             nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                              logger=logger, n_threads=n_threads,
-                                             det_shape=det_shape)
+                                             det_shape=det_shape, backend=backend,
+                                             decluster_cfg=decluster_cfg)
     elif dtype == '.hdf5_eventem':
         nav_img = calculate_nav_img_hdf5_eventem(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode,
                                                   max_workers=max_workers)
@@ -341,7 +348,8 @@ def create_virtual_detector_multi(shape, detectors):
 
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detectors=None,
                              logger=None, n_threads=None, fn_pattern=None,
-                             det_shape=(512, 512), mode='sum', max_workers=None):
+                             det_shape=(512, 512), mode='sum', max_workers=None,
+                             backend=eb.BACKEND_OLD, decluster_cfg=None):
     """Compute a navigation image through one or several virtual detectors -
     the masked counterpart of `calculate_nav_img`.
 
@@ -399,7 +407,8 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
             return calculate_nav_img_variance_tpx3(
                 fn, scanSize, dwellTime, r_in=det.get('r_in', 0), r_out=det['r_out'],
                 offset=det['center'], fn_pattern=fn_pattern, logger=logger,
-                n_threads=n_threads, det_shape=det_shape)
+                n_threads=n_threads, det_shape=det_shape, backend=backend,
+                decluster_cfg=decluster_cfg)
         # eventem's vSTEM sums several detectors natively - no mask array
         # needed, just per-detector radius/center lists (see
         # calculate_nav_img_tpx3's docstring for why `offset` here is
@@ -409,7 +418,8 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         offset = [d['center'] for d in detectors]
         return calculate_nav_img_tpx3(fn, scanSize, dwellTime, r_in=r_in, r_out=r_out,
                                       offset=offset, fn_pattern=fn_pattern, logger=logger,
-                                      n_threads=n_threads, det_shape=det_shape)
+                                      n_threads=n_threads, det_shape=det_shape, backend=backend,
+                                      decluster_cfg=decluster_cfg)
 
     if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo', '.hdf5_eventem']:
         det_x, det_y = get_det_size(fn, dtype)

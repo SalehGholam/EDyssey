@@ -70,33 +70,41 @@ def calculate_nav_img_core(task):
     fn_pattern = task.get('fn_pattern') or None
     mode = task.get('mode') or 'sum'
     detectors = task.get('detectors')
+    backend = task.get('backend') or 'old_eventem'
+    decluster_cfg = task.get('decluster_cfg')
 
-    # n_threads=1 / max_workers=1: eventem auto-sizes its own internal thread
+    # n_threads: defaults to 1 - eventem auto-sizes its own internal thread
     # pool to the whole machine per instance unless told otherwise, and
     # hdf5_eventem_layout's chunk-processing thread pool auto-sizes off the
     # host's CPU/RAM the same way - fine for a single call, but this runs as
     # one of several concurrent ProcessPoolExecutor workers within the same
     # batch driver (or, for calculate_nav_img_worker below, one of several
     # concurrent subprocesses), each of which would otherwise also try to
-    # claim the whole machine's threads/RAM for itself. Pinning each worker
-    # to 1 makes total concurrency match what the user actually configured
-    # (spinbox_cpuCores).
+    # claim the whole machine's threads/RAM for itself. worker_nav_img_batch.py's
+    # tasks never set 'n_threads', so this pinning to 1 (matching total
+    # concurrency to what the user configured via spinbox_cpuCores) is
+    # unaffected by the Analysis Backend dialog's own CPU-cores setting -
+    # only the single-file entry point below (calculate_nav_img_worker, not
+    # part of any pool) actually forwards that setting through 'n_threads'.
+    n_threads = task.get('n_threads', 1)
     if detectors:
         detectors = [dict(d, center=tuple(d['center'])) for d in detectors]
         result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                              dwellTime=dwellTime, detectors=detectors,
-                                             n_threads=1, fn_pattern=fn_pattern,
-                                             det_shape=det_shape, mode=mode, max_workers=1)
+                                             n_threads=n_threads, fn_pattern=fn_pattern,
+                                             det_shape=det_shape, mode=mode, max_workers=1,
+                                             backend=backend, decluster_cfg=decluster_cfg)
     else:
         result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
-                                      dwellTime=dwellTime, n_threads=1,
+                                      dwellTime=dwellTime, n_threads=n_threads,
                                       fn_pattern=fn_pattern, det_shape=det_shape, mode=mode,
-                                      max_workers=1)
+                                      max_workers=1, backend=backend, decluster_cfg=decluster_cfg)
     return result
 
 
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
-                             detectors_json=None, fn_pattern=None, det_shape=None, mode='sum'):
+                             detectors_json=None, fn_pattern=None, det_shape=None, mode='sum',
+                             backend=None, decluster_cfg_json=None, n_threads=None):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
     print the saved path to stdout - instead of the array itself, base64+
     pickle-encoded. Transferring a multi-MB encoded array through the
@@ -135,6 +143,13 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
             `loaders._load_mib_smart_scan`.
         mode: 'sum' (default) or 'variance' - see
             EDyssey.io_utils.nav_image.calculate_nav_img_hdf5_eventem's docstring.
+        backend: Optional eventem_backend.BACKENDS value as a string (None/
+            'None'/'' = old eventem, preserving prior behavior).
+        decluster_cfg_json: Optional JSON-encoded eventem_backend decluster_cfg
+            dict, as a string (None/'None'/'' = declustering off).
+        n_threads: Optional CPU-core-count override, as a string (None/
+            'None'/'' = pin to 1, the prior/default behavior for this
+            single-file, not-part-of-a-pool entry point).
     """
     try:
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
@@ -149,10 +164,16 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
             detectors = json.loads(detectors_json)
             for d in detectors:
                 d['center'] = tuple(d['center'])
+        backend = None if backend in (None, '', 'None') else backend
+        decluster_cfg = (json.loads(decluster_cfg_json)
+                         if decluster_cfg_json not in (None, '', 'None') else None)
+        n_threads = None if n_threads in (None, '', 'None') else int(n_threads)
 
         task = {'fn': fn, 'dtype': dtype, 'scanSize': scanSize, 'dwellTime': dwellTime,
                'detectors': detectors, 'fn_pattern': fn_pattern, 'det_shape': det_shape,
-               'mode': mode}
+               'mode': mode, 'backend': backend, 'decluster_cfg': decluster_cfg}
+        if n_threads is not None:
+            task['n_threads'] = n_threads
         result = calculate_nav_img_core(task)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')

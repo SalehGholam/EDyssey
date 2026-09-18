@@ -6,6 +6,7 @@ Created on Tue May  6 22:47:49 2025
 """
 
 import sys
+import json
 import h5py
 from dask.distributed import Client, LocalCluster
 import os
@@ -21,8 +22,8 @@ main_path = os.path.dirname(file_path)  # workers/
 eventem_path = os.path.join(os.path.dirname(main_path), 'EDyssey', 'io_utils')
 sys.path.append(eventem_path)
 # os.chdir()
-import eventem
 import hdf5_eventem_layout
+import io_utils_ui as io  # re-exports EDyssey.io_utils.eventem_backend as io.eb - see io_utils_ui's docstring
 from hyperspy.api import signals, load
 # from EDyssey.io_utils import load_signal
 import warnings
@@ -46,7 +47,10 @@ def extract_3ded_mask_core(task):
             or None), 'fn_pattern' (optional smart-scan pattern-file path
             for this frame), 'det_shape' (optional [det_x, det_y]/
             (det_x, det_y) - .tpx3 only, see load_tpx3's docstring; None
-            falls back to (512, 512)).
+            falls back to (512, 512)), 'backend' (optional
+            eventem_backend.BACKENDS value - .tpx3 only, None = old
+            eventem), 'decluster_cfg' (optional eventem_backend
+            decluster_cfg dict - .tpx3 only, None = declustering off).
 
     Returns:
         numpy.ndarray - the masked/summed diffraction pattern.
@@ -60,12 +64,18 @@ def extract_3ded_mask_core(task):
     fn_pattern = task.get('fn_pattern') or None
     det_shape = task.get('det_shape')
     det_shape = tuple(det_shape) if det_shape is not None else None
+    # n_threads: defaults to 1 (not passed through from AnalysisBackendSettings)
+    # since this always runs as one of several concurrent pool workers - see
+    # load_tpx3's docstring / worker_nav_img.py's identical convention.
     return load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize,
-                   fn_pattern=fn_pattern, det_shape=det_shape)
+                   fn_pattern=fn_pattern, det_shape=det_shape,
+                   backend=task.get('backend'), decluster_cfg=task.get('decluster_cfg'),
+                   n_threads=task.get('n_threads', 1))
 
 
 def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_pattern=None,
-                                   det_shape=None):
+                                   det_shape=None, backend=None, decluster_cfg_json=None,
+                                   n_threads=None):
     """Extract a single 3DED diffraction pattern from one 4D-STEM frame using a binary mask.
 
     Single-task CLI entry point - no longer used by ROI Tracker/SAM2's own
@@ -90,6 +100,13 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
             (empty string/None for a normal dense frame) - see `load_tpx3`/`load_mib` below.
         det_shape: Optional `'(det_x, det_y)'` string - `.tpx3` only, see
             `load_tpx3`'s docstring (None/'None' falls back to (512, 512)).
+        backend: Optional eventem_backend.BACKENDS value as a string (None/
+            'None'/'' = old eventem).
+        decluster_cfg_json: Optional JSON-encoded eventem_backend
+            decluster_cfg dict, as a string (None/'None'/'' = declustering off).
+        n_threads: Optional CPU-core-count override, as a string (None/
+            'None'/'' = pin to 1, the prior/default behavior for this
+            single-task, not-part-of-a-pool entry point).
     """
     try:
         scanSize_t = tuple(map(int, scanSize.strip("()").split(",")))
@@ -97,9 +114,16 @@ def extract_3ded_mask_single_frame(fn, roi, mask_path, dtype, scanSize, i_c, fn_
         fn_pattern = fn_pattern or None
         det_shape_t = (tuple(map(int, det_shape.strip("()").split(",")))
                       if det_shape not in (None, '', 'None') else None)
+        backend = None if backend in (None, '', 'None') else backend
+        decluster_cfg = (json.loads(decluster_cfg_json)
+                         if decluster_cfg_json not in (None, '', 'None') else None)
+        n_threads_t = None if n_threads in (None, '', 'None') else int(n_threads)
 
         task = {'fn': fn, 'roi': roi_t, 'mask_path': mask_path, 'dtype': dtype,
-               'scanSize': scanSize_t, 'fn_pattern': fn_pattern, 'det_shape': det_shape_t}
+               'scanSize': scanSize_t, 'fn_pattern': fn_pattern, 'det_shape': det_shape_t,
+               'backend': backend, 'decluster_cfg': decluster_cfg}
+        if n_threads_t is not None:
+            task['n_threads'] = n_threads_t
         dp = extract_3ded_mask_core(task)
         # Serialize result to base64 string and print it to stdout
         serialized = base64.b64encode(pickle.dumps((dp, i_c))).decode('utf-8')
@@ -151,7 +175,8 @@ def load_dp(fn, **kwargs):
         result = load_mib(fn, **kwargs)
     return result
 
-def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
+def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_shape=None,
+              backend=None, decluster_cfg=None, n_threads=None, **kwargs):
     """Load a .tpx3 file and return the diffraction pattern summed over
     mask-True scan pixels.
 
@@ -187,39 +212,37 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
             value, it segfaults the whole process on .run(). Also used to
             reshape the result, instead of `scanSize` (a real acquisition's
             detector and scan dimensions usually differ).
+        backend: one of eventem_backend.BACKENDS (None = old eventem,
+            preserving this function's prior behavior exactly for any
+            caller that doesn't pass this).
+        decluster_cfg: optional eventem_backend decluster_cfg dict. None =
+            declustering off.
+        n_threads: optional override for eventem/pyeventem's own internal
+            thread pool - defaults to 1 (not None) here, unlike
+            eventem_backend.run_*'s own default, since this worker always
+            runs as one of several concurrent pool workers (see
+            worker_extract_frame_batch.py) - leaving it unset would
+            oversubscribe the machine exactly like the equivalent
+            worker_nav_img.py comment explains.
 
     Returns:
         numpy.ndarray of shape (det_y, det_x).
     """
     if det_shape is None:
         det_shape = (512, 512)
-    repetitions = 1
-    bitDepth = 16
+    if n_threads is None:
+        n_threads = 1
+    backend = backend or io.eb.BACKEND_OLD
 
-    # eventem auto-sizes its own internal thread pool to the whole machine
-    # per instance unless told otherwise - this script always runs as one
-    # of several concurrent pool workers, so leaving that unset would
-    # oversubscribe the machine (N processes x full-core-count threads
-    # each) exactly like the same bug in worker_nav_img.py's use of
-    # io_utils_ui.py's eventem call sites.
     if fn_pattern is None:
-        # Normal dense-raster scan: eventem's own mask-based ROI works
-        # correctly here, so apply `mask` directly, server-side, in one
-        # call - no small ROI or Python-side masking needed at all.
-        roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=False)
-        roi_obj.n_threads = 1
-        roi_obj.set_file(fn)
-        roi_obj.set_dwell_time(dwellTime * 1000)
-        roi_obj.set_bitdepth(bitDepth)
-        roi_obj.nx = scanSize[0]
-        roi_obj.ny = scanSize[1]
-        if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
-            roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
-        roi_obj.set_roi_mask([mask.flatten()])
-        roi_obj.run()
-        dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
-        roi_obj.close_socket()
-        return dp
+        # Normal dense-raster scan: eventem/pyeventem's own mask-based ROI
+        # works correctly here, so apply `mask` directly, server-side, in
+        # one call - no small ROI or Python-side masking needed at all.
+        result = io.eb.run_roi_masked(
+            fn, scanSize, mask, dwell_time_ns=dwellTime * 1000, det_shape=det_shape,
+            backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads, bitdepth=16,
+        )
+        return np.asarray(result.Roi_diffraction_pattern).reshape(det_shape[1], det_shape[0])
 
     # TEMPORARY WORKAROUND (smart-scanned only): eventem.Roi.set_roi_mask()
     # is not actually implemented on the eventem side yet for smart-scanned
@@ -234,30 +257,20 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
     # back to set_roi_mask() once that's genuinely supported upstream for
     # smart-scanned data too.
     x, y, w, h = roi
-    roi_obj = eventem.Roi(repetitions=repetitions, extract_4D=True)
-    roi_obj.n_threads = 1
-    roi_obj.set_file(fn)
-    roi_obj.set_dwell_time(dwellTime * 1000)
-    roi_obj.set_bitdepth(bitDepth)
-    roi_obj.nx = scanSize[0]
-    roi_obj.ny = scanSize[1]
-    # Only actually applied when it differs from what eventem itself already
-    # reports (reflecting the real file's own hardware layout) - a genuine
-    # mismatch segfaults .run() instead of gracefully reshaping/cropping.
-    if det_shape != (roi_obj.detector_size_x, roi_obj.detector_size_y):
-        roi_obj.detector_size_x, roi_obj.detector_size_y = det_shape
-    roi_obj.set_pattern_file(fn_pattern)
-    roi_obj.set_roi(x=x, y=y, width=w, height=h)
-    roi_obj.run()
-    s = np.asarray(roi_obj.get_4D())
-    roi_obj.close_socket()
+    result = io.eb.run_roi(
+        fn, scanSize, roi_rect=(x, y, w, h), dwell_time_ns=dwellTime * 1000, det_shape=det_shape,
+        fn_pattern=fn_pattern, get_4d=True, backend=backend, decluster_cfg=decluster_cfg,
+        n_threads=n_threads,
+    )
+    s = np.asarray(result.get_4D())
 
     mask_crop = mask[y:y+h, x:x+w]
     s = s.reshape(-1, *s.shape[-2:])
     dp = s[np.where(mask_crop.flatten() == 1)[0]].sum(axis=0)
     return dp
 
-def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shape=None, **kwargs):
+def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shape=None,
+                      backend=None, decluster_cfg=None, n_threads=None, **kwargs):
     """Sum diffraction patterns over an arbitrary (possibly large/scattered)
     .tpx3 mask, for a *smart-scanned* caller with no small ROI of their own
     to begin with - "Summed DP from Threshold" is the only one today, since
@@ -303,7 +316,8 @@ def load_tpx3_patches(fn, mask, scanSize, dwellTime=1, fn_pattern=None, det_shap
                     int(x_sl.stop - x_sl.start), int(y_sl.stop - y_sl.start))
         patch_mask = labeled == patch_id
         dp_total += load_tpx3(fn, mask=patch_mask, scanSize=scanSize, roi=patch_roi,
-                              dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape)
+                              dwellTime=dwellTime, fn_pattern=fn_pattern, det_shape=det_shape,
+                              backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads)
     return dp_total
 
 def load_hdf5_eventem(fn, roi, mask, scanSize=None, max_eager_frames=10000, **kwargs):
