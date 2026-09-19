@@ -113,6 +113,33 @@ declustering). Old eventem is the default and needs nothing extra.
   For reference, old C++ eventem on the same workloads: 3.1s ROI,
   6.6s vSTEM, no declustering support at all.
 
+### 3c. Indexing .tpx3 folders ahead of time (optional, recommended)
+
+Before pyeventem can decode anything it has to scan the whole file once for
+line triggers and ToA rollovers - ~3.5s for a 3.2GB acquisition. It caches
+that in memory, so within one EDyssey session you pay it once per file; and
+it now also saves it beside the acquisition as a small `.tpx3scan` file
+(~3.4MB, about 0.1% of the data), so **the next session starts warm too**.
+Nothing to switch on - EDyssey writes one the first time it fully analyzes
+a file, and uses it automatically afterwards.
+
+To do a whole folder up front, e.g. overnight before a session:
+
+```
+python -m pyeventem.tools.build_index "C:/path/to/your/tpx3 folder"
+```
+
+It takes scan size/dwell time from the folder's `comment.txt` when there is
+one (`--nx`/`--ny`/`--dwell-time` override it), skips files that already
+have a current index, and does several files at once (`--jobs`, default 4 -
+this is disk-bound, so more isn't necessarily faster). Measured on a 9-file,
+29GB folder: 27s. Afterwards, opening any of those files and pulling a ROI
+takes ~0.7s instead of ~4s.
+
+`.tpx3scan` files are pure cache - safe to delete, rebuilt on demand, and
+automatically ignored if the `.tpx3` beside them changes. `PYEVENTEM_NO_SIDECAR=1`
+turns the mechanism off entirely if you ever want to rule it out.
+
 ### 4. ffmpeg (optional, for video export)
 
 The clip-export functions (`EDyssey/io_utils/video.py`) pipe frames to
