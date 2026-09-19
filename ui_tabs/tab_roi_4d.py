@@ -3003,7 +3003,8 @@ class Worker_CalculateDP_Mask(QRunnable):
                         scanSize=self.scanSize, dwellTime=self.dwellTime,
                         fn_pattern=self.fn_pattern, det_shape=self.det_shape,
                         patch_mode=self.patch_mode, backend=self.backend,
-                        decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
+                        decluster_cfg=self.decluster_cfg, n_threads=self.n_threads,
+                        logger=self.logger)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:

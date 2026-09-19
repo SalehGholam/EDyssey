@@ -1709,17 +1709,33 @@ class Tab_Create_NavSignal(TabBase):
             'Computing Summed DP from %s-thresholded scan positions of %s...', method, fn)
         self.button_sumDpFromThreshold.setDisabled(True)
         self._sum_dp_tic = perf_counter()
+        backend_settings = AnalysisBackendSettings.instance()
         worker = WorkerThread_General(self._sum_dp_from_mask_worker, 0, fn, dtype, scanSize,
-                                      mask, fn_pattern, det_shape, self.logger)
+                                      mask, fn_pattern, det_shape, self.logger,
+                                      backend_settings.backend, backend_settings.decluster_cfg(),
+                                      backend_settings.n_threads)
         worker.signals.results.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
 
     @staticmethod
     def _sum_dp_from_mask_worker(fn, dtype, scanSize, mask, fn_pattern=None,
-                                 det_shape=(512, 512), logger=None):
+                                 det_shape=(512, 512), logger=None, backend=None,
+                                 decluster_cfg=None, n_threads=None):
         """Worker for compute_sum_dp_from_threshold: crop to `mask`'s bounding
-        box and sum diffraction patterns only at the masked scan positions."""
+        box and sum diffraction patterns only at the masked scan positions.
+
+        `backend`/`decluster_cfg`/`n_threads` used to be left unpassed
+        (load_dp/load_tpx3 defaulting to old eventem, single-threaded, no
+        declustering) even though every other DP computation in this tab
+        reads them from AnalysisBackendSettings - selecting New eventem/
+        pyeventem or turning declustering on had no effect here at all.
+        `logger` was accepted but only ever wired into the dask
+        LoggingProgressBar branch below, not into load_dp itself, so
+        eventem/pyeventem's own progress never reached the Qt log console
+        for this button specifically (a multi-minute declustered run looked
+        hung, matching Worker_CalculateDP_Mask's identical, separately
+        fixed gap in tab_roi_4d.py)."""
         rows = np.any(mask, axis=1)
         cols = np.any(mask, axis=0)
         y_idx = np.where(rows)[0]
@@ -1728,7 +1744,9 @@ class Tab_Create_NavSignal(TabBase):
         x0, x1 = int(x_idx[0]), int(x_idx[-1])
         roi = (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
         dp = load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize, dwellTime=1,
-                    fn_pattern=fn_pattern, det_shape=det_shape)
+                    fn_pattern=fn_pattern, det_shape=det_shape, logger=logger,
+                    backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+                    patch_mode=True)
         if hasattr(dp, 'compute'):
             with io.LoggingProgressBar(logger, 'Thresholded Summed DP'):
                 dp = dp.compute()
