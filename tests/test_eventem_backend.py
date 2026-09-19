@@ -166,15 +166,22 @@ def test_roi_result_get_4d_with_data():
 pe = pytest.importorskip('pyeventem')
 
 
-def test_pyeventem_run_sequential_when_n_threads_none():
+def test_pyeventem_run_parallel_when_n_threads_is_auto(monkeypatch):
+    """"Auto" (None) used to dispatch to the sequential path. It now
+    resolves to a worker count, matching what Auto means for the C++
+    backends - and mattering much more than it used to, since only the
+    parallel path restricts the decode to the ROI's word range."""
+    monkeypatch.setattr(eb.os, 'cpu_count', lambda: 16)
     calls = []
     fake_pe = types.SimpleNamespace(
         run=lambda source, sinks, **kw: calls.append(('run', source, sinks)),
-        run_parallel=lambda source, sinks, **kw: calls.append(('run_parallel', kw)),
+        run_parallel=lambda source, sinks, **kw: calls.append(('run_parallel', source, sinks, kw)),
         decluster_source=lambda source, declusterer: source,
     )
     eb._pyeventem_run(fake_pe, 'SRC', 'SINK', n_threads=None, decluster_on=False)
-    assert calls == [('run', 'SRC', ['SINK'])]
+    assert calls == [('run_parallel', 'SRC', ['SINK'],
+                      {'n_workers': eb._PYEVENTEM_AUTO_WORKERS,
+                       'declusterer': None, 'progress': True})]
 
 
 def test_pyeventem_run_sequential_when_n_threads_is_one():
@@ -385,3 +392,26 @@ def test_run_new_eventem_via_subprocess_raises_on_nonzero_exit(monkeypatch, tmp_
     _patch_subprocess_plumbing(monkeypatch, tmp_path, returncode=1, tail_lines=['Traceback...', 'RuntimeError: boom'])
     with pytest.raises(RuntimeError, match='boom'):
         eb._run_new_eventem_via_subprocess('run_pacbed', {'fn': 'f.tpx3', 'scan_size': [512, 512]})
+
+
+def test_pyeventem_workers_resolves_auto(monkeypatch):
+    """None/0 is the settings dialog's "Auto". It used to fall through to
+    pyeventem's sequential path, which is not what Auto means for the C++
+    backends (they start their own threads) and is now the slowest option
+    by far - only the parallel path restricts the decode to the ROI's word
+    range. An explicit 1 must still mean genuinely single-threaded."""
+    monkeypatch.setattr(eb.os, 'cpu_count', lambda: 16)
+    assert eb._pyeventem_workers(None) == eb._PYEVENTEM_AUTO_WORKERS
+    assert eb._pyeventem_workers(0) == eb._PYEVENTEM_AUTO_WORKERS
+    assert eb._pyeventem_workers(1) == 1
+    assert eb._pyeventem_workers(5) == 5
+
+
+def test_pyeventem_workers_auto_is_capped_by_the_machine(monkeypatch):
+    monkeypatch.setattr(eb.os, 'cpu_count', lambda: 2)
+    assert eb._pyeventem_workers(None) == 2
+    # An explicit setting is the user's call, not ours to cap.
+    assert eb._pyeventem_workers(12) == 12
+
+    monkeypatch.setattr(eb.os, 'cpu_count', lambda: None)  # unknowable
+    assert eb._pyeventem_workers(None) == 1

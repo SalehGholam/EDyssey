@@ -299,6 +299,23 @@ def _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads):
     return pe.Tpx3Raster(fn, nx=scan_size[0], ny=scan_size[1], dwell_time_ns=dwell_time_ns or 0.0)
 
 
+#: What "Auto" resolves to for pyeventem. Matches pyeventem's own
+#: run_parallel default, capped by the machine so a 2-core box doesn't
+#: start 8 workers. Measured on this 8-core/16-thread test machine, ROI
+#: extraction: 5 workers 3.58s, 8 workers 3.32s, 16 workers 3.37s - it
+#: flattens out well before the thread count, so there is nothing to gain
+#: from going higher and real memory to lose.
+_PYEVENTEM_AUTO_WORKERS = 8
+
+
+def _pyeventem_workers(n_threads):
+    """Worker count for pyeventem: an explicit setting wins, None/0
+    ("Auto") resolves rather than silently meaning single-threaded."""
+    if n_threads:
+        return int(n_threads)
+    return max(1, min(_PYEVENTEM_AUTO_WORKERS, os.cpu_count() or 1))
+
+
 def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=None, logger_=None):
     """``source`` here is always the RAW Tpx3Raster/Tpx3Pixeltrig - never
     pre-wrapped with ``pe.decluster_source()`` (unlike this function's
@@ -306,16 +323,26 @@ def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=
     via whichever of pyeventem's two decluster-capable paths matches
     ``n_threads``:
 
-    - ``n_threads > 1``: ``pe.run_parallel(..., declusterer=declusterer)`` -
-      bounded-memory, checkpoint-seeded parallel decode+decluster, each of
-      the n_threads chunks declustered independently (no cross-chunk
-      boundary correction - see pyeventem's own run_parallel/
-      run_sinks_parallel docstrings for the trade-off, which matches what
-      the reference C++ implementation's own ring-buffer chunks already
-      accept, just with far fewer boundary seams).
-    - otherwise (``n_threads`` in (None, 0, 1)): sequential
-      ``pe.decluster_source()`` + ``pe.run(..., progress=True)`` - the
-      original, fully-correct-at-every-boundary path, single-threaded.
+    - more than one worker: ``pe.run_parallel(..., declusterer=declusterer)``
+      - bounded-memory, checkpoint-seeded parallel decode+decluster, each
+      chunk declustered independently (no cross-chunk boundary correction -
+      see pyeventem's own run_parallel/run_sinks_parallel docstrings for the
+      trade-off, which matches what the reference C++ implementation's own
+      ring-buffer chunks already accept, just with far fewer boundary
+      seams).
+    - ``n_threads == 1``: sequential ``pe.decluster_source()`` +
+      ``pe.run(..., progress=True)`` - fully correct at every boundary,
+      single-threaded.
+
+    ``n_threads`` of None or 0 is the settings dialog's "Auto". That used to
+    fall into the sequential branch, which is not what Auto means anywhere
+    else: for old/new eventem, leaving n_threads unset lets the C++ start
+    its own threads. It also became the single worst thing to pick, because
+    the parallel path is where pyeventem restricts the decode to the word
+    range holding the ROI's scan rows - a sequential run gets the in-kernel
+    row gate but still reads the whole file. Measured on a 3.2 GB file, ROI
+    extraction with the file already indexed: 3.49s on Auto-as-sequential,
+    0.18s parallel. Auto now resolves to a real worker count.
 
     Every sink this module builds - Pacbed/VSTEM/Var/Roi - implements
     clone()/merge(), required by both the plain and the declustering
@@ -327,9 +354,10 @@ def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=
     pyeventem had no equivalent at all, which made a multi-minute
     declustered run look hung."""
     from .progress import redirect_console_to_logger
-    if n_threads and n_threads > 1:
+    workers = _pyeventem_workers(n_threads)
+    if workers > 1:
         with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            pe.run_parallel(source, [sink], n_workers=n_threads, declusterer=declusterer, progress=True)
+            pe.run_parallel(source, [sink], n_workers=workers, declusterer=declusterer, progress=True)
     else:
         if decluster_on:
             source = pe.decluster_source(source, declusterer)
