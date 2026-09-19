@@ -90,14 +90,28 @@ declustering). Old eventem is the default and needs nothing extra.
 - **pyeventem**: `pip install -e path/to/pyeventem` (or add it to your own
   requirements once it's published) - see `requirements.txt`'s comment.
   Needs `numba`, already listed as a dependency. Because that's an
-  *editable* install, which pyeventem branch is checked out silently
-  decides what EDyssey runs - declustering in particular is ~5x faster on
-  `feature/fast-declustering` than on `main` (indexed candidate
-  enumeration, bit-identical output - see that repo's `BENCHMARKS.md` and
-  `Examples/06_declustering_speedup.ipynb`). Measured through this app's
-  own ROI path on a 379M-hit file: 250s -> 50s single-threaded, 90s -> 25s
-  with CPU cores set to 4, same diffraction pattern either way.
-  Declustering being slow without an obvious reason is usually this.
+  *editable* install, **which pyeventem branch is checked out silently
+  decides how fast EDyssey is** - the API is identical, so nothing fails,
+  it's just slower. If .tpx3 analysis feels slow for no obvious reason,
+  check this first. Measured through this app's own paths on a 379M-hit
+  file, same results on every branch:
+
+  | branch | what it adds | ROI 30x30, repeat | vSTEM | declustered ROI |
+  | --- | --- | --- | --- | --- |
+  | `main` | - | 7.1s | 9.5s | 250s |
+  | `feature/fast-declustering` | indexed candidate enumeration | 7.1s | 9.5s | 50s |
+  | `feature/fast-extraction` | + scan-row gating, setup caching, detector tables | **0.18s** | **2.4s** | **9s** |
+
+  (ROI/vSTEM with CPU cores = 5; declustered ROI single-threaded, so the
+  chunk-seam behaviour is the same in each column. "Repeat" means a second
+  extraction on a file already open - the first one on a given file still
+  pays ~3.5s to index it, once.)
+
+  `feature/fast-extraction` includes the declustering work, so it's the one
+  to use. See that repo's `BENCHMARKS.md` for the full breakdown and
+  `Examples/06_declustering_speedup.ipynb` for the declustering part.
+  For reference, old C++ eventem on the same workloads: 3.1s ROI,
+  6.6s vSTEM, no declustering support at all.
 
 ### 4. ffmpeg (optional, for video export)
 
