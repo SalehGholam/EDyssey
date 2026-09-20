@@ -8,6 +8,19 @@ Created on Fri Sep 13 11:36:57 2024
 
 import os
 import sys
+
+# Disable tqdm's own background monitor thread for the whole process,
+# before anything else gets a chance to construct a tqdm() bar and start
+# it with the dangerous default - see tqdm_safety.py for the real,
+# confirmed deadlock this prevents and why it has to run this early
+# (before the --worker/--multiprocessing-fork dispatch below too, since
+# worker subprocesses can hit the same code paths). Bare import, not
+# EDyssey.io_utils.tqdm_safety - see that module's own docstring for why
+# a package-qualified import into EDyssey.io_utils would defeat the whole
+# point by pulling in dask/hyperspy/matplotlib first.
+from tqdm_safety import disable_monitor_thread
+disable_monitor_thread()
+
 file_path = os.path.abspath(__file__)
 # In a PyInstaller-frozen build, __file__ resolves next to the bootloader
 # exe, not the actual bundled package tree - sys._MEIPASS is where the
