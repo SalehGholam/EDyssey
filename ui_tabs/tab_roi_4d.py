@@ -792,6 +792,7 @@ class Tab_ROI_on_4D(TabBase):
         self.seg_labels = []
         self.seg_mask = None        # raw (un-eroded) mask - see _refresh_edge_mask()
         self._mask_source = None    # 'sam2' or 'threshold' - which path produced self.seg_mask
+        self._roi_dp_running = False  # guards _compute_roi_dp() - see its own docstring
         self._threshold_method = None  # method string, only set when _mask_source == 'threshold'
         self.scatter_plots = []
         self.canvas.mpl_connect('button_press_event', self.on_press)
@@ -1471,10 +1472,32 @@ class Tab_ROI_on_4D(TabBase):
         rectangle ROI (self.roi) - factored out of on_release so "Recompute
         DP" (button_computeEdgeDp, via _refresh_edge_mask) can trigger the
         exact same computation again without redrawing the ROI, e.g. to
-        compare results after toggling declustering/backend settings."""
+        compare results after toggling declustering/backend settings.
+
+        Guarded against overlapping runs (self._roi_dp_running): both
+        callers - drawing a new rectangle ROI and "Recompute DP" - used to
+        have no guard at all, unlike every other DP-computing action in
+        this file (compute_seg_dp/compute_sum_dp_from_threshold both
+        disable their own button). A real report showed why that matters:
+        with no visual feedback that a computation is already running, an
+        impatient repeat of "Recompute DP" (or redrawing the ROI) launched
+        *another*, fully independent Worker_CalculateDP on top of the
+        still-running one - self.roi never changed, so this was invisible
+        as a "new" action, but each additional overlapping run competed
+        for the same CPU cores, making every one of them slower, which
+        prompted more repeat clicks, compounding into what looked exactly
+        like "recompute dp stopped working" - a self-inflicted slowdown
+        from stacking redundant work, not a hang. See
+        tests/test_dp_threshold_worker.py-adjacent tests for this guard
+        specifically."""
         if self.roi is None:
             qtw.QMessageBox.critical(self, 'No ROI',
                 'Hold Ctrl and drag on the navigation/test image to draw a scan-space ROI first.')
+            return
+        if self._roi_dp_running:
+            self.logger.warning(
+                'A diffraction pattern is already being computed for this ROI - '
+                'press Cancel to stop waiting for it before starting another.')
             return
         if not hasattr(self, 'dwellTime'):
             try:
@@ -1482,6 +1505,9 @@ class Tab_ROI_on_4D(TabBase):
             except Exception:
                 self.dwellTime = None
         self._cancelling = False
+        self._roi_dp_running = True
+        self.button_computeEdgeDp.setDisabled(True)
+        self.button_cancel.setEnabled(True)
         dtype = resolve_hdf5_dtype(self.fn, self.combo_dtype.currentText())
         backend_settings = AnalysisBackendSettings.instance()
         worker = Worker_CalculateDP(self.fn, self.roi, self.scanSize, self.dwellTime, dtype,
@@ -1503,6 +1529,14 @@ class Tab_ROI_on_4D(TabBase):
 #         if hasattr(self.dp, 'compute'): # lazy signals
 #             self.dp.compute()
 # =============================================================================
+        # Unconditional (before the _cancelling check below) - a cancelled
+        # run's stale result must not be displayed, but _roi_dp_running/
+        # the buttons still have to clear so a *new* computation can start
+        # right away instead of waiting for a worker whose result is about
+        # to be thrown away anyway.
+        self._roi_dp_running = False
+        self.button_computeEdgeDp.setEnabled(True)
+        self.button_cancel.setDisabled(True)
         if self._cancelling:
             # Cancel was clicked while this rectangle-ROI DP was still
             # loading - a QThreadPool QRunnable can't be forcibly killed
@@ -1525,6 +1559,9 @@ class Tab_ROI_on_4D(TabBase):
         """Slot for Worker_CalculateDP's error signal - previously
         unconnected, so any failure here was only visible by reading the
         log console; this surfaces it immediately."""
+        self._roi_dp_running = False
+        self.button_computeEdgeDp.setEnabled(True)
+        self.button_cancel.setDisabled(True)
         if self._cancelling:
             return
         self.logger.error('Failed to calculate diffraction pattern:\n%s', traceback_text)
@@ -2681,6 +2718,8 @@ class Tab_ROI_on_4D(TabBase):
         self.button_computeVirtualImage.setEnabled(True)
         self.button_sumDpWhole.setEnabled(True)
         self.button_sumDpFromThreshold.setEnabled(True)
+        self._roi_dp_running = False
+        self.button_computeEdgeDp.setEnabled(True)
         self.button_cancel.setDisabled(True)
         self.logger.warning('Cancelled by user (%d running process(es) killed).', n_killed)
         qtw.QMessageBox.information(self, 'Cancelled',
