@@ -8,10 +8,13 @@ instead of interleaved), and every logger also feeds a single Qt signal
 that the main window uses to show live output in its console box.
 """
 
+import contextlib
+import faulthandler
 import os
 import sys
 import html
 import logging
+import time
 import traceback
 from logging.handlers import RotatingFileHandler
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -128,6 +131,50 @@ def get_tab_logger(tab_name):
     logger.addHandler(get_qt_log_handler())
 
     return logger
+
+
+@contextlib.contextmanager
+def hang_watchdog(logger, label, timeout_s=25):
+    """Arm a faulthandler watchdog for the duration of the wrapped block:
+    if it hasn't returned within `timeout_s`, every thread's real Python
+    call stack is dumped to a file under LOG_DIR and the file's path is
+    logged - so a genuine hang (as opposed to a merely slow decode) leaves
+    hard, reproducible-free evidence of exactly where it's stuck, instead
+    of just "it never came back" with nothing more to go on.
+
+    Written for Worker_CalculateDP/Worker_CalculateDP_Mask specifically -
+    both wrap their whole eventem/pyeventem call in this - after several
+    reported ROI-computation hangs (declustering toggled on/off/on again)
+    that extensive targeted reproduction attempts couldn't trigger on a
+    different machine. `timeout_s` defaults well above this app's own
+    "a few seconds" expectation for a real decode, so it only fires for a
+    call that's genuinely stuck, not one that's merely slow.
+
+    A no-op cost-wise when the call finishes in time: the timer is
+    cancelled before it can fire, and the (then still-empty) dump file is
+    removed rather than left behind as clutter. Safe to nest/call
+    repeatedly - faulthandler's own timer is a single global one, so only
+    the innermost active watchdog's timeout actually applies; that matches
+    how these two worker classes use it (one call each, never nested).
+    """
+    dump_path = os.path.join(LOG_DIR, f'hang_dump_{label}_{int(time.time())}.txt')
+    f = open(dump_path, 'w', encoding='utf-8')
+    try:
+        faulthandler.dump_traceback_later(timeout_s, exit=False, file=f)
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        f.close()
+        try:
+            if os.path.getsize(dump_path) == 0:
+                os.remove(dump_path)
+            else:
+                logger.error(
+                    'This computation took longer than %ds - a snapshot of every '
+                    "thread's real call stack at that moment was written to %s. "
+                    'Please attach that file when reporting this.', timeout_s, dump_path)
+        except OSError:
+            pass
 
 
 class LogConsole(qtw.QPlainTextEdit):

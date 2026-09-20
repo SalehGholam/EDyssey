@@ -180,8 +180,8 @@ def test_a_second_computation_is_accepted_after_the_first_completes(tab, qapp, m
 
     gate.gate.clear()
     tab._refresh_edge_mask()
-    qapp.processEvents()
-    assert gate.calls == 2, "a fresh computation must not be blocked once the previous one has finished"
+    assert _pump(qapp, lambda: gate.calls == 2), \
+        "a fresh computation must not be blocked once the previous one has finished"
     gate.gate.set()
     assert _pump(qapp, lambda: not tab._roi_dp_running)
 
@@ -230,8 +230,7 @@ def test_a_failed_computation_also_clears_the_guard(tab, qapp, monkeypatch):
     gate.raise_instead = None
     gate.gate.clear()
     tab._refresh_edge_mask()
-    qapp.processEvents()
-    assert gate.calls == 2
+    assert _pump(qapp, lambda: gate.calls == 2)
     gate.gate.set()
     assert _pump(qapp, lambda: not tab._roi_dp_running)
 

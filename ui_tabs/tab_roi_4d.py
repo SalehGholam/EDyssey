@@ -27,7 +27,7 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 import matplotlib.patches as patches
 from dask.diagnostics import ProgressBar
-from .logging_utils import get_tab_logger, LogConsole
+from .logging_utils import get_tab_logger, hang_watchdog, LogConsole
 from .base_tab import TabBase, resolve_hdf5_dtype, glob_ext_for_dtype, HDF5_EVENTEM_LABEL
 from .display_settings import DisplaySettings
 from .analysis_backend_settings import AnalysisBackendSettings
@@ -2968,11 +2968,12 @@ class Worker_CalculateDP(QRunnable):
         try:
             if dtype == '.tpx3':
                 x, y, w, h = self.roi
-                roi_obj = io.load_tpx3(self.fn, roi=self.roi, scanSize=self.scanSize,
-                                       dwellTime=self.dwellTime, fn_pattern=self.fn_pattern,
-                                       logger=self.logger, get_4d=False,
-                                       det_shape=self.det_shape, backend=self.backend,
-                                       decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
+                with hang_watchdog(self.logger, 'Worker_CalculateDP'):
+                    roi_obj = io.load_tpx3(self.fn, roi=self.roi, scanSize=self.scanSize,
+                                           dwellTime=self.dwellTime, fn_pattern=self.fn_pattern,
+                                           logger=self.logger, get_4d=False,
+                                           det_shape=self.det_shape, backend=self.backend,
+                                           decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
                 dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(
                     self.det_shape[1], self.det_shape[0])
                 navImg_cut = np.array(roi_obj.Roi_scan_image).reshape(h, w)
@@ -3038,12 +3039,13 @@ class Worker_CalculateDP_Mask(QRunnable):
 
     def run(self):
         try:
-            dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
-                        scanSize=self.scanSize, dwellTime=self.dwellTime,
-                        fn_pattern=self.fn_pattern, det_shape=self.det_shape,
-                        patch_mode=self.patch_mode, backend=self.backend,
-                        decluster_cfg=self.decluster_cfg, n_threads=self.n_threads,
-                        logger=self.logger)
+            with hang_watchdog(self.logger, 'Worker_CalculateDP_Mask'):
+                dp = load_dp(self.fn, roi=self.roi, mask=self.mask, dtype=self.dtype,
+                            scanSize=self.scanSize, dwellTime=self.dwellTime,
+                            fn_pattern=self.fn_pattern, det_shape=self.det_shape,
+                            patch_mode=self.patch_mode, backend=self.backend,
+                            decluster_cfg=self.decluster_cfg, n_threads=self.n_threads,
+                            logger=self.logger)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:
