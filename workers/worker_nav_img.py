@@ -87,24 +87,31 @@ def calculate_nav_img_core(task):
     # only the single-file entry point below (calculate_nav_img_worker, not
     # part of any pool) actually forwards that setting through 'n_threads'.
     n_threads = task.get('n_threads', 1)
+    # No-op whenever n_threads == 1 (every batch-pool task above): pyeventem
+    # only takes the processes-vs-threads fork at all once _pyeventem_workers
+    # resolves to more than one worker - see eventem_backend._pyeventem_dispatch.
+    execution_strategy = task.get('execution_strategy') or io.eb.EXEC_THREADS
     if detectors:
         detectors = [dict(d, center=tuple(d['center'])) for d in detectors]
         result = io.calculate_nav_img_masked(fn, dtype=dtype, scanSize=scanSize,
                                              dwellTime=dwellTime, detectors=detectors,
                                              n_threads=n_threads, fn_pattern=fn_pattern,
                                              det_shape=det_shape, mode=mode, max_workers=1,
-                                             backend=backend, decluster_cfg=decluster_cfg)
+                                             backend=backend, decluster_cfg=decluster_cfg,
+                                             execution_strategy=execution_strategy)
     else:
         result = io.calculate_nav_img(fn, dtype=dtype, scanSize=scanSize,
                                       dwellTime=dwellTime, n_threads=n_threads,
                                       fn_pattern=fn_pattern, det_shape=det_shape, mode=mode,
-                                      max_workers=1, backend=backend, decluster_cfg=decluster_cfg)
+                                      max_workers=1, backend=backend, decluster_cfg=decluster_cfg,
+                                      execution_strategy=execution_strategy)
     return result
 
 
 def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
                              detectors_json=None, fn_pattern=None, det_shape=None, mode='sum',
-                             backend=None, decluster_cfg_json=None, n_threads=None):
+                             backend=None, decluster_cfg_json=None, n_threads=None,
+                             execution_strategy=None):
     """Compute one navigation image, save it to `temp_dir` as a .npy file, and
     print the saved path to stdout - instead of the array itself, base64+
     pickle-encoded. Transferring a multi-MB encoded array through the
@@ -150,6 +157,10 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         n_threads: Optional CPU-core-count override, as a string (None/
             'None'/'' = pin to 1, the prior/default behavior for this
             single-file, not-part-of-a-pool entry point).
+        execution_strategy: Optional eventem_backend.EXECUTION_STRATEGIES
+            value as a string (None/'None'/'' = threads - see
+            eventem_backend.EXEC_THREADS's own docstring for why that's
+            also the recommended choice, not just the default).
     """
     try:
         fn_pattern = None if fn_pattern in (None, '', 'None') else fn_pattern
@@ -168,12 +179,15 @@ def calculate_nav_img_worker(fn, dtype, scanSize, dwellTime, i_index, temp_dir,
         decluster_cfg = (json.loads(decluster_cfg_json)
                          if decluster_cfg_json not in (None, '', 'None') else None)
         n_threads = None if n_threads in (None, '', 'None') else int(n_threads)
+        execution_strategy = None if execution_strategy in (None, '', 'None') else execution_strategy
 
         task = {'fn': fn, 'dtype': dtype, 'scanSize': scanSize, 'dwellTime': dwellTime,
                'detectors': detectors, 'fn_pattern': fn_pattern, 'det_shape': det_shape,
                'mode': mode, 'backend': backend, 'decluster_cfg': decluster_cfg}
         if n_threads is not None:
             task['n_threads'] = n_threads
+        if execution_strategy is not None:
+            task['execution_strategy'] = execution_strategy
         result = calculate_nav_img_core(task)
 
         fn_out = os.path.join(temp_dir, f'{i_index}.npy')

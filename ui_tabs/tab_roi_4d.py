@@ -1514,7 +1514,8 @@ class Tab_ROI_on_4D(TabBase):
                                     self.get_fn_pattern(), self.get_detector_shape(self.fn),
                                     tab_name=self._tab_name, backend=backend_settings.backend,
                                     decluster_cfg=backend_settings.decluster_cfg(),
-                                    n_threads=backend_settings.n_threads)
+                                    n_threads=backend_settings.n_threads,
+                                    execution_strategy=backend_settings.execution_strategy)
         worker.signals.result.connect(self.get_dp)
         worker.signals.error.connect(self._on_calculate_dp_failed)
         self.threadpool.start(worker)
@@ -2137,6 +2138,7 @@ class Tab_ROI_on_4D(TabBase):
         args += [backend_settings.backend]
         args += [json.dumps(backend_settings.decluster_cfg())]
         args += [str(backend_settings.n_threads) if backend_settings.n_threads else 'None']
+        args += [backend_settings.execution_strategy]
         program, arguments = worker_command('nav_img', args)
         self._process_vi = QProcess()
         self._process_vi.setProgram(program)
@@ -2226,7 +2228,7 @@ class Tab_ROI_on_4D(TabBase):
             dwellTime=self.dwellTime, roi=None, logger=self.logger,
             fn_pattern=self.get_fn_pattern(), det_shape=self.get_detector_shape(self.fn),
             backend=backend_settings.backend, decluster_cfg=backend_settings.decluster_cfg(),
-            n_threads=backend_settings.n_threads)
+            n_threads=backend_settings.n_threads, execution_strategy=backend_settings.execution_strategy)
         worker.signals.results.connect(self._on_sum_dp_whole_computed)
         worker.signals.error.connect(self._on_sum_dp_whole_failed)
         self.threadpool.start(worker)
@@ -2503,7 +2505,8 @@ class Tab_ROI_on_4D(TabBase):
                                          self.get_detector_shape(self.fn), tab_name=self._tab_name,
                                          backend=backend_settings.backend,
                                          decluster_cfg=backend_settings.decluster_cfg(),
-                                         n_threads=backend_settings.n_threads)
+                                         n_threads=backend_settings.n_threads,
+                                         execution_strategy=backend_settings.execution_strategy)
         worker.signals.result.connect(self.get_dp_from_mask)
         worker.signals.error.connect(self._on_calculate_dp_failed)
         self.threadpool.start(worker)
@@ -2656,7 +2659,8 @@ class Tab_ROI_on_4D(TabBase):
                                          self.get_detector_shape(self.fn), patch_mode=True,
                                          tab_name=self._tab_name, backend=backend_settings.backend,
                                          decluster_cfg=backend_settings.decluster_cfg(),
-                                         n_threads=backend_settings.n_threads)
+                                         n_threads=backend_settings.n_threads,
+                                         execution_strategy=backend_settings.execution_strategy)
         worker.signals.result.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_from_threshold_failed)
         self.threadpool.start(worker)
@@ -2936,7 +2940,8 @@ class Worker_CalculateDP(QRunnable):
     pattern (and its summed nav-image crop), emitting both via
     signals.result."""
     def __init__(self, fn, roi, scanSize, dwellTime, dtype, fn_pattern=None, det_shape=(512, 512),
-                tab_name='Tab_ROI_on_4D', backend='old_eventem', decluster_cfg=None, n_threads=None):
+                tab_name='Tab_ROI_on_4D', backend='old_eventem', decluster_cfg=None, n_threads=None,
+                execution_strategy=io.eb.EXEC_THREADS):
         super().__init__()
         self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
@@ -2955,6 +2960,7 @@ class Worker_CalculateDP(QRunnable):
         self.backend = backend
         self.decluster_cfg = decluster_cfg
         self.n_threads = n_threads
+        self.execution_strategy = execution_strategy
 
         self.signals = WorkerSignals()
 
@@ -2973,7 +2979,8 @@ class Worker_CalculateDP(QRunnable):
                                            dwellTime=self.dwellTime, fn_pattern=self.fn_pattern,
                                            logger=self.logger, get_4d=False,
                                            det_shape=self.det_shape, backend=self.backend,
-                                           decluster_cfg=self.decluster_cfg, n_threads=self.n_threads)
+                                           decluster_cfg=self.decluster_cfg, n_threads=self.n_threads,
+                                           execution_strategy=self.execution_strategy)
                 dp = np.array(roi_obj.Roi_diffraction_pattern).reshape(
                     self.det_shape[1], self.det_shape[0])
                 navImg_cut = np.array(roi_obj.Roi_scan_image).reshape(h, w)
@@ -3016,7 +3023,8 @@ class Worker_CalculateDP_Mask(QRunnable):
     load_dp/load_tpx3_patches in worker_extract_frame.py."""
     def __init__(self, fn, roi, mask, dtype, scanSize, dwellTime, fn_pattern=None,
                 det_shape=(512, 512), patch_mode=False, tab_name='Tab_ROI_on_4D',
-                backend='old_eventem', decluster_cfg=None, n_threads=None):
+                backend='old_eventem', decluster_cfg=None, n_threads=None,
+                execution_strategy=io.eb.EXEC_THREADS):
         super().__init__()
         self.logger = get_tab_logger(tab_name)
         self._tic = perf_counter()
@@ -3035,6 +3043,7 @@ class Worker_CalculateDP_Mask(QRunnable):
         self.backend = backend
         self.decluster_cfg = decluster_cfg
         self.n_threads = n_threads
+        self.execution_strategy = execution_strategy
         self.signals = WorkerSignals()
 
     def run(self):
@@ -3045,7 +3054,7 @@ class Worker_CalculateDP_Mask(QRunnable):
                             fn_pattern=self.fn_pattern, det_shape=self.det_shape,
                             patch_mode=self.patch_mode, backend=self.backend,
                             decluster_cfg=self.decluster_cfg, n_threads=self.n_threads,
-                            logger=self.logger)
+                            execution_strategy=self.execution_strategy, logger=self.logger)
             if hasattr(dp, 'compute'):
                 dp = dp.compute()
         except Exception:

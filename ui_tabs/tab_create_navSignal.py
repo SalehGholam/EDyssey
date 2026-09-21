@@ -1280,14 +1280,16 @@ class Tab_Create_NavSignal(TabBase):
                 dwellTime=dwellTime, detectors=self.get_active_detectors(), mode=mode,
                 logger=self.logger, fn_pattern=fn_pattern, det_shape=det_shape,
                 n_threads=backend_settings.n_threads, backend=backend_settings.backend,
-                decluster_cfg=backend_settings.decluster_cfg())
+                decluster_cfg=backend_settings.decluster_cfg(),
+                execution_strategy=backend_settings.execution_strategy)
         else:
             worker = WorkerThread_General(io.calculate_nav_img, 0, fn, dtype=dtype,
                                           scanSize=scanSize, dwellTime=dwellTime, mode=mode,
                                           logger=self.logger, fn_pattern=fn_pattern,
                                           det_shape=det_shape, n_threads=backend_settings.n_threads,
                                           backend=backend_settings.backend,
-                                          decluster_cfg=backend_settings.decluster_cfg())
+                                          decluster_cfg=backend_settings.decluster_cfg(),
+                                          execution_strategy=backend_settings.execution_strategy)
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
         QThreadPool.globalInstance().start(worker)
 
@@ -1344,7 +1346,8 @@ class Tab_Create_NavSignal(TabBase):
                                       det_shape=self.get_detector_shape(fn),
                                       backend=backend_settings.backend,
                                       decluster_cfg=backend_settings.decluster_cfg(),
-                                      n_threads=backend_settings.n_threads)
+                                      n_threads=backend_settings.n_threads,
+                                      execution_strategy=backend_settings.execution_strategy)
         worker.signals.results.connect(self._on_sum_dp_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1384,7 +1387,8 @@ class Tab_Create_NavSignal(TabBase):
                                       det_shape=self.get_detector_shape(fn),
                                       backend=backend_settings.backend,
                                       decluster_cfg=backend_settings.decluster_cfg(),
-                                      n_threads=backend_settings.n_threads)
+                                      n_threads=backend_settings.n_threads,
+                                      execution_strategy=backend_settings.execution_strategy)
         worker.signals.results.connect(self._on_sum_dp_from_roi_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1713,7 +1717,7 @@ class Tab_Create_NavSignal(TabBase):
         worker = WorkerThread_General(self._sum_dp_from_mask_worker, 0, fn, dtype, scanSize,
                                       mask, fn_pattern, det_shape, self.logger,
                                       backend_settings.backend, backend_settings.decluster_cfg(),
-                                      backend_settings.n_threads)
+                                      backend_settings.n_threads, backend_settings.execution_strategy)
         worker.signals.results.connect(self._on_sum_dp_from_threshold_computed)
         worker.signals.error.connect(self._on_sum_dp_failed)
         QThreadPool.globalInstance().start(worker)
@@ -1721,7 +1725,7 @@ class Tab_Create_NavSignal(TabBase):
     @staticmethod
     def _sum_dp_from_mask_worker(fn, dtype, scanSize, mask, fn_pattern=None,
                                  det_shape=(512, 512), logger=None, backend=None,
-                                 decluster_cfg=None, n_threads=None):
+                                 decluster_cfg=None, n_threads=None, execution_strategy=None):
         """Worker for compute_sum_dp_from_threshold: crop to `mask`'s bounding
         box and sum diffraction patterns only at the masked scan positions.
 
@@ -1746,7 +1750,7 @@ class Tab_Create_NavSignal(TabBase):
         dp = load_dp(fn, roi=roi, mask=mask, dtype=dtype, scanSize=scanSize, dwellTime=1,
                     fn_pattern=fn_pattern, det_shape=det_shape, logger=logger,
                     backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
-                    patch_mode=True)
+                    execution_strategy=execution_strategy, patch_mode=True)
         if hasattr(dp, 'compute'):
             with io.LoggingProgressBar(logger, 'Thresholded Summed DP'):
                 dp = dp.compute()
@@ -2213,6 +2217,7 @@ class Tab_Create_NavSignal(TabBase):
                 'fn_pattern': fn_pattern, 'det_shape': list(det_shape), 'mode': mode,
                 'backend': backend_settings.backend,
                 'decluster_cfg': backend_settings.decluster_cfg(),
+                'execution_strategy': backend_settings.execution_strategy,
             })
         tasks_path = os.path.join(self._navimg_temp_dir, 'tasks.json')
         wpu.write_tasks_json(tasks_path, tasks)

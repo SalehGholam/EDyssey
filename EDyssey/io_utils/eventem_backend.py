@@ -54,6 +54,24 @@ BACKEND_LABELS = {
     BACKEND_PYEVENTEM: 'pyeventem',
 }
 
+#: pyeventem-only: how to split one file's decode across CPU workers. Old/new
+#: eventem have no equivalent knob here - their own "CPU cores" setting
+#: (n_threads) always means the C++'s own internal thread pool, regardless of
+#: this. Measured directly (pyeventem/Examples/07_backend_performance.ipynb,
+#: 2026-09-21): threads win in every configuration checked - multiprocessing
+#: adds process-spawn/import overhead with nothing to show for it, since
+#: pyeventem's own kernels already release the GIL - so EXEC_THREADS is both
+#: the default and the recommended choice. EXEC_PROCESSES exists for
+#: comparison/testing and for the rare machine/workload where re-measuring is
+#: worth it, not because it's expected to win.
+EXEC_THREADS = 'threads'
+EXEC_PROCESSES = 'processes'
+EXECUTION_STRATEGIES = (EXEC_THREADS, EXEC_PROCESSES)
+EXECUTION_STRATEGY_LABELS = {
+    EXEC_THREADS: 'Threads',
+    EXEC_PROCESSES: 'Processes',
+}
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _EVENTEM_NEW_DIR = os.path.join(_THIS_DIR, 'eventem_new')
 
@@ -366,13 +384,191 @@ def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=
 
 
 # ---------------------------------------------------------------------------
+# pyeventem execution strategy: threads (default) vs. processes.
+#
+# Every run_*() function below builds one of pyeventem's four sink types
+# (Pacbed/VSTEM/Var/Roi) and hands it to _pyeventem_dispatch, which is the
+# one place that decides threads vs. processes - see EXEC_THREADS/
+# EXEC_PROCESSES above for which one is actually recommended and why.
+# ---------------------------------------------------------------------------
+
+#: sink_kind -> pyeventem constructor, shared by _build_pyeventem_sink and
+#: the multiprocessing worker below - keeps both in one place rather than
+#: duplicating the mapping.
+_PYEVENTEM_SINK_CTORS = {
+    'pacbed': 'Pacbed',
+    'vstem': 'VSTEM',
+    'var': 'Var',
+    'roi': 'Roi',
+}
+
+
+def _build_pyeventem_sink(pe, sink_kind, sink_kwargs):
+    return getattr(pe, _PYEVENTEM_SINK_CTORS[sink_kind])(**sink_kwargs)
+
+
+def _pyeventem_sink_result(sink_kind, sink):
+    """The plain numpy result(s) a finished sink holds - a bare ndarray for
+    Pacbed/VSTEM/Var, or the (scan_image, diffraction_pattern, roi_4d) tuple
+    run_roi/run_roi_masked's RoiResult wraps, for 'roi'."""
+    if sink_kind == 'pacbed':
+        return np.asarray(sink.image)
+    if sink_kind == 'vstem':
+        return np.asarray(sink.images[0])
+    if sink_kind == 'var':
+        return np.asarray(sink.image)
+    roi_4d = sink.roi_4d if getattr(sink, 'extract_4d', False) else None
+    return np.asarray(sink.scan_image), np.asarray(sink.diffraction_pattern), roi_4d
+
+
+class _RowBandSink:
+    """Restricts ``sink`` to scan rows ``[row0, row1)`` - the multiprocessing
+    driver's own work-splitting mechanism (see _pyeventem_run_multiprocess):
+    each process gets one disjoint row band of the *same* full-size sink,
+    decodes only the file words that can hold it (pyeventem's own scan-row
+    gate - see sinks/base.py's scan_rows_union), and every process's result
+    is then simply summed elementwise, since disjoint bands never overlap.
+
+    Composes with any restriction the sink already has of its own (a Roi
+    rectangle, a masked Pacbed) by intersecting rather than replacing - a
+    process assigned a row band outside a small ROI correctly decodes
+    nothing at all rather than double-counting.
+    """
+
+    def __init__(self, sink, row0, row1):
+        self._sink, self._row0, self._row1 = sink, row0, row1
+
+    def scan_rows(self, ny):
+        band = np.zeros(ny, dtype=bool)
+        band[self._row0:self._row1] = True
+        own_rows = getattr(self._sink, 'scan_rows', None)
+        if own_rows is not None:
+            got = own_rows(ny)
+            if got is not None:
+                return band & np.asarray(got, dtype=bool)
+        return band
+
+    def update(self, block):
+        self._sink.update(block)
+
+    def finalize(self):
+        self._sink.finalize()
+
+    def clone(self):
+        return _RowBandSink(self._sink.clone(), self._row0, self._row1)
+
+    def merge(self, other):
+        self._sink.merge(other._sink)
+
+
+def _pyeventem_process_worker(job):
+    """Top-level (picklable) entry point for one _pyeventem_run_multiprocess
+    task: decode+accumulate this process's own row band, independently of
+    every other process. Must stay a plain module-level function (not a
+    closure) - ProcessPoolExecutor pickles it by reference on Windows'
+    spawn start method, which needs to be able to re-import it by name in
+    the child process.
+    """
+    (sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn_pattern,
+     row0, row1, decluster_cfg, decluster_on) = job
+    import pyeventem as pe
+    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, None)
+    sink = _build_pyeventem_sink(pe, sink_kind, sink_kwargs)
+    banded = _RowBandSink(sink, row0, row1)
+    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
+    # n_workers=1: this process's own share of the parallelism, not a nested
+    # thread pool inside it - see EXEC_PROCESSES's docstring on why more
+    # threads-per-process was deliberately not layered on top here. Still
+    # run_parallel, not run(): only run_parallel's checkpoint-seeded decode
+    # honours the row-band gate above by skipping the rest of the file: see
+    # pyeventem/Examples/07_backend_performance.ipynb ("The part that
+    # surprised me: run_parallel(n_workers=1)").
+    pe.run_parallel(source, [banded], n_workers=1, declusterer=declusterer)
+    return _pyeventem_sink_result(sink_kind, sink)
+
+
+def _pyeventem_run_multiprocess(sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn_pattern,
+                                 n_workers, decluster_cfg, decluster_on, row_lo, row_hi, logger_=None):
+    """Split one file's decode across ``n_workers`` real OS processes
+    instead of pyeventem's own thread pool - EXEC_PROCESSES's implementation.
+    ``[row_lo, row_hi)`` is divided into ``n_workers`` disjoint scan-row
+    bands (see _RowBandSink); every process's result is then summed
+    elementwise, which is exact because the bands never overlap - validated
+    the same way in pyeventem/Examples/07_backend_performance.ipynb (§4:
+    every process-pool result there matched ``pyeventem.run()`` bit for
+    bit).
+
+    No live progress bar: that notebook's own §4 measurement is also why
+    this exists mainly for comparison rather than as the recommended path
+    (see EXEC_PROCESSES) - piping several processes' progress back to one
+    live bar was not judged worth building for a strategy that's slower in
+    every configuration measured so far. A single before/after log line
+    goes to ``logger_`` instead, matching how ``_run_new_eventem_via_
+    subprocess`` also can't offer a live in-app bar for its own, unrelated
+    reason (a real separate program, not a worker pool).
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    if logger_ is not None:
+        logger_.info('Loading tpx3 (pyeventem, %d processes)...', n_workers)
+    edges = np.linspace(row_lo, row_hi, n_workers + 1).astype(int)
+    jobs = [(sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn_pattern,
+             int(edges[i]), int(edges[i + 1]), decluster_cfg, decluster_on)
+            for i in range(n_workers)]
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(_pyeventem_process_worker, jobs))
+    if logger_ is not None:
+        logger_.info('Loading tpx3 (pyeventem, %d processes): done', n_workers)
+
+    if sink_kind == 'roi':
+        scan_images, dps, cubes = zip(*parts)
+        roi_4d = sum(cubes) if cubes[0] is not None else None
+        return sum(scan_images), sum(dps), roi_4d
+    return sum(parts)
+
+
+def _pyeventem_dispatch(sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn_pattern,
+                         n_threads, execution_strategy, decluster_cfg, decluster_on,
+                         row_band=None, logger_=None):
+    """Builds and runs one pyeventem sink (Pacbed/VSTEM/Var/Roi) and returns
+    its plain result - the one place every run_*() function's pyeventem
+    branch goes through, so EXEC_THREADS-vs-EXEC_PROCESSES only needs
+    implementing once. See _pyeventem_sink_result for the return shape.
+
+    ``row_band``: the ``(lo, hi)`` scan-row extent worth splitting across
+    processes for this call - defaults to the whole scan (``0, ny``); a
+    rectangular Roi passes its own ``(y, y+height)`` instead, since that's
+    the only extent that can possibly hold a hit for it (see run_roi's call
+    site) and splitting a tight extent balances the process pool's work
+    better than splitting the whole scan would.
+    """
+    workers = _pyeventem_workers(n_threads)
+    if execution_strategy == EXEC_PROCESSES and workers > 1:
+        lo, hi = row_band if row_band is not None else (0, scan_size[1])
+        return _pyeventem_run_multiprocess(
+            sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn_pattern,
+            n_workers=workers, decluster_cfg=decluster_cfg, decluster_on=decluster_on,
+            row_lo=lo, row_hi=hi, logger_=logger_)
+
+    pe = _pyeventem()
+    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
+    sink = _build_pyeventem_sink(pe, sink_kind, sink_kwargs)
+    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
+    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
+    return _pyeventem_sink_result(sink_kind, sink)
+
+
+# ---------------------------------------------------------------------------
 # Pacbed
 # ---------------------------------------------------------------------------
 
 def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
                fn_pattern=None, repetitions=1, backend=BACKEND_OLD,
-               decluster_cfg=None, logger_=None, n_threads=None):
-    """Full-frame summed diffraction pattern. Returns a (det_y, det_x) array."""
+               decluster_cfg=None, logger_=None, n_threads=None,
+               execution_strategy=EXEC_THREADS):
+    """Full-frame summed diffraction pattern. Returns a (det_y, det_x) array.
+
+    ``execution_strategy``: pyeventem only (see EXEC_THREADS/EXEC_PROCESSES) -
+    ignored for old/new eventem, which have no equivalent choice."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'pacbed')
 
@@ -413,12 +609,9 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
         finally:
             dp.close_socket()
 
-    pe = _pyeventem()
-    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
-    sink = pe.Pacbed(detector_size=det_shape[0])
-    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
-    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
-    return np.asarray(sink.image)
+    return _pyeventem_dispatch(
+        'pacbed', dict(detector_size=det_shape[0]), fn, scan_size, dwell_time_ns, fn_pattern,
+        n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +620,8 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
 
 def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
               offset=None, det_shape=(512, 512), fn_pattern=None, repetitions=1,
-              backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None):
+              backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None,
+              execution_strategy=EXEC_THREADS):
     """Virtual-STEM navigation image, one or several annular detectors at
     once. Returns a (ny, nx) array (single detector) - see old-eventem's
     ``get_image()``/pyeventem's ``images[0]`` for the multi-detector case,
@@ -474,17 +668,15 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         finally:
             vstem.close_socket()
 
-    pe = _pyeventem()
-    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
     centers = None
     if offset:
         offsets = offset if isinstance(offset[0], (list, tuple)) else [offset]
         centers = [(float(o[0]), float(o[1])) for o in offsets]
-    sink = pe.VSTEM(nx=scan_size[0], ny=scan_size[1], inner_radii=inner, outer_radii=outer,
-                    centers=centers, detector_size=det_shape[0])
-    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
-    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
-    return np.asarray(sink.images[0])
+    return _pyeventem_dispatch(
+        'vstem', dict(nx=scan_size[0], ny=scan_size[1], inner_radii=inner, outer_radii=outer,
+                      centers=centers, detector_size=det_shape[0]),
+        fn, scan_size, dwell_time_ns, fn_pattern,
+        n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +685,8 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 
 def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
             offset=None, det_shape=(512, 512), fn_pattern=None, repetitions=1,
-            backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None):
+            backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None,
+            execution_strategy=EXEC_THREADS):
     """Per-scan-position variance image (single annular region only - see
     calculate_nav_img_variance_tpx3's docstring for why there's no
     multi-detector variant). Returns a (ny, nx) array."""
@@ -538,14 +731,12 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         finally:
             var.close_socket()
 
-    pe = _pyeventem()
-    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
     center = (float(offset[0]), float(offset[1])) if offset else None
-    sink = pe.Var(nx=scan_size[0], ny=scan_size[1], inner_radius=float(r_in), outer_radius=float(r_out),
-                  center=center, detector_size=det_shape[0])
-    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
-    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
-    return np.asarray(sink.image)
+    return _pyeventem_dispatch(
+        'var', dict(nx=scan_size[0], ny=scan_size[1], inner_radius=float(r_in), outer_radius=float(r_out),
+                   center=center, detector_size=det_shape[0]),
+        fn, scan_size, dwell_time_ns, fn_pattern,
+        n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
 
 # ---------------------------------------------------------------------------
@@ -575,7 +766,8 @@ class RoiResult:
 
 def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 512),
             fn_pattern=None, repetitions=1, get_4d=False, backend=BACKEND_OLD,
-            decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None):
+            decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None,
+            execution_strategy=EXEC_THREADS):
     """Rectangular ROI extraction: scan image + diffraction pattern (and,
     if get_4d, a sub-cube). ``roi_rect`` is (x, y, width, height); None =
     the whole scan. Returns a :class:`RoiResult`, matching load_tpx3's
@@ -625,20 +817,20 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
         finally:
             roi_obj.close_socket()
 
-    pe = _pyeventem()
-    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
     roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
-    sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], x=x, y=y, width=w, height=h,
-                  detector_size=det_shape[0], extract_4d=get_4d, **roi_kwargs)
-    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
-    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
-    roi_4d = sink.roi_4d if get_4d else None
-    return RoiResult(sink.scan_image, sink.diffraction_pattern, roi_4d)
+    scan_image, diffraction_pattern, roi_4d = _pyeventem_dispatch(
+        'roi', dict(nx=scan_size[0], ny=scan_size[1], x=x, y=y, width=w, height=h,
+                   detector_size=det_shape[0], extract_4d=get_4d, **roi_kwargs),
+        fn, scan_size, dwell_time_ns, fn_pattern,
+        n_threads, execution_strategy, decluster_cfg, decluster_on,
+        row_band=(y, y + h), logger_=logger_)
+    return RoiResult(scan_image, diffraction_pattern, roi_4d)
 
 
 def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 512),
                     fn_pattern=None, repetitions=1, backend=BACKEND_OLD,
-                    decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None):
+                    decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None,
+                    execution_strategy=EXEC_THREADS):
     """Arbitrary-mask ROI extraction (ROI Tracker / SAM2's masked/patched
     3DED extraction). ``mask``: 2-D array, shape (ny, nx), truthy = included
     scan position. Returns a :class:`RoiResult` (``.Roi_scan_image`` here is
@@ -682,10 +874,9 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
         finally:
             roi_obj.close_socket()
 
-    pe = _pyeventem()
-    source = _pyeventem_source(pe, fn, scan_size, dwell_time_ns, fn_pattern, n_threads)
     roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
-    sink = pe.Roi(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask, **roi_kwargs)
-    declusterer = _make_declusterer(decluster_cfg) if decluster_on else None
-    _pyeventem_run(pe, source, sink, n_threads, decluster_on, declusterer=declusterer, logger_=logger_)
-    return RoiResult(sink.scan_image, sink.diffraction_pattern)
+    scan_image, diffraction_pattern, _roi_4d = _pyeventem_dispatch(
+        'roi', dict(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask, **roi_kwargs),
+        fn, scan_size, dwell_time_ns, fn_pattern,
+        n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
+    return RoiResult(scan_image, diffraction_pattern)

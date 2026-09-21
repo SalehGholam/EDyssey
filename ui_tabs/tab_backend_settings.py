@@ -89,7 +89,41 @@ class BackendSettingsDialog(qtw.QDialog):
         cores_row.addStretch(1)
         backend_layout.addLayout(cores_row)
 
+        # pyeventem-only: split those CPU cores across threads (the default,
+        # and the recommended choice - see eb.EXEC_THREADS's docstring) or
+        # across separate OS processes instead. Old/New eventem manage their
+        # own C++ thread pool through "CPU cores" above and have no separate
+        # process mode in this app, so this only matters while pyeventem is
+        # selected - see _on_backend_changed.
+        exec_row = qtw.QHBoxLayout()
+        exec_row.addWidget(qtw.QLabel('Execution strategy (pyeventem only):'))
+        self._exec_group = qtw.QButtonGroup(self)
+        self._exec_buttons = {}
+        for key in eb.EXECUTION_STRATEGIES:
+            label = eb.EXECUTION_STRATEGY_LABELS[key]
+            if key == eb.EXEC_THREADS:
+                label += ' (recommended)'
+            radio = qtw.QRadioButton(label)
+            if key == settings.execution_strategy:
+                radio.setChecked(True)
+            self._exec_group.addButton(radio)
+            self._exec_buttons[key] = radio
+            exec_row.addWidget(radio)
+        exec_row.addStretch(1)
+        backend_layout.addLayout(exec_row)
+        exec_note = qtw.QLabel(
+            "Measured directly (pyeventem's Examples/07_backend_performance.ipynb): threads win in "
+            "every configuration checked - multiprocessing adds process-spawn/import overhead with "
+            "nothing to show for it, since pyeventem's own decoding already releases the GIL. "
+            "'Processes' exists for comparison/testing, not because it's expected to win.")
+        exec_note.setWordWrap(True)
+        exec_note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
+        backend_layout.addWidget(exec_note)
+
         self.layout.addWidget(backend_box)
+        for radio in self._backend_buttons.values():
+            radio.toggled.connect(self._on_backend_changed)
+        self._on_backend_changed()
 
         # --- Declustering -------------------------------------------------
         decluster_box = qtw.QGroupBox('Declustering')
@@ -199,6 +233,15 @@ class BackendSettingsDialog(qtw.QDialog):
         self.button_close.clicked.connect(self.close)
         button_row.addWidget(self.button_close)
 
+    def _on_backend_changed(self):
+        """Grey out the execution-strategy radios while a backend other
+        than pyeventem is selected - old/new eventem's own "CPU cores"
+        field already covers their internal thread pool, and neither has a
+        separate process mode in this app."""
+        is_pyeventem = self._selected_backend() == eb.BACKEND_PYEVENTEM
+        for radio in self._exec_buttons.values():
+            radio.setEnabled(is_pyeventem)
+
     def _on_enabled_toggled(self, checked):
         """Grey out every declustering sub-control while disabled, so it's
         visually clear they have no effect - matches how the sinks/
@@ -227,6 +270,12 @@ class BackendSettingsDialog(qtw.QDialog):
                 return key
         return eb.BACKEND_OLD
 
+    def _selected_execution_strategy(self):
+        for key, radio in self._exec_buttons.items():
+            if radio.isChecked():
+                return key
+        return eb.EXEC_THREADS
+
     def apply_values(self):
         """Push every control's current value to AnalysisBackendSettings at
         once - AnalysisBackendSettings.set_values() also persists this to
@@ -235,6 +284,7 @@ class BackendSettingsDialog(qtw.QDialog):
         AnalysisBackendSettings.instance().set_values(
             backend=self._selected_backend(),
             n_threads=self.spinbox_nThreads.value() or None,
+            execution_strategy=self._selected_execution_strategy(),
             decluster_enabled=self.checkbox_enabled.isChecked(),
             dspace=self.spinbox_dspace.value(),
             dtime_ns=self.spinbox_dtime.value(),
@@ -251,6 +301,8 @@ class BackendSettingsDialog(qtw.QDialog):
         settings = AnalysisBackendSettings.instance()
         self._backend_buttons[settings.backend].setChecked(True)
         self.spinbox_nThreads.setValue(settings.n_threads or 0)
+        self._exec_buttons[settings.execution_strategy].setChecked(True)
+        self._on_backend_changed()
         self.checkbox_enabled.setChecked(settings.decluster_enabled)
         self.spinbox_dspace.setValue(settings.dspace)
         self.spinbox_dtime.setValue(settings.dtime_ns)

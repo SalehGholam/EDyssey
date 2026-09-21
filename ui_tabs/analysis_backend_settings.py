@@ -39,6 +39,10 @@ def _default_state():
     return {
         'backend': eb.BACKEND_OLD,
         'n_threads': None,  # None = "Auto" - don't override the backend's own default
+        # Threads, not processes: measured faster in every configuration
+        # checked (pyeventem/Examples/07_backend_performance.ipynb) - see
+        # eventem_backend.EXEC_THREADS's own docstring.
+        'execution_strategy': eb.EXEC_THREADS,
         'decluster_enabled': cfg['enabled'],
         'dspace': cfg['dspace'],
         'dtime_ns': cfg['dtime_ns'],
@@ -87,6 +91,9 @@ class AnalysisBackendSettings(QObject):
             self.backend = defaults['backend']
         n_threads = state.get('n_threads', defaults['n_threads'])
         self.n_threads = int(n_threads) if n_threads else None
+        self.execution_strategy = state.get('execution_strategy', defaults['execution_strategy'])
+        if self.execution_strategy not in eb.EXECUTION_STRATEGIES:
+            self.execution_strategy = defaults['execution_strategy']
         self.decluster_enabled = bool(state.get('decluster_enabled', defaults['decluster_enabled']))
         self.dspace = state.get('dspace', defaults['dspace'])
         self.dtime_ns = state.get('dtime_ns', defaults['dtime_ns'])
@@ -100,6 +107,7 @@ class AnalysisBackendSettings(QObject):
         return {
             'backend': self.backend,
             'n_threads': self.n_threads,
+            'execution_strategy': self.execution_strategy,
             'decluster_enabled': self.decluster_enabled,
             'dspace': self.dspace,
             'dtime_ns': self.dtime_ns,
@@ -143,10 +151,12 @@ class AnalysisBackendSettings(QObject):
             'backend': self.backend,
             'decluster_cfg': self.decluster_cfg(),
             'n_threads': self.n_threads,
+            'execution_strategy': self.execution_strategy,
         }
 
-    def set_values(self, backend=None, n_threads=_UNSET, decluster_enabled=None, dspace=None, dtime_ns=None,
-                   cluster_range=None, tot_per_electron=None, lut_file=None, sinks=None):
+    def set_values(self, backend=None, n_threads=_UNSET, execution_strategy=None, decluster_enabled=None,
+                   dspace=None, dtime_ns=None, cluster_range=None, tot_per_electron=None, lut_file=None,
+                   sinks=None):
         """Update whichever values are given (None = leave unchanged), then
         emit `changed` once and persist - the dialog's Apply button calls
         this once with every control's current value. `n_threads` uses a
@@ -156,6 +166,8 @@ class AnalysisBackendSettings(QObject):
             self.backend = backend
         if n_threads is not _UNSET:
             self.n_threads = int(n_threads) if n_threads else None
+        if execution_strategy is not None:
+            self.execution_strategy = execution_strategy
         if decluster_enabled is not None:
             self.decluster_enabled = decluster_enabled
         if dspace is not None:

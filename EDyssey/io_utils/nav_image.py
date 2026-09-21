@@ -52,7 +52,7 @@ def create_nav_signal_from_haadf(fns):
 def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
                            offset=None, repetitions=1, fn_pattern=None, logger=None,
                            n_threads=None, det_shape=(512, 512), backend=eb.BACKEND_OLD,
-                           decluster_cfg=None):
+                           decluster_cfg=None, execution_strategy=eb.EXEC_THREADS):
     """Compute a virtual STEM (vSTEM) navigation image from a .tpx3 file using
     one or several annular detectors.
 
@@ -91,13 +91,13 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
         fn, scanSize, dwell_time_ns=(dwellTime * 1000 if dwellTime is not None else 0.0),
         r_in=r_in, r_out=r_out, offset=offset, det_shape=det_shape, fn_pattern=fn_pattern,
         repetitions=repetitions, backend=backend, decluster_cfg=decluster_cfg,
-        logger_=logger, n_threads=n_threads,
+        logger_=logger, n_threads=n_threads, execution_strategy=execution_strategy,
     )
 
 def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETECTOR_RADIUS,
                                     offset=None, repetitions=1, fn_pattern=None, logger=None,
                                     n_threads=None, det_shape=(512, 512), backend=eb.BACKEND_OLD,
-                                    decluster_cfg=None):
+                                    decluster_cfg=None, execution_strategy=eb.EXEC_THREADS):
     """Compute a per-scan-position variance image from a .tpx3 file using
     eventem's Var processor - the variance-mode counterpart of
     calculate_nav_img_tpx3's vSTEM-based sum.
@@ -123,7 +123,7 @@ def calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=
         fn, scanSize, dwell_time_ns=(dwellTime * 1000 if dwellTime is not None else 0.0),
         r_in=r_in, r_out=r_out, offset=offset, det_shape=det_shape, fn_pattern=fn_pattern,
         repetitions=repetitions, backend=backend, decluster_cfg=decluster_cfg,
-        logger_=logger, n_threads=n_threads,
+        logger_=logger, n_threads=n_threads, execution_strategy=execution_strategy,
     )
 
 def calculate_nav_img_hdf5_eventem(fn, scanSize, det_mask=None, logger=None, fn_pattern=None, mode='sum',
@@ -230,7 +230,8 @@ def calculate_nav_img_hdf5_generic(fn, scanSize, det_mask=None, fn_pattern=None,
 
 def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
                       n_threads=None, fn_pattern=None, det_shape=(512, 512), mode='sum',
-                      max_workers=None, backend=eb.BACKEND_OLD, decluster_cfg=None):
+                      max_workers=None, backend=eb.BACKEND_OLD, decluster_cfg=None,
+                      execution_strategy=eb.EXEC_THREADS):
     """Dispatch navigation image computation to the format-specific function.
 
     Args:
@@ -283,12 +284,14 @@ def calculate_nav_img(fn, dtype=None, scanSize=None, dwellTime=1, logger=None,
             nav_img = calculate_nav_img_variance_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                                        logger=logger, n_threads=n_threads,
                                                        det_shape=det_shape, backend=backend,
-                                                       decluster_cfg=decluster_cfg)
+                                                       decluster_cfg=decluster_cfg,
+                                                       execution_strategy=execution_strategy)
         else:
             nav_img = calculate_nav_img_tpx3(fn, scanSize, dwellTime, fn_pattern=fn_pattern,
                                              logger=logger, n_threads=n_threads,
                                              det_shape=det_shape, backend=backend,
-                                             decluster_cfg=decluster_cfg)
+                                             decluster_cfg=decluster_cfg,
+                                             execution_strategy=execution_strategy)
     elif dtype == '.hdf5_eventem':
         nav_img = calculate_nav_img_hdf5_eventem(fn, scanSize, fn_pattern=fn_pattern, logger=logger, mode=mode,
                                                   max_workers=max_workers)
@@ -349,7 +352,8 @@ def create_virtual_detector_multi(shape, detectors):
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detectors=None,
                              logger=None, n_threads=None, fn_pattern=None,
                              det_shape=(512, 512), mode='sum', max_workers=None,
-                             backend=eb.BACKEND_OLD, decluster_cfg=None):
+                             backend=eb.BACKEND_OLD, decluster_cfg=None,
+                             execution_strategy=eb.EXEC_THREADS):
     """Compute a navigation image through one or several virtual detectors -
     the masked counterpart of `calculate_nav_img`.
 
@@ -408,7 +412,7 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
                 fn, scanSize, dwellTime, r_in=det.get('r_in', 0), r_out=det['r_out'],
                 offset=det['center'], fn_pattern=fn_pattern, logger=logger,
                 n_threads=n_threads, det_shape=det_shape, backend=backend,
-                decluster_cfg=decluster_cfg)
+                decluster_cfg=decluster_cfg, execution_strategy=execution_strategy)
         # eventem's vSTEM sums several detectors natively - no mask array
         # needed, just per-detector radius/center lists (see
         # calculate_nav_img_tpx3's docstring for why `offset` here is
@@ -419,7 +423,7 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         return calculate_nav_img_tpx3(fn, scanSize, dwellTime, r_in=r_in, r_out=r_out,
                                       offset=offset, fn_pattern=fn_pattern, logger=logger,
                                       n_threads=n_threads, det_shape=det_shape, backend=backend,
-                                      decluster_cfg=decluster_cfg)
+                                      decluster_cfg=decluster_cfg, execution_strategy=execution_strategy)
 
     if dtype in ['.zspy', '.hspy', '.mib', '.hdf5', '.blo', '.hdf5_eventem']:
         det_x, det_y = get_det_size(fn, dtype)
