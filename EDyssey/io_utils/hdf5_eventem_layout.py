@@ -589,16 +589,27 @@ def _reduce_frames(flat_block, mode, det_mask=None):
     RSS for the same chunk, and ~2x faster than batching `.var()` calls to
     stay within a memory budget.
 
-    `det_mask` is applied by *multiplying* it in (zeroing the excluded
-    pixels, which contribute 0 to both the sum and the sum-of-squares),
-    not by boolean-indexing `flat_block[:, det_mask]` first - that gather
-    is a scattered/non-contiguous memory access pattern and measured ~2x
-    slower than the multiply for a real annular detector mask, on top of
-    needing its own same-shape-as-the-selection temporary.
+    `det_mask` is applied by boolean-indexing `flat_block[:, det_mask]`,
+    not by multiplying it in (zeroing the excluded pixels) - **found as a
+    real crash, not a style choice**: multiplying needs a temporary the
+    same *full* (n_frames, n_pixels) shape as `flat_block` itself, doubling
+    this call's real peak memory to ~2 chunks' worth - but
+    `_resolve_max_workers` sizes the process pool assuming ~1 chunk per
+    worker (its own docstring says so), so masking silently doubled actual
+    memory use past what was budgeted, and a real virtual-detector mask
+    (measured: a typical annular BF detector covers ~3% of a 512x512
+    detector) reproducibly `MemoryError`'d a multi-worker masked reduction
+    that the equivalent unmasked (whole-detector) call never touches this
+    code path for at all (it takes the precomputed `dose_image` shortcut -
+    see `calculate_nav_img_hdf5_eventem`). Indexing's own result is sized
+    to the *selection* (`det_mask.sum()` columns, not `n_pixels`) - smaller
+    than `flat_block`, not another same-size copy, for any mask that
+    doesn't cover (nearly) the whole detector, which every annular/disk
+    virtual detector in this app is.
     """
     if det_mask is not None:
         n_pixels = int(np.count_nonzero(det_mask))
-        flat_block = flat_block * det_mask
+        flat_block = flat_block[:, det_mask]
     else:
         n_pixels = flat_block.shape[1]
     sum_x = flat_block.sum(axis=-1, dtype=np.float64)
