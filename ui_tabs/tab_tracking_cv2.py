@@ -720,9 +720,14 @@ class Tab_Tracking_CV2(TabBase):
         # mask panel itself shows, from one object's own cropped threshold
         # view to every active ("Use" checked) object's mask composited
         # onto the full frame, each in its own color with its index label
-        # at its centroid (see _draw_all_object_masks).
+        # at its centroid (see _draw_all_object_masks). A separate,
+        # independent toggle from Nav. Entries below (its own QButtonGroup,
+        # its own row) - a "Mask Panel:" label on this row and "Nav.
+        # Entries:" on that one is the only thing keeping two otherwise
+        # identically-worded pairs from being confused for one control.
         row_maskMode = qtw.QHBoxLayout()
         layout_featurePanel.addLayout(row_maskMode)
+        row_maskMode.addWidget(qtw.QLabel('Mask Panel:'))
         self.radio_maskSelected = qtw.QRadioButton('Selected Object')
         self.radio_maskSelected.setChecked(True)
         self.radio_maskAll = qtw.QRadioButton('All Active Objects')
@@ -733,6 +738,29 @@ class Tab_Tracking_CV2(TabBase):
         row_maskMode.addWidget(self.radio_maskAll)
         row_maskMode.addStretch(1)
         self.radio_maskSelected.toggled.connect(self._on_mask_mode_changed)
+
+        # Selected Object / All Active Objects - governs draw_rois_in's
+        # entry-box overlay on ax_nav (1) only, nothing else: which
+        # objects' (red) entry rectangles are drawn for the current frame.
+        # "All Active Objects" (the default) matches this app's original,
+        # unconditional behavior - every use==1 object whose own entry
+        # starts on this frame, regardless of table selection; "Selected
+        # Object" restricts that to just the one row currently selected
+        # (or none, drawn, if nothing is). Own QButtonGroup - toggling this
+        # never affects the Mask Panel pair above, or vice versa.
+        row_entryMode = qtw.QHBoxLayout()
+        layout_featurePanel.addLayout(row_entryMode)
+        row_entryMode.addWidget(qtw.QLabel('Nav. Entries:'))
+        self.radio_entrySelected = qtw.QRadioButton('Selected Object')
+        self.radio_entryAll = qtw.QRadioButton('All Active Objects')
+        self.radio_entryAll.setChecked(True)
+        self._group_entryMode = qtw.QButtonGroup(self)
+        self._group_entryMode.addButton(self.radio_entrySelected)
+        self._group_entryMode.addButton(self.radio_entryAll)
+        row_entryMode.addWidget(self.radio_entrySelected)
+        row_entryMode.addWidget(self.radio_entryAll)
+        row_entryMode.addStretch(1)
+        self.radio_entrySelected.toggled.connect(self._on_entry_mode_changed)
 
         self.tree_objects = TransposedObjectTable(self.cols_tree, row_labels, row_tooltips)
         layout_featurePanel.addWidget(self.tree_objects)
@@ -2002,12 +2030,28 @@ class Tab_Tracking_CV2(TabBase):
 
     def draw_rois_in(self, imgNo):
         """Draw the input ROI rectangles (+ id labels) that start on frame
-        `imgNo` onto ax_nav, replacing whatever was drawn there before."""
+        `imgNo` onto ax_nav, replacing whatever was drawn there before.
+
+        Which objects are included is governed by the Nav. Entries:
+        Selected Object / All Active Objects toggle (radio_entrySelected/
+        radio_entryAll) - a separate, independent choice from the Mask
+        Panel pair above tree_objects (that one only changes ax_mask (2);
+        this one only changes this ax_nav (1) overlay). "All Active
+        Objects" is the default and matches this method's original,
+        unconditional behavior; "Selected Object" restricts it to whichever
+        row is currently selected in the table (none, if nothing is)."""
         if len(self.patches_axNav) > 0:
             for p in self.patches_axNav:
                 p.remove()
             self.patches_axNav.clear()
         df = self.df_rois[self.df_rois.use == 1]
+        if self.radio_entrySelected.isChecked():
+            selected_items = self.tree_objects.selectedItems()
+            if selected_items:
+                selected_idx = int(selected_items[0].text(1))
+                df = df.loc[df.index.intersection([selected_idx])]
+            else:
+                df = df.iloc[0:0]
         if len(df) > 0:
             for i in df.index:
                 if imgNo in df.loc[i, 'init']:
@@ -2172,6 +2216,9 @@ class Tab_Tracking_CV2(TabBase):
         # self.canvas.draw_idle()
 
     def _on_mask_mode_changed(self):
+        self.update_canvas()
+
+    def _on_entry_mode_changed(self):
         self.update_canvas()
 
     def _draw_all_object_masks(self, img, imgNo):
@@ -3415,14 +3462,24 @@ class Tab_Tracking_CV2(TabBase):
         detected bounding box as a new ROI, initialized on the
         auto-detector's frame."""
         try:
-            idx_max = self.df_rois.index.to_numpy().max()
+            # +1: the *next free* index, not the max already in use - using
+            # the bare max here silently overwrote df_rois' existing last
+            # row with the first newly-detected object (and add_item_tree
+            # always appends, never updates, so that row's tree entry went
+            # stale/duplicated instead) on any auto-detect run after the
+            # first, when df_rois was no longer empty.
+            idx_max = self.df_rois.index.to_numpy().max() + 1
         except ValueError:
             idx_max = 0
         for i, obj in enumerate(objects):
+            # ref=None (the actual null, not the string 'None') - every
+            # other ROI-insertion site in this file uses plain None here
+            # (see on_press's new_row branch); the literal string 'None'
+            # passes df_rois.at[idx, 'ref']'s pd.isna() check (it's a
+            # non-null string) and then crashes _refresh_ref_combos'
+            # int(current_ref) the moment ANY row is added afterwards.
             self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
-                                           'None', None, None, None, None, None, None, None]
-            # self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
-            #                                        ref, None, None, None]
+                                           None, None, None, None, None, None, None, None]
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
         # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
