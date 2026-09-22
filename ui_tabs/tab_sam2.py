@@ -3228,8 +3228,9 @@ class Tab_SAM2(TabBase):
 #%% 3DED
     def activate_3ded_widgets(self, state):
         for wid in self.box_3ded.findChildren(qtw.QWidget):
-            if not isinstance(wid, qtw.QLabel):
-                wid.setEnabled(state)
+            if isinstance(wid, qtw.QLabel) or wid in (self.spinbox_threadNum, self.spinbox_fps):
+                continue
+            wid.setEnabled(state)
         # button_fineTuneMask lives in the left object-list panel (see
         # init_ui), not box_3ded, so the sweep above doesn't reach it -
         # toggled explicitly here instead (mirrors ROI Tracker's identical
@@ -3726,9 +3727,14 @@ class Tab_SAM2(TabBase):
         # button_cancel now lives inside box_3ded too (see init_ui) but
         # must stay independent of this sweep - it needs to stay clickable
         # regardless of tracking/segmentation/extraction state, managed by
-        # its own enable/disable calls elsewhere.
+        # its own enable/disable calls elsewhere. spinbox_threadNum/
+        # spinbox_fps (CPU Cores/Clip FPS) are excluded the same way - both
+        # are meant to be tunable at any time, not just once tracking/
+        # extraction is available (self.threadpool's own max thread count
+        # in particular has every reason to be adjustable before that).
         for wid in self.box_3ded.findChildren(qtw.QWidget):
-            if isinstance(wid, qtw.QLabel) or wid is self.button_cancel:
+            if (isinstance(wid, qtw.QLabel)
+                    or wid in (self.button_cancel, self.spinbox_threadNum, self.spinbox_fps)):
                 continue
             wid.setDisabled(state)
         # button_fineTuneMask lives in the left object-list panel (see

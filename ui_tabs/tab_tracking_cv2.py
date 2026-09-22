@@ -1830,9 +1830,15 @@ class Tab_Tracking_CV2(TabBase):
         # same way - it's just a preference (which tracker algorithm to use
         # next time "Track!" is clicked), pickable at any time, not
         # something that needs a loaded signal/tracked ROI first the way
-        # everything else in this column does.
+        # everything else in this column does. spinbox_threadNo/spinbox_fps
+        # (CPU Cores/Clip FPS) are excluded for the same reason - both are
+        # meant to be tunable at any time, not just once tracking/
+        # extraction is available (self.threadpool's own max thread count
+        # in particular has every reason to be adjustable before that).
         for wid in self.box_3ded.findChildren(qtw.QWidget):
-            if isinstance(wid, qtw.QLabel) or wid in (self.button_cancel, self.combo_trackMethod):
+            if isinstance(wid, qtw.QLabel) or wid in (
+                    self.button_cancel, self.combo_trackMethod,
+                    self.spinbox_threadNo, self.spinbox_fps):
                 continue
             wid.setDisabled(state)
         # button_fineTuneMask/button_blobSettings live in the left
