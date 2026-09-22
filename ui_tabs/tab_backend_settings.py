@@ -123,10 +123,12 @@ class BackendSettingsDialog(qtw.QDialog):
         self.layout.addWidget(backend_box)
         for radio in self._backend_buttons.values():
             radio.toggled.connect(self._on_backend_changed)
-        self._on_backend_changed()
+        # Not called yet here - _on_backend_changed also needs
+        # self.decluster_box, built further down; called once, after that,
+        # right below self._on_enabled_toggled's own identical initial call.
 
         # --- Declustering -------------------------------------------------
-        decluster_box = qtw.QGroupBox('Declustering')
+        self.decluster_box = decluster_box = qtw.QGroupBox('Declustering')
         decluster_layout = qtw.QVBoxLayout(decluster_box)
 
         self.checkbox_enabled = qtw.QCheckBox('Enable declustering')
@@ -218,6 +220,7 @@ class BackendSettingsDialog(qtw.QDialog):
 
         self.layout.addWidget(decluster_box)
         self._on_enabled_toggled(self.checkbox_enabled.isChecked())
+        self._on_backend_changed()
 
         button_row = qtw.QHBoxLayout()
         self.layout.addLayout(button_row)
@@ -237,10 +240,26 @@ class BackendSettingsDialog(qtw.QDialog):
         """Grey out the execution-strategy radios while a backend other
         than pyeventem is selected - old/new eventem's own "CPU cores"
         field already covers their internal thread pool, and neither has a
-        separate process mode in this app."""
+        separate process mode in this app.
+
+        Also grey out the entire Declustering box while 'Old eventem' is
+        selected - it has no declustering support at all (see
+        eventem_backend._decluster_active, which silently no-ops it with
+        just a warning-level log line). Previously the box stayed fully
+        interactive regardless: a user could check "Enable declustering",
+        tune every parameter, click Apply, and see literally zero effect
+        on any computation - the only explanation was this dialog's own
+        easy-to-miss italic note above. Confirmed as a real, reproducible
+        case of exactly that (a user's persisted settings had backend=
+        old_eventem and decluster_enabled=true at the same time - every
+        past "with declustering" run had actually been running without
+        it). Disabling the box doesn't touch the checkbox's own state - it
+        re-enables, unchanged, the moment a declustering-capable backend
+        is selected."""
         is_pyeventem = self._selected_backend() == eb.BACKEND_PYEVENTEM
         for radio in self._exec_buttons.values():
             radio.setEnabled(is_pyeventem)
+        self.decluster_box.setEnabled(self._selected_backend() != eb.BACKEND_OLD)
 
     def _on_enabled_toggled(self, checked):
         """Grey out every declustering sub-control while disabled, so it's
