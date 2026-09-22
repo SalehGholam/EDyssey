@@ -17,6 +17,8 @@ Pairs with EDyssey.io_utils.io_utils_ui.convert_to_8bit/convert_img_to_8bit
 UI plus this scheduling, but the actual pixel math still lives in
 io_utils_ui, not here.
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import pyqtSignal, Qt
 import EDyssey.io_utils as io
@@ -372,7 +374,8 @@ class ContrastScalingBox(qtw.QGroupBox):
         return self.apply_denoise(img_8bit)
 
     def rescale_async(self, raw_signal, threadpool, logger=None, on_done=None,
-                       on_error=None, on_progress=None, label='navigation signal'):
+                       on_error=None, on_progress=None, label='navigation signal',
+                       n_workers=1):
         """Contrast-stretch (then denoise, if enabled) the full `raw_signal`
         (a HyperSpy Signal2D) in a background QThreadPool worker, current
         settings. Calling this again before a previous call has finished
@@ -402,6 +405,19 @@ class ContrastScalingBox(qtw.QGroupBox):
                 "Apply to All Images" button) - a slow per-frame method on a
                 long stack can otherwise look hung for a while.
             label: What's being rescaled, for the log message.
+            n_workers: How many frames to denoise concurrently (the per-frame
+                contrast stretch above is already vectorized, not a loop, so
+                this only affects denoising) - a plain ThreadPoolExecutor,
+                not a process pool: every DENOISE_METHODS implementation is
+                scipy.ndimage/skimage, which release the GIL in their own
+                compiled inner loops, so real parallelism doesn't need the
+                pickling/spawn cost of separate processes here (unlike
+                eventem_backend's own eventem/pyeventem calls, which have
+                confirmed native thread-safety issues of their own - this
+                is a different, ordinary numpy/scipy/skimage code path with
+                none of that history). 1 (default) keeps the exact previous
+                sequential behavior - callers that care pass their own "CPU
+                Cores" ribbon spinbox value.
         """
         self._job_id += 1
         job_id = self._job_id
@@ -420,13 +436,33 @@ class ContrastScalingBox(qtw.QGroupBox):
                 data = s_8bit.data
                 if data.ndim >= 3:
                     total = data.shape[0]
-                    for i in range(total):
-                        data[i] = apply_denoise_to_array(data[i], denoise_method, denoise_param)
-                        # `worker` is assigned below, after this closure is
-                        # defined, but not until it actually runs - fine,
-                        # since Python closures resolve free variables at
-                        # call time, and this only ever runs after that.
-                        worker.signals.progress.emit(i + 1, total)
+                    workers = max(1, int(n_workers))
+                    if workers == 1:
+                        for i in range(total):
+                            data[i] = apply_denoise_to_array(data[i], denoise_method, denoise_param)
+                            # `worker` is assigned below, after this closure
+                            # is defined, but not until it actually runs -
+                            # fine, since Python closures resolve free
+                            # variables at call time, and this only ever
+                            # runs after that.
+                            worker.signals.progress.emit(i + 1, total)
+                    else:
+                        # Each future writes only its own disjoint data[i] -
+                        # no cross-thread overlap - and progress is emitted
+                        # from this one calling thread only, as futures
+                        # complete, rather than from inside each worker
+                        # thread, so there's no need to guard the counter
+                        # with a lock.
+                        with ThreadPoolExecutor(max_workers=workers) as ex:
+                            futures = {
+                                ex.submit(apply_denoise_to_array, data[i], denoise_method, denoise_param): i
+                                for i in range(total)
+                            }
+                            done = 0
+                            for fut in as_completed(futures):
+                                data[futures[fut]] = fut.result()
+                                done += 1
+                                worker.signals.progress.emit(done, total)
                 else:
                     s_8bit.data = apply_denoise_to_array(data, denoise_method, denoise_param)
             return s_8bit

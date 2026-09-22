@@ -1623,7 +1623,8 @@ class Tab_SAM2(TabBase):
         self.box_contrast.rescale_async(self.s_navSignal, self.threadpool, self.logger,
                                         on_progress=self.update_progress_bar,
                                         on_done=self._on_nav_signal_rescaled,
-                                        on_error=self._on_nav_signal_rescale_failed)
+                                        on_error=self._on_nav_signal_rescale_failed,
+                                        n_workers=self.spinbox_threadNum.value())
 
     def _refresh_current_frame_display(self, imgNo=None):
         """Rescale (contrast + denoise, current settings) and redraw just
