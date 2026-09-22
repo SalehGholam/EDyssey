@@ -2822,18 +2822,28 @@ class Tab_Tracking_CV2(TabBase):
             if 0 <= row < labels.shape[0] and 0 <= col < labels.shape[1]:
                 chosen_label = labels[row, col]
 
+        # A 2px dilation before tracing the contour, not the raw blob itself
+        # - the point of this overlay is just to show which blob is which
+        # before clicking one, not to mark the exact boundary, and a
+        # contour drawn right on top of the mask's own edge pixels hides
+        # exactly the pixels the user most needs to see. Dilating first
+        # pushes the traced line outside the mask, so it reads as "this
+        # blob is roughly here" without ever covering mask pixels.
+        dilate_kernel = np.ones((3, 3), dtype='uint8')
         for label in (lid for lid in np.unique(labels) if lid != 0):
             blob_u8 = (labels == label).astype('uint8')
             is_chosen = label == chosen_label
             color = 'lime' if is_chosen else 'cyan'
             ys, xs = np.where(blob_u8)
             cx, cy = float(xs.mean()), float(ys.mean())
-            contours, _ = cv2.findContours(blob_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            blob_u8_dilated = cv2.dilate(blob_u8, dilate_kernel, iterations=2)
+            contours, _ = cv2.findContours(blob_u8_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 pts = contour.reshape(-1, 2)  # (col, row) = (x, y), matching ax_mask's own extent
                 if len(pts) < 2:
                     continue
-                line = Line2D(pts[:, 0], pts[:, 1], color=color, linewidth=1.6 if is_chosen else 1.2)
+                line = Line2D(pts[:, 0], pts[:, 1], color=color, alpha=0.55, linestyle='--',
+                             linewidth=1.6 if is_chosen else 1.2)
                 self.ax_mask.add_line(line)
                 self._blob_overlay_artists.append(line)
             text = self.ax_mask.text(cx, cy, str(int(label)), color=color, fontsize=9, fontweight='bold',
