@@ -2174,7 +2174,7 @@ class Tab_Tracking_CV2(TabBase):
         # the *whole* axis (mask=0 regions included, just a dim viridis(0)
         # purple), rather than only coloring where the mask is actually
         # True and leaving everything else fully see-through.
-        mask_color = np.array([*to_rgb('tab:orange'), 0.15])
+        mask_color = np.array([*to_rgb('tab:orange'), 0.35])
         mask_rgba = img_mask.reshape(shape_x, shape_y, 1) * mask_color.reshape(1, 1, -1)
         self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
@@ -2271,7 +2271,7 @@ class Tab_Tracking_CV2(TabBase):
             full_mask[x:x + w, y:y + h] = img_mask
             if not full_mask.any():
                 continue
-            color = np.array([*cmap(idx2 % 10)[:3], 0.28])
+            color = np.array([*cmap(idx2 % 10)[:3], 0.48])
             composite[full_mask] = color
             cx, cy = io.mask_centroid(full_mask)
             labels.append((idx2, cx, cy))
