@@ -39,10 +39,30 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 
 import numpy as np
 
 logger = logging.getLogger('EDyssey.eventem_backend')
+
+#: Serializes every run_pacbed/run_vstem/run_var/run_roi/run_roi_masked call,
+#: across all three backends - confirmed necessary, not defensive-only:
+#: two of those calls running concurrently on independent QThreadPool worker
+#: threads (reachable from the GUI simply by changing a backend/declustering
+#: setting and clicking Recompute DP again before a previous computation
+#: finished - nothing currently stops that) reproducibly segfaults or
+#: corrupts pyeventem's own state, even with `progress=False` and even
+#: without declustering - isolated with a minimal repro against pyeventem's
+#: own public API directly, no EDyssey code involved, so this is a
+#: thread-safety gap in pyeventem's checkpoint-seeded ThreadPoolExecutor
+#: path (decode/parallel.py), not something app-level code can work around
+#: other than by never letting two such calls overlap. Old/new eventem's
+#: compiled .pyd calls have no equivalent confirmation either way, so this
+#: lock covers all three backends rather than assuming only pyeventem needs
+#: it. Parallelism *within* one call (n_threads/n_workers) is unaffected -
+#: only independent top-level calls are serialized, which is exactly the
+#: scenario that was silently unsafe before.
+_EVENTEM_CALL_LOCK = threading.Lock()
 
 BACKEND_OLD = 'old_eventem'
 BACKEND_NEW = 'new_eventem'
@@ -561,7 +581,15 @@ def _pyeventem_dispatch(sink_kind, sink_kwargs, fn, scan_size, dwell_time_ns, fn
 # Pacbed
 # ---------------------------------------------------------------------------
 
-def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
+def run_pacbed(*args, **kwargs):
+    """See _run_pacbed_impl - wrapped in _EVENTEM_CALL_LOCK (see that
+    lock's own docstring for why: two of these running concurrently is
+    reachable from the GUI and reproducibly crashes)."""
+    with _EVENTEM_CALL_LOCK:
+        return _run_pacbed_impl(*args, **kwargs)
+
+
+def _run_pacbed_impl(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
                fn_pattern=None, repetitions=1, backend=BACKEND_OLD,
                decluster_cfg=None, logger_=None, n_threads=None,
                execution_strategy=EXEC_THREADS):
@@ -610,7 +638,7 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
             dp.close_socket()
 
     return _pyeventem_dispatch(
-        'pacbed', dict(detector_size=det_shape[0]), fn, scan_size, dwell_time_ns, fn_pattern,
+        'pacbed', dict(detector_shape=det_shape[0]), fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
 
@@ -618,7 +646,14 @@ def run_pacbed(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
 # vSTEM
 # ---------------------------------------------------------------------------
 
-def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
+def run_vstem(*args, **kwargs):
+    """See _run_vstem_impl - wrapped in _EVENTEM_CALL_LOCK (see that lock's
+    own docstring)."""
+    with _EVENTEM_CALL_LOCK:
+        return _run_vstem_impl(*args, **kwargs)
+
+
+def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
               offset=None, det_shape=(512, 512), fn_pattern=None, repetitions=1,
               backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None,
               execution_strategy=EXEC_THREADS):
@@ -674,7 +709,7 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         centers = [(float(o[0]), float(o[1])) for o in offsets]
     return _pyeventem_dispatch(
         'vstem', dict(nx=scan_size[0], ny=scan_size[1], inner_radii=inner, outer_radii=outer,
-                      centers=centers, detector_size=det_shape[0]),
+                      centers=centers, detector_shape=det_shape[0]),
         fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
@@ -683,7 +718,14 @@ def run_vstem(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 # Var
 # ---------------------------------------------------------------------------
 
-def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
+def run_var(*args, **kwargs):
+    """See _run_var_impl - wrapped in _EVENTEM_CALL_LOCK (see that lock's
+    own docstring)."""
+    with _EVENTEM_CALL_LOCK:
+        return _run_var_impl(*args, **kwargs)
+
+
+def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
             offset=None, det_shape=(512, 512), fn_pattern=None, repetitions=1,
             backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None,
             execution_strategy=EXEC_THREADS):
@@ -734,7 +776,7 @@ def run_var(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
     center = (float(offset[0]), float(offset[1])) if offset else None
     return _pyeventem_dispatch(
         'var', dict(nx=scan_size[0], ny=scan_size[1], inner_radius=float(r_in), outer_radius=float(r_out),
-                   center=center, detector_size=det_shape[0]),
+                   center=center, detector_shape=det_shape[0]),
         fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
 
@@ -764,7 +806,14 @@ class RoiResult:
         return self._roi_4d
 
 
-def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 512),
+def run_roi(*args, **kwargs):
+    """See _run_roi_impl - wrapped in _EVENTEM_CALL_LOCK (see that lock's
+    own docstring)."""
+    with _EVENTEM_CALL_LOCK:
+        return _run_roi_impl(*args, **kwargs)
+
+
+def _run_roi_impl(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 512),
             fn_pattern=None, repetitions=1, get_4d=False, backend=BACKEND_OLD,
             decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None,
             execution_strategy=EXEC_THREADS):
@@ -820,14 +869,21 @@ def run_roi(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=(512, 
     roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
     scan_image, diffraction_pattern, roi_4d = _pyeventem_dispatch(
         'roi', dict(nx=scan_size[0], ny=scan_size[1], x=x, y=y, width=w, height=h,
-                   detector_size=det_shape[0], extract_4d=get_4d, **roi_kwargs),
+                   detector_shape=det_shape[0], extract_4d=get_4d, **roi_kwargs),
         fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on,
         row_band=(y, y + h), logger_=logger_)
     return RoiResult(scan_image, diffraction_pattern, roi_4d)
 
 
-def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 512),
+def run_roi_masked(*args, **kwargs):
+    """See _run_roi_masked_impl - wrapped in _EVENTEM_CALL_LOCK (see that
+    lock's own docstring)."""
+    with _EVENTEM_CALL_LOCK:
+        return _run_roi_masked_impl(*args, **kwargs)
+
+
+def _run_roi_masked_impl(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 512),
                     fn_pattern=None, repetitions=1, backend=BACKEND_OLD,
                     decluster_cfg=None, logger_=None, n_threads=None, bitdepth=None,
                     execution_strategy=EXEC_THREADS):
@@ -876,7 +932,7 @@ def run_roi_masked(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(512, 51
 
     roi_kwargs = {} if bitdepth is None else {'bitdepth': bitdepth}
     scan_image, diffraction_pattern, _roi_4d = _pyeventem_dispatch(
-        'roi', dict(nx=scan_size[0], ny=scan_size[1], detector_size=det_shape[0], mask=mask, **roi_kwargs),
+        'roi', dict(nx=scan_size[0], ny=scan_size[1], detector_shape=det_shape[0], mask=mask, **roi_kwargs),
         fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
     return RoiResult(scan_image, diffraction_pattern)
