@@ -74,16 +74,29 @@ BACKEND_LABELS = {
     BACKEND_PYEVENTEM: 'pyeventem',
 }
 
-#: pyeventem-only: how to split one file's decode across CPU workers. Old/new
-#: eventem have no equivalent knob here - their own "CPU cores" setting
-#: (n_threads) always means the C++'s own internal thread pool, regardless of
-#: this. Measured directly (pyeventem/Examples/07_backend_performance.ipynb,
-#: 2026-09-21): threads win in every configuration checked - multiprocessing
-#: adds process-spawn/import overhead with nothing to show for it, since
-#: pyeventem's own kernels already release the GIL - so EXEC_THREADS is both
-#: the default and the recommended choice. EXEC_PROCESSES exists for
-#: comparison/testing and for the rare machine/workload where re-measuring is
-#: worth it, not because it's expected to win.
+#: How to split one file's decode across CPU workers - meaningful for
+#: pyeventem (every sink) and New eventem (run_roi/run_roi_masked only, via
+#: _new_eventem_run_roi_multiprocess - Pacbed/vSTEM/Var have no equivalent
+#: C++ API). Old eventem has no equivalent knob at all - its "CPU cores"
+#: setting (n_threads) always means its own internal thread pool, which for
+#: .tpx3/CHEETAH decode does nothing regardless (see
+#: _new_eventem_run_roi_multiprocess's own docstring - confirmed true for
+#: *both* old and new eventem, not just old: the decode itself is a
+#: strictly sequential state machine).
+#:
+#: For pyeventem: measured directly (pyeventem/Examples/
+#: 07_backend_performance.ipynb, 2026-09-21) that EXEC_THREADS wins in every
+#: configuration checked there - multiprocessing adds process-spawn/import
+#: overhead with nothing to show for it, since pyeventem's own kernels
+#: already release the GIL. EXEC_THREADS is pyeventem's default for that
+#: reason; EXEC_PROCESSES exists for comparison/testing there.
+#:
+#: For New eventem's Roi: EXEC_PROCESSES is not a comparison option, it is
+#: the *only* way to get real parallelism at all - EXEC_THREADS (still
+#: pyeventem's own historical default, unchanged, so existing behavior for
+#: pyeventem is unaffected) leaves New eventem exactly as single-threaded
+#: as Old eventem, confirmed directly against the current EvenTem C++
+#: source and its own Examples/ROI.ipynb.
 EXEC_THREADS = 'threads'
 EXEC_PROCESSES = 'processes'
 EXECUTION_STRATEGIES = (EXEC_THREADS, EXEC_PROCESSES)
@@ -833,6 +846,161 @@ def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 
 
 # ---------------------------------------------------------------------------
+# New eventem: checkpoint-based multi-process Roi decode.
+#
+# **Confirmed directly against the current EvenTem C++ source (and its own
+# Examples/ROI.ipynb, "Splitting a big file across several processes"):**
+# `n_threads`/the old/new-eventem in-process branch above never parallelizes
+# the actual .tpx3 (CHEETAH) decode at all, for *any* backend - it's a
+# strictly sequential state machine (each of the 4 Timepix3 chips' pixel-hit
+# stream has to be walked in file order to track scan-line boundaries), so
+# LiveProcessor's own BoundedThreadPool sits idle for Pacbed/Roi/vSTEM/Var
+# (only Ricom actually pushes work to it). One process reading top-to-bottom
+# is the whole story however high "CPU Cores" is set - this is *why* New
+# eventem looked identical to Old eventem: both share this exact bottleneck.
+#
+# `Roi.find_checkpoints(n_splits)` is the real fix, but it's Roi-only (and
+# vSTEM, not wired up here yet) - Pacbed/Var's C++ classes have no
+# find_checkpoints/seed_*/file_byte_offset API at all. It scans the file
+# once (or reads pyeventem's own `.tpx3scan` sidecar instantly, if one
+# exists - `allow_sidecar=True`) to find `n_splits - 1` safe interior cut
+# points, each returned as a `(byte_offset, start_line, dt, rise_t[4],
+# rise_fall[4], line_count[4], chip_id)` tuple carrying everything a fresh
+# process needs to *resume* mid-file (a chip resuming mid-stream has no
+# header of its own to re-derive its rise/fall timing state from). Only
+# supports plain-raster .tpx3 (CHEETAH) - raises for anything else (a
+# smart-scan pixel-trigger file, in particular), handled below by falling
+# straight back to the ordinary single-process path.
+# ---------------------------------------------------------------------------
+
+def _new_eventem_build_worker_plan(checkpoints, n_workers):
+    """(file_byte_offset, line_number_offset, stop_at_line, seed_dict|None)
+    per worker - ports EvenTem/Examples/ROI.ipynb's own build_worker_plan
+    directly. Worker 0 always starts at the true file beginning (byte 0,
+    line 0, no seed - every chip's very first packet is a real header, so
+    its rise/fall state is unambiguous); every later worker resumes
+    mid-file at its own checkpoint and needs the seed dict for each chip's
+    in-flight state instead. Only the last worker reads to the true end of
+    file (stop_at_line=-1); every other worker stops exactly at the next
+    worker's start line."""
+    plan = []
+    for i in range(n_workers):
+        if i == 0:
+            file_byte_offset, line_number_offset, seed = 0, 0, None
+        else:
+            cp = checkpoints[i - 1]
+            file_byte_offset, line_number_offset = cp[0], cp[1]
+            seed = {'dt': cp[2], 'rise_t': cp[3], 'rise_fall': cp[4], 'line_count': cp[5], 'chip_id': cp[6]}
+        stop_at_line = checkpoints[i][1] if i < n_workers - 1 else -1
+        plan.append((file_byte_offset, line_number_offset, stop_at_line, seed))
+    return plan
+
+
+def _new_eventem_roi_worker(job):
+    """Top-level (picklable) entry point for one checkpoint-split New-eventem
+    Roi decode - must stay a plain module-level function, same reason as
+    _pyeventem_process_worker (ProcessPoolExecutor pickles it by reference on
+    Windows' spawn start method, which needs to re-import it by name in the
+    child process). Always Qt-free here: either this module was reached from
+    inside worker_eventem_call.py's own already-Qt-free subprocess (the real
+    GUI-process case - New eventem always needs that first hop regardless,
+    see _needs_subprocess), or from a genuinely Qt-free caller directly."""
+    (fn, scan_size, roi_rect, mask_flat, dwell_time_ns, det_shape, fn_pattern,
+     repetitions, get_4d, bitdepth, decluster_cfg, decluster_on,
+     file_byte_offset, line_number_offset, stop_at_line, seed) = job
+    mod = _new_eventem()
+    roi_obj = mod.Roi(repetitions=repetitions, extract_4D=get_4d)
+    roi_obj.n_threads = 1  # this process's own share of the split, not a nested pool
+    if bitdepth is not None:
+        roi_obj.set_bitdepth(bitdepth)
+    roi_obj.nx = scan_size[0]
+    roi_obj.ny = scan_size[1]
+    _set_detector_size(roi_obj, BACKEND_NEW, det_shape)
+    roi_obj.set_file(fn)
+    if fn_pattern is not None:
+        roi_obj.set_pattern_file(fn_pattern)
+    if mask_flat is not None:
+        roi_obj.set_roi_mask([mask_flat])
+    else:
+        x, y, w, h = roi_rect
+        roi_obj.set_roi(x=x, y=y, width=w, height=h)
+    roi_obj.set_dwell_time(int(round(dwell_time_ns)))
+    if decluster_on:
+        _apply_decluster_eventem(roi_obj, decluster_cfg)
+    roi_obj.file_byte_offset = file_byte_offset
+    roi_obj.line_number_offset = line_number_offset
+    roi_obj.stop_at_line = stop_at_line
+    if seed is not None:
+        roi_obj.seed_dt = seed['dt']
+        roi_obj.seed_rise_t = seed['rise_t']
+        roi_obj.seed_rise_fall = seed['rise_fall']
+        roi_obj.seed_line_count = seed['line_count']
+        roi_obj.seed_chip_id = seed['chip_id']
+    try:
+        roi_obj.run()
+        roi_4d = roi_obj.get_4D() if get_4d else None
+        return (np.asarray(roi_obj.Roi_scan_image), np.asarray(roi_obj.Roi_diffraction_pattern),
+                np.asarray(roi_4d) if roi_4d is not None else None)
+    finally:
+        roi_obj.close_socket()
+
+
+def _new_eventem_run_roi_multiprocess(fn, scan_size, roi_rect, mask_flat, dwell_time_ns, det_shape,
+                                       fn_pattern, repetitions, get_4d, bitdepth, decluster_cfg,
+                                       decluster_on, n_workers, logger_=None):
+    """Real multi-process .tpx3 decode for New eventem's Roi (rectangle or
+    masked) via find_checkpoints/seed_*/file_byte_offset - see this
+    section's own module-level docstring above.
+
+    Returns ``None`` (a sentinel, not a result) when checkpointing isn't
+    usable for this call - a smart-scan pixel-trigger file (find_checkpoints
+    only supports plain-raster CHEETAH), or fewer than 2 workers actually
+    resolved - so the caller falls straight back to its own ordinary
+    single-process path instead of raising."""
+    if fn_pattern:
+        return None
+    probe = None
+    try:
+        mod = _new_eventem()
+        probe = mod.Roi(repetitions=repetitions, extract_4D=False)
+        probe.nx = scan_size[0]
+        probe.ny = scan_size[1]
+        probe.set_file(fn)
+        probe.set_dwell_time(int(round(dwell_time_ns)))
+        checkpoints = probe.find_checkpoints(n_workers, True)
+    except RuntimeError:
+        return None
+    finally:
+        if probe is not None:
+            probe.close_socket()
+
+    # find_checkpoints degrades gracefully on a short file/small scan (fewer
+    # natural split points than requested) - resize the plan down to match
+    # rather than building one with more workers than checkpoints support.
+    n_workers = min(n_workers, len(checkpoints) + 1)
+    if n_workers <= 1:
+        return None
+
+    plan = _new_eventem_build_worker_plan(checkpoints, n_workers)
+    jobs = [
+        (fn, scan_size, roi_rect, mask_flat, dwell_time_ns, det_shape, fn_pattern,
+         repetitions, get_4d, bitdepth, decluster_cfg, decluster_on, fbo, lno, stop, seed)
+        for fbo, lno, stop, seed in plan
+    ]
+    if logger_ is not None:
+        logger_.info('Loading tpx3 (New eventem, %d processes)...', n_workers)
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=n_workers) as ex:
+        parts = list(ex.map(_new_eventem_roi_worker, jobs))
+    if logger_ is not None:
+        logger_.info('Loading tpx3 (New eventem, %d processes): done', n_workers)
+
+    scan_images, dps, cubes = zip(*parts)
+    roi_4d = sum(cubes) if cubes[0] is not None else None
+    return sum(scan_images), sum(dps), roi_4d
+
+
+# ---------------------------------------------------------------------------
 # Roi (rectangular and arbitrary-mask)
 # ---------------------------------------------------------------------------
 
@@ -875,7 +1043,14 @@ def _run_roi_impl(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=
     ``.Roi_scan_image``/``.Roi_diffraction_pattern``/``.get_4D()``).
     ``bitdepth``: old/new eventem's accumulator bit depth (``set_bitdepth``);
     pyeventem's equivalent constructor arg (default 64/uint64 in both if
-    left None)."""
+    left None).
+
+    ``execution_strategy``: pyeventem and New eventem both honor
+    ``EXEC_PROCESSES`` here (see ``_new_eventem_run_roi_multiprocess``'s own
+    module-level docstring for why New eventem needs this - its C++ decode
+    is a strictly sequential state machine, so ``n_threads``/"CPU cores"
+    alone never parallelizes it at all, for any backend). Ignored for Old
+    eventem, which has no equivalent split API."""
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     if roi_rect is None:
@@ -892,6 +1067,22 @@ def _run_roi_impl(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=
         ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
+        # New eventem only: n_threads never parallelizes the actual decode
+        # (see _new_eventem_run_roi_multiprocess's own module-level
+        # docstring) - EXEC_PROCESSES's checkpoint-based multi-process split
+        # is the only way to get real parallelism here. Falls straight
+        # through to the single-process path below on a None result (a
+        # smart-scan file, or fewer than 2 workers actually resolved).
+        if backend == BACKEND_NEW and execution_strategy == EXEC_PROCESSES:
+            workers = _pyeventem_workers(n_threads)
+            if workers > 1:
+                mp_result = _new_eventem_run_roi_multiprocess(
+                    fn, scan_size, (x, y, w, h), None, dwell_time_ns, det_shape, fn_pattern,
+                    repetitions, get_4d, bitdepth, decluster_cfg, decluster_on, workers, logger_=logger_)
+                if mp_result is not None:
+                    scan_image, diffraction_pattern, roi_4d = mp_result
+                    return RoiResult(scan_image, diffraction_pattern, roi_4d)
+
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=get_4d)
         if n_threads is not None:
@@ -958,6 +1149,19 @@ def _run_roi_masked_impl(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(5
         ), mask_array=mask, logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
+        # See run_roi's identical block for why this exists and when it
+        # falls back to the single-process path below.
+        if backend == BACKEND_NEW and execution_strategy == EXEC_PROCESSES:
+            workers = _pyeventem_workers(n_threads)
+            if workers > 1:
+                mask_flat = mask.flatten().astype(np.int32)
+                mp_result = _new_eventem_run_roi_multiprocess(
+                    fn, scan_size, None, mask_flat, dwell_time_ns, det_shape, fn_pattern,
+                    repetitions, False, bitdepth, decluster_cfg, decluster_on, workers, logger_=logger_)
+                if mp_result is not None:
+                    scan_image, diffraction_pattern, _roi_4d = mp_result
+                    return RoiResult(scan_image, diffraction_pattern)
+
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=False)
         if n_threads is not None:

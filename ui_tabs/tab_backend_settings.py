@@ -81,29 +81,38 @@ class BackendSettingsDialog(qtw.QDialog):
         self.spinbox_nThreads.setValue(settings.n_threads or 0)
         self.spinbox_nThreads.setToolTip(
             f'Worker threads used to decode the file (this machine has {_CPU_COUNT}). '
-            "\"Auto\" leaves it at the selected backend's own default. Old/New eventem use this "
-            'directly (n_threads); pyeventem uses it to decode with several threads in parallel, '
-            'but only while declustering is off - a declustered pyeventem run always decodes '
-            'sequentially, since resolving clusters needs each hit in original time order.')
+            "\"Auto\" leaves it at the selected backend's own default. Old eventem uses this "
+            "directly (n_threads) for its own internal thread pool, which - confirmed directly "
+            "against the C++ source - does nothing at all for .tpx3 decode speed regardless of "
+            "the value (a strictly sequential state machine). New eventem is identical *unless* "
+            "\"Processes\" is selected below, where it instead becomes the process count for a "
+            "real, checkpoint-based file split. pyeventem uses it to decode with several threads "
+            "in parallel, but only while declustering is off - a declustered pyeventem run "
+            'always decodes sequentially, since resolving clusters needs each hit in original '
+            'time order.')
         cores_row.addWidget(self.spinbox_nThreads)
         cores_row.addStretch(1)
         backend_layout.addLayout(cores_row)
 
-        # pyeventem-only: split those CPU cores across threads (the default,
-        # and the recommended choice - see eb.EXEC_THREADS's docstring) or
-        # across separate OS processes instead. Old/New eventem manage their
-        # own C++ thread pool through "CPU cores" above and have no separate
-        # process mode in this app, so this only matters while pyeventem is
-        # selected - see _on_backend_changed.
+        # Threads vs. processes for splitting "CPU cores" above across
+        # workers - meaningful for pyeventem (every sink) and, as of the
+        # checkpoint-based Roi split, New eventem's Roi/Roi-masked
+        # extraction too (see eb._new_eventem_run_roi_multiprocess's own
+        # docstring - confirmed directly against the EvenTem C++ source:
+        # its .tpx3 decode is a strictly sequential state machine, so
+        # "Threads" here does *nothing* for New eventem, unlike pyeventem).
+        # Old eventem has no equivalent split at all. Which choice is
+        # actually recommended is backend-dependent - the label text below
+        # updates live in _on_backend_changed rather than a static
+        # "(recommended)" suffix that would be right for one backend and
+        # actively misleading for the other.
         exec_row = qtw.QHBoxLayout()
-        exec_row.addWidget(qtw.QLabel('Execution strategy (pyeventem only):'))
+        self.label_execStrategy = qtw.QLabel('Execution strategy:')
+        exec_row.addWidget(self.label_execStrategy)
         self._exec_group = qtw.QButtonGroup(self)
         self._exec_buttons = {}
         for key in eb.EXECUTION_STRATEGIES:
-            label = eb.EXECUTION_STRATEGY_LABELS[key]
-            if key == eb.EXEC_THREADS:
-                label += ' (recommended)'
-            radio = qtw.QRadioButton(label)
+            radio = qtw.QRadioButton(eb.EXECUTION_STRATEGY_LABELS[key])
             if key == settings.execution_strategy:
                 radio.setChecked(True)
             self._exec_group.addButton(radio)
@@ -111,14 +120,10 @@ class BackendSettingsDialog(qtw.QDialog):
             exec_row.addWidget(radio)
         exec_row.addStretch(1)
         backend_layout.addLayout(exec_row)
-        exec_note = qtw.QLabel(
-            "Measured directly (pyeventem's Examples/07_backend_performance.ipynb): threads win in "
-            "every configuration checked - multiprocessing adds process-spawn/import overhead with "
-            "nothing to show for it, since pyeventem's own decoding already releases the GIL. "
-            "'Processes' exists for comparison/testing, not because it's expected to win.")
-        exec_note.setWordWrap(True)
-        exec_note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
-        backend_layout.addWidget(exec_note)
+        self.exec_note = qtw.QLabel()
+        self.exec_note.setWordWrap(True)
+        self.exec_note.setStyleSheet(f"color: {AppTheme.instance().color('fg_dim')}; font-style: italic;")
+        backend_layout.addWidget(self.exec_note)
 
         self.layout.addWidget(backend_box)
         for radio in self._backend_buttons.values():
@@ -237,10 +242,16 @@ class BackendSettingsDialog(qtw.QDialog):
         button_row.addWidget(self.button_close)
 
     def _on_backend_changed(self):
-        """Grey out the execution-strategy radios while a backend other
-        than pyeventem is selected - old/new eventem's own "CPU cores"
-        field already covers their internal thread pool, and neither has a
-        separate process mode in this app.
+        """Grey out the execution-strategy radios while 'Old eventem' is
+        selected - it has no split API of any kind, unlike pyeventem
+        (every sink) and New eventem (Roi/Roi-masked, via the checkpoint-
+        based multi-process split - see eb._new_eventem_run_roi_multiprocess's
+        own docstring). Also refreshes exec_note's text, since which choice
+        is actually recommended is backend-dependent: pyeventem measured
+        Threads faster in every configuration checked, but New eventem's
+        .tpx3 decode is a strictly sequential state machine - Threads does
+        *nothing* for it at all, Processes is the only way to get real
+        parallelism.
 
         Also grey out the entire Declustering box while 'Old eventem' is
         selected - it has no declustering support at all (see
@@ -256,10 +267,26 @@ class BackendSettingsDialog(qtw.QDialog):
         it). Disabling the box doesn't touch the checkbox's own state - it
         re-enables, unchanged, the moment a declustering-capable backend
         is selected."""
-        is_pyeventem = self._selected_backend() == eb.BACKEND_PYEVENTEM
+        backend = self._selected_backend()
         for radio in self._exec_buttons.values():
-            radio.setEnabled(is_pyeventem)
-        self.decluster_box.setEnabled(self._selected_backend() != eb.BACKEND_OLD)
+            radio.setEnabled(backend != eb.BACKEND_OLD)
+        if backend == eb.BACKEND_PYEVENTEM:
+            self.exec_note.setText(
+                "Measured directly (pyeventem's Examples/07_backend_performance.ipynb): 'Threads' "
+                "wins in every configuration checked there - multiprocessing adds process-spawn/"
+                "import overhead with nothing to show for it, since pyeventem's own decoding "
+                "already releases the GIL. 'Processes' exists for comparison/testing, not because "
+                "it's expected to win.")
+        elif backend == eb.BACKEND_NEW:
+            self.exec_note.setText(
+                "New eventem's .tpx3 decode is a strictly sequential state machine (confirmed "
+                "directly against the EvenTem C++ source and its own Examples/ROI.ipynb) - 'CPU "
+                "cores' above never parallelizes it at all while 'Threads' is selected here, "
+                "however high it's set. 'Processes' is the only way to get real parallelism: a "
+                "checkpoint-based split of the file across real OS processes, for Roi/Roi-masked "
+                "extraction only (Pacbed/vSTEM/Var have no equivalent C++ API yet).")
+        else:
+            self.exec_note.setText("Old eventem has no equivalent split - this setting is ignored.")
 
     def _on_enabled_toggled(self, checked):
         """Grey out every declustering sub-control while disabled, so it's
