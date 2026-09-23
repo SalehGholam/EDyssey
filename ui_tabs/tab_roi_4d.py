@@ -1459,6 +1459,21 @@ class Tab_ROI_on_4D(TabBase):
         height = max(int(height), 1)
         self.roi = (int(x0), int(y0), width, height)
 
+        # A fresh plain-rectangle draw supersedes whatever mask-based
+        # extraction ("DP by Threshold"/SAM2/Edge Detection) was last used -
+        # without this, _refresh_edge_mask's own dispatch (mask-based state
+        # wins over self.roi whenever both are set - see its own docstring)
+        # kept "Recompute DP" silently re-running that stale mask/threshold
+        # instead of this newly drawn ROI, even though drawing it just
+        # showed the correct ROI-based DP right here via _compute_roi_dp()
+        # below. Cleared unconditionally, then _on_threshold_control_changed
+        # immediately below re-sets it to 'roi_threshold' if the Threshold
+        # section's own Activate checkbox is on - so a ROI drawn with
+        # thresholding active still remembers that as its own "last type of
+        # enquiry", exactly like before.
+        self.seg_mask = None
+        self._mask_source = None
+
         self.press = None
         self.canvas.draw()
         self.logger.info('ROI: %s', self.roi)
