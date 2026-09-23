@@ -484,17 +484,21 @@ def test_pyeventem_workers_auto_is_capped_by_the_machine(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# New eventem's checkpoint-based multi-process Roi split
-# (_new_eventem_build_worker_plan/_new_eventem_run_roi_multiprocess) -
-# confirmed directly (against the real EvenTem C++ source and a real
-# eventem_new.pyd, outside this test file - neither is checked into this
-# repo, matching every other old/new-eventem test here) that
-# n_threads/BoundedThreadPool never parallelizes New eventem's own .tpx3
-# decode at all; find_checkpoints is the real mechanism. These tests mock
-# out eventem_new/ProcessPoolExecutor entirely, so they exercise only this
-# module's own orchestration logic (checkpoint -> worker plan -> job list ->
-# sum), the same way test_run_eventem_via_subprocess_* mocks subprocess.Popen
-# rather than needing a real child process.
+# New eventem's checkpoint-based multi-process split - all four sinks
+# (_new_eventem_build_worker_plan/_new_eventem_run_multiprocess/
+# _new_eventem_sink_worker) - confirmed directly (against the real EvenTem
+# C++ source, freshly extended with find_checkpoints/seed_*/
+# file_byte_offset on Pacbed/Var to match Roi/vSTEM's own pre-existing API,
+# and a real eventem_new.pyd rebuilt from it - neither the source changes
+# nor the .pyd are checked into this repo, matching every other old/new-
+# eventem test here) that n_threads/BoundedThreadPool never parallelizes
+# New eventem's own .tpx3 decode at all, for any sink; find_checkpoints is
+# the real mechanism, and checkpoint-split decode was verified bit-
+# identical to the single-process reference for all four sinks. These
+# tests mock out eventem_new/ProcessPoolExecutor entirely, so they exercise
+# only this module's own orchestration logic (checkpoint -> worker plan ->
+# job list -> sum), the same way test_run_eventem_via_subprocess_* mocks
+# subprocess.Popen rather than needing a real child process.
 # ---------------------------------------------------------------------------
 
 def test_new_eventem_build_worker_plan_shape():
@@ -527,19 +531,16 @@ def test_new_eventem_build_worker_plan_single_worker():
     assert plan == [(0, 0, -1, None)]
 
 
-class _FakeNewEventemRoi:
-    """Stands in for eventem_new.Roi - only what
-    _new_eventem_run_roi_multiprocess/_new_eventem_roi_worker touch."""
+class _FakeNewEventemBase:
+    """Common surface every fake sink below needs - what
+    _new_eventem_build_checkpoint_probe/_new_eventem_sink_worker touch on
+    any LiveProcessor-derived class, regardless of sink kind."""
     _checkpoints = [(1000, 5, 50, [0] * 4, [0] * 4, [5] * 4, 0)]
     _find_checkpoints_error = None
 
-    def __init__(self, repetitions=1, extract_4D=False):
-        self.repetitions = repetitions
-        self.extract_4D = extract_4D
+    def __init__(self, *a, **k):
         self.closed = False
         self.ran = False
-        self.set_roi_calls = []
-        self.set_roi_mask_calls = []
         self.detector_size = 0  # read by _set_detector_size(BACKEND_NEW) before it's ever set
 
     def set_file(self, fn):
@@ -548,17 +549,8 @@ class _FakeNewEventemRoi:
     def set_dwell_time(self, ns):
         self.dwell_time_ns = ns
 
-    def set_bitdepth(self, bd):
-        self.bitdepth = bd
-
     def set_pattern_file(self, fn_pattern):
         self.fn_pattern = fn_pattern
-
-    def set_roi(self, x, y, width, height):
-        self.set_roi_calls.append((x, y, width, height))
-
-    def set_roi_mask(self, masks):
-        self.set_roi_mask_calls.append(masks)
 
     def find_checkpoints(self, n_splits, allow_sidecar):
         if self._find_checkpoints_error is not None:
@@ -568,11 +560,63 @@ class _FakeNewEventemRoi:
     def run(self):
         self.ran = True
 
-    def get_4D(self):
-        return np.ones((2, 2))
-
     def close_socket(self):
         self.closed = True
+
+
+class _FakeNewEventemPacbed(_FakeNewEventemBase):
+    @property
+    def Pacbed_image(self):
+        return np.ones(16) * (self.line_number_offset + 1)
+
+
+class _FakeNewEventemVSTEM(_FakeNewEventemBase):
+    def __init__(self, repetitions=1):
+        super().__init__()
+        self.set_offsets_calls = []
+
+    def set_offsets(self, offsets):
+        self.set_offsets_calls.append(offsets)
+
+    def get_image(self):
+        return np.ones((4, 4)) * (self.line_number_offset + 1)
+
+
+class _FakeNewEventemVar(_FakeNewEventemBase):
+    def __init__(self, repetitions=1):
+        super().__init__()
+        self.set_offset_calls = []
+
+    def set_offset(self, offset):
+        self.set_offset_calls.append(offset)
+
+    @property
+    def Var_image(self):
+        return np.ones(16) * (self.line_number_offset + 1)
+
+
+class _FakeNewEventemRoi(_FakeNewEventemBase):
+    """Stands in for eventem_new.Roi - only what
+    _new_eventem_run_multiprocess/_new_eventem_sink_worker touch."""
+
+    def __init__(self, repetitions=1, extract_4D=False):
+        super().__init__()
+        self.repetitions = repetitions
+        self.extract_4D = extract_4D
+        self.set_roi_calls = []
+        self.set_roi_mask_calls = []
+
+    def set_bitdepth(self, bd):
+        self.bitdepth = bd
+
+    def set_roi(self, x, y, width, height):
+        self.set_roi_calls.append((x, y, width, height))
+
+    def set_roi_mask(self, masks):
+        self.set_roi_mask_calls.append(masks)
+
+    def get_4D(self):
+        return np.ones((2, 2))
 
     @property
     def Roi_scan_image(self):
@@ -586,11 +630,15 @@ class _FakeNewEventemRoi:
 @pytest.fixture
 def fake_new_eventem_module(monkeypatch):
     """Injects a fake eventem_new module (via eb._new_eventem) so
-    _new_eventem_run_roi_multiprocess/_new_eventem_roi_worker never touch a
+    _new_eventem_run_multiprocess/_new_eventem_sink_worker never touch a
     real .pyd - matches _set_detector_size's own SimpleNamespace-mock
     convention, just for a whole module instead of one object."""
-    _FakeNewEventemRoi._find_checkpoints_error = None
-    fake_module = types.SimpleNamespace(Roi=_FakeNewEventemRoi)
+    for cls in (_FakeNewEventemPacbed, _FakeNewEventemVSTEM, _FakeNewEventemVar, _FakeNewEventemRoi):
+        cls._find_checkpoints_error = None
+    fake_module = types.SimpleNamespace(
+        Pacbed=_FakeNewEventemPacbed, vSTEM=_FakeNewEventemVSTEM,
+        Var=_FakeNewEventemVar, Roi=_FakeNewEventemRoi,
+    )
     monkeypatch.setattr(eb, '_new_eventem', lambda: fake_module)
     return fake_module
 
@@ -599,8 +647,8 @@ def fake_new_eventem_module(monkeypatch):
 def fake_process_pool(monkeypatch):
     """Runs ProcessPoolExecutor.map's jobs in-process (via a plain list
     comprehension) instead of spawning real child processes - the point of
-    these tests is _new_eventem_run_roi_multiprocess's own orchestration,
-    not real multiprocessing (already covered by manual, outside-pytest
+    these tests is _new_eventem_run_multiprocess's own orchestration, not
+    real multiprocessing (already covered by manual, outside-pytest
     verification against a real eventem_new.pyd - see this module's own
     section docstring)."""
     class _FakeExecutor:
@@ -620,27 +668,27 @@ def fake_process_pool(monkeypatch):
     monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _FakeExecutor)
 
 
-def test_run_roi_multiprocess_returns_none_when_checkpointing_unsupported(fake_new_eventem_module):
+def test_run_multiprocess_returns_none_when_checkpointing_unsupported(fake_new_eventem_module):
     """A smart-scan pixel-trigger file (fn_pattern set) - find_checkpoints
     only supports plain-raster CHEETAH .tpx3 - must fall back to the
     caller's own single-process path, not raise."""
-    result = eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), (0, 0, 16, 16), None, 1000.0, (512, 512),
+    result = eb._new_eventem_run_multiprocess(
+        'roi', {'roi_rect': (0, 0, 16, 16)}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         'pattern.txt', 1, False, None, eb.default_decluster_cfg(), False, 4)
     assert result is None
 
 
-def test_run_roi_multiprocess_returns_none_on_runtime_error(fake_new_eventem_module):
+def test_run_multiprocess_returns_none_on_runtime_error(fake_new_eventem_module):
     _FakeNewEventemRoi._find_checkpoints_error = RuntimeError('not a CHEETAH file')
-    result = eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), (0, 0, 16, 16), None, 1000.0, (512, 512),
+    result = eb._new_eventem_run_multiprocess(
+        'roi', {'roi_rect': (0, 0, 16, 16)}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         None, 1, False, None, eb.default_decluster_cfg(), False, 4)
     assert result is None
 
 
-def test_run_roi_multiprocess_sums_every_worker(fake_new_eventem_module, fake_process_pool):
-    scan_image, dp, roi_4d = eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), (0, 0, 16, 16), None, 1000.0, (512, 512),
+def test_run_multiprocess_roi_sums_every_worker(fake_new_eventem_module, fake_process_pool):
+    scan_image, dp, roi_4d = eb._new_eventem_run_multiprocess(
+        'roi', {'roi_rect': (0, 0, 16, 16)}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         None, 1, False, None, eb.default_decluster_cfg(), False, 2)
     # 2 workers: worker 0 (line_number_offset=0) contributes 1s, worker 1
     # (line_number_offset=5, from the fake checkpoint) contributes 6s.
@@ -649,18 +697,18 @@ def test_run_roi_multiprocess_sums_every_worker(fake_new_eventem_module, fake_pr
     assert roi_4d is None  # get_4d=False
 
 
-def test_run_roi_multiprocess_extract_4d_sums_cubes(fake_new_eventem_module, fake_process_pool):
-    _, _, roi_4d = eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), (0, 0, 16, 16), None, 1000.0, (512, 512),
+def test_run_multiprocess_roi_extract_4d_sums_cubes(fake_new_eventem_module, fake_process_pool):
+    _, _, roi_4d = eb._new_eventem_run_multiprocess(
+        'roi', {'roi_rect': (0, 0, 16, 16)}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         None, 1, True, None, eb.default_decluster_cfg(), False, 2)
     assert roi_4d is not None
     assert roi_4d.shape == (2, 2)
 
 
-def test_run_roi_multiprocess_uses_mask_not_rect(fake_new_eventem_module, fake_process_pool):
+def test_run_multiprocess_roi_uses_mask_not_rect(fake_new_eventem_module, fake_process_pool):
     mask_flat = np.array([1, 0, 1, 0], dtype=np.int32)
-    eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), None, mask_flat, 1000.0, (512, 512),
+    eb._new_eventem_run_multiprocess(
+        'roi', {'mask_flat': mask_flat}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         None, 1, False, None, eb.default_decluster_cfg(), False, 2)
     # Every worker instance got set_roi_mask, never set_roi - can't inspect
     # the actual per-worker objects here (each is built fresh inside the
@@ -669,7 +717,30 @@ def test_run_roi_multiprocess_uses_mask_not_rect(fake_new_eventem_module, fake_p
     # reaching this line at all is the assertion.
 
 
-def test_run_roi_multiprocess_caps_workers_to_available_checkpoints(fake_new_eventem_module, monkeypatch):
+def test_run_multiprocess_pacbed_sums_every_worker(fake_new_eventem_module, fake_process_pool):
+    dp = eb._new_eventem_run_multiprocess(
+        'pacbed', {}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
+        None, 1, False, None, eb.default_decluster_cfg(), False, 2)
+    assert np.array_equal(dp, np.full(16, 7.0))  # same 1+6 arithmetic as the Roi test above
+
+
+def test_run_multiprocess_var_sums_every_worker(fake_new_eventem_module, fake_process_pool):
+    var_image = eb._new_eventem_run_multiprocess(
+        'var', {'inner_radius': 0.0, 'outer_radius': 500.0, 'center': (8.0, 8.0)},
+        'f.tpx3', (16, 16), 1000.0, (512, 512),
+        None, 1, False, None, eb.default_decluster_cfg(), False, 2)
+    assert np.array_equal(var_image, np.full(16, 7.0))
+
+
+def test_run_multiprocess_vstem_sums_every_worker_and_sets_offsets(fake_new_eventem_module, fake_process_pool):
+    vstem_image = eb._new_eventem_run_multiprocess(
+        'vstem', {'inner_radii': [0.0], 'outer_radii': [256.0], 'centers': [(8.0, 8.0)]},
+        'f.tpx3', (16, 16), 1000.0, (512, 512),
+        None, 1, False, None, eb.default_decluster_cfg(), False, 2)
+    assert np.array_equal(vstem_image, np.full((4, 4), 7.0))
+
+
+def test_run_multiprocess_caps_workers_to_available_checkpoints(fake_new_eventem_module, monkeypatch):
     """find_checkpoints degrades gracefully on a small scan - only 1
     checkpoint means at most 2 real workers, however many were requested."""
     calls = []
@@ -689,7 +760,7 @@ def test_run_roi_multiprocess_caps_workers_to_available_checkpoints(fake_new_eve
 
     import concurrent.futures
     monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _CountingExecutor)
-    eb._new_eventem_run_roi_multiprocess(
-        'f.tpx3', (16, 16), (0, 0, 16, 16), None, 1000.0, (512, 512),
+    eb._new_eventem_run_multiprocess(
+        'roi', {'roi_rect': (0, 0, 16, 16)}, 'f.tpx3', (16, 16), 1000.0, (512, 512),
         None, 1, False, None, eb.default_decluster_cfg(), False, 8)  # 8 requested, only 1 checkpoint available
     assert calls == [2]  # 1 checkpoint -> at most 2 workers, not 8
