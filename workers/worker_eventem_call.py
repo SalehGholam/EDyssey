@@ -1,15 +1,23 @@
 # -*- coding: utf-8 -*-
 """Qt-free subprocess entry point for a single EDyssey.io_utils.eventem_backend
-run_*() call - the actual fix for 'New eventem' segfaulting whenever it's
-imported in a process that already has PyQt5 loaded (see
-eventem_backend._new_eventem's own comment for the full story: 100%
-reproducible, root cause is inside eventem_new.pyd's own compiled code, not
-diagnosable further without a debugger). Rather than just failing cleanly
-in that case, eventem_backend.py now runs the *entire* New-eventem call
-through this script instead - a real, separate, Qt-free process, exactly
-like "Extract!"/"Calculate All"/"Compute Virtual Image" already use for
-their own (batch) work, just synchronous and generic over which run_*
-function is being called.
+run_*() call - used by eventem_backend._needs_subprocess for two
+independent, confirmed reasons (see that function's own docstring):
+
+- 'New eventem' segfaults whenever it's imported in a process that already
+  has PyQt5 loaded (see eventem_backend._new_eventem's own comment for the
+  full story: 100% reproducible, root cause is inside eventem_new.pyd's
+  own compiled code, not diagnosable further without a debugger) - always
+  true in the real GUI process, so New eventem always ends up here.
+- Old eventem and pyeventem cannot coexist in the same OS process at all -
+  confirmed directly (see eventem_backend._resident_backend's own
+  docstring): one corrupts the other's results before eventually
+  segfaulting. Whichever of the two first runs in-process "owns" that
+  process; every call for the *other* one runs through here instead.
+
+Either way, eventem_backend.py runs the *entire* call through this script -
+a real, separate, Qt-free process, exactly like "Extract!"/"Calculate
+All"/"Compute Virtual Image" already use for their own (batch) work, just
+synchronous and generic over which backend/run_* function is being called.
 
 Invoked as `--worker eventem_call <request.json path> <result.npz path>`
 via worker_launch.worker_command()/worker_dispatch.py, the same indirection

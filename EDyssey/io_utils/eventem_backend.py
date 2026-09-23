@@ -121,14 +121,14 @@ def _new_eventem():
         # wiring. A real fix needs a debugger session against the evenTem
         # C++ source/build - not diagnosable further from here.
         #
-        # Every run_*() function below checks _new_eventem_needs_subprocess()
-        # BEFORE ever reaching this function, and delegates the whole call to
-        # a real, separate, Qt-free subprocess instead (see
-        # _run_new_eventem_via_subprocess) - so by the time this actually
-        # runs, either PyQt5 genuinely isn't loaded in this process (a batch
-        # worker, or the dedicated subprocess itself), or a caller reached
-        # this directly without going through run_*() at all, which is a
-        # caller bug, not something to paper over here.
+        # Every run_*() function below checks _needs_subprocess() BEFORE ever
+        # reaching this function, and delegates the whole call to a real,
+        # separate, Qt-free subprocess instead (see _run_eventem_via_
+        # subprocess) - so by the time this actually runs, either PyQt5
+        # genuinely isn't loaded in this process (a batch worker, or the
+        # dedicated subprocess itself), or a caller reached this directly
+        # without going through run_*() at all, which is a caller bug, not
+        # something to paper over here.
         if _EVENTEM_NEW_DIR not in sys.path:
             sys.path.insert(0, _EVENTEM_NEW_DIR)
         import eventem_new
@@ -152,17 +152,64 @@ def _to_jsonable(value):
 def _new_eventem_needs_subprocess() -> bool:
     """True once PyQt5 is loaded in this process - see _new_eventem's own
     comment for why importing eventem_new directly is then guaranteed to
-    segfault, and _run_new_eventem_via_subprocess for the actual fix."""
+    segfault, and _run_eventem_via_subprocess for the actual fix."""
     return 'PyQt5.QtCore' in sys.modules
 
 
-def _run_new_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=None, logger_=None):
-    """Run one run_*() call for backend=BACKEND_NEW in a real, separate,
-    Qt-free process (workers/worker_eventem_call.py) instead of importing
-    eventem_new directly here - see _new_eventem_needs_subprocess/
-    _new_eventem's own comments for why this is necessary, not optional.
-    Every other backend/sink combination stays in-process; this is New
-    eventem's own, otherwise-invisible, workaround.
+#: Which backend's native code (old eventem's compiled .pyd, or pyeventem's
+#: own numba/LLVM JIT machinery) has actually run *in-process* in this
+#: session - None until the first in-process call. Read/written only from
+#: _needs_subprocess(), itself only ever called from inside _run_*_impl,
+#: which always runs under _EVENTEM_CALL_LOCK - no separate lock needed.
+#:
+#: **Confirmed via a direct repro, no EDyssey code involved beyond this
+#: facade**: old eventem and pyeventem cannot coexist in the same OS
+#: process. A single old eventem call, followed by ordinary pyeventem
+#: calls on the exact same file/parameters, silently corrupted pyeventem's
+#: own result first (a deterministic synthetic file's diffraction-pattern
+#: sum changed between two otherwise-identical calls - not just "eventually
+#: crashed"), then segfaulted within a handful of further calls - far
+#: faster and worse than pyeventem's own already-documented instability
+#: under heavy repeated use alone (see _EVENTEM_CALL_LOCK's docstring).
+#: Old eventem alone, repeated many times, never reproduced any problem at
+#: all - this is specifically a cross-backend contamination bug, and
+#: exactly what "switching the .tpx3 backend, even several times" in the
+#: Edit menu's dialog reaches: the default backend is old eventem, so the
+#: very first switch to pyeventem in any session already hits this.
+#:
+#: New eventem already sidesteps this entirely - it always runs via
+#: subprocess in the real GUI process anyway (PyQt5 is always loaded
+#: there - see _new_eventem_needs_subprocess), so it never becomes
+#: "resident" here in practice.
+_resident_backend = None
+
+
+def _needs_subprocess(backend: str) -> bool:
+    """True when this call must run in a real, separate OS process instead
+    of in-process - either of two independent, confirmed reasons: New
+    eventem in a process that already has PyQt5 loaded (see
+    _new_eventem_needs_subprocess), or a switch away from whichever
+    backend already ran in-process this session (see _resident_backend's
+    own docstring). The first backend to actually run in-process claims
+    residency and stays on the fast path for the rest of the session;
+    every other backend pays the subprocess cost instead of ever loading
+    its own native code alongside the resident one."""
+    global _resident_backend
+    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
+        return True
+    if _resident_backend is None:
+        _resident_backend = backend
+        return False
+    return _resident_backend != backend
+
+
+def _run_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=None, logger_=None):
+    """Run one run_*() call in a real, separate process (workers/
+    worker_eventem_call.py) instead of in-process here - see
+    _needs_subprocess for the two independent reasons a call ends up here
+    (New eventem + PyQt5 already loaded, or a cross-backend switch away
+    from whichever backend is already resident in this process). Every
+    call that doesn't need this stays in-process, on the fast path.
 
     `kwargs` must already be JSON-serializable (tuples become lists automatically;
     None/bool/int/float/str all pass through as-is) - the caller builds it
@@ -172,12 +219,12 @@ def _run_new_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=Non
     isn't JSON-serializable, and round-tripping it as nested lists would
     bloat the request file for no reason.
 
-    Subprocess console output (eventem_new's own native progress bar, or
+    Subprocess console output (the backend's own native progress bar, or
     the request itself failing) is piped back through `logger_` live via
     pipe_process_output_to_logger, the same way redirect_console_to_logger
-    already does for genuinely in-process calls - so New eventem's progress
-    shows up in the Qt log console exactly like every other backend's does,
-    despite now running in a different process entirely.
+    already does for genuinely in-process calls - so progress shows up in
+    the Qt log console exactly like every other backend's does, despite
+    now running in a different process entirely.
 
     Assigned to a Windows Job Object with KILL_ON_JOB_CLOSE, the same
     mechanism worker_pool_utils.py's own batch drivers already use for
@@ -198,7 +245,7 @@ def _run_new_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=Non
     from .progress import pipe_process_output_to_logger
     import worker_pool_utils as wpu
 
-    with tempfile.TemporaryDirectory(prefix='edyssey_eventem_new_') as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix='edyssey_eventem_subprocess_') as tmp_dir:
         request_path = os.path.join(tmp_dir, 'request.json')
         result_path = os.path.join(tmp_dir, 'result.npz')
         request_kwargs = dict(kwargs)
@@ -214,14 +261,16 @@ def _run_new_eventem_via_subprocess(func_name: str, kwargs: dict, mask_array=Non
         job_handle = wpu.create_job_object()
         if job_handle is not None:
             wpu.assign_process_to_job(job_handle, proc.pid)
+        backend_label = BACKEND_LABELS.get(kwargs.get('backend'), 'eventem')
         try:
-            returncode, tail_lines = pipe_process_output_to_logger(proc, logger_, 'Loading tpx3 (New eventem)')
+            returncode, tail_lines = pipe_process_output_to_logger(
+                proc, logger_, f'Loading tpx3 ({backend_label})')
         finally:
             wpu.kill_job(job_handle)
         if returncode != 0:
             detail = '\n'.join(tail_lines) or '(no output captured)'
             raise RuntimeError(
-                f"New eventem's subprocess failed (exit code {returncode}):\n{detail}")
+                f"{backend_label}'s subprocess failed (exit code {returncode}):\n{detail}")
 
         # `with np.load(...)`, not a bare call - np.load() on a .npz lazily
         # keeps the file open (it's a zip archive read on demand), and
@@ -600,11 +649,11 @@ def _run_pacbed_impl(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'pacbed')
 
-    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
-        return _run_new_eventem_via_subprocess('run_pacbed', dict(
+    if _needs_subprocess(backend):
+        return _run_eventem_via_subprocess('run_pacbed', dict(
             fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns, det_shape=list(det_shape),
             fn_pattern=fn_pattern, repetitions=repetitions, backend=backend,
-            decluster_cfg=decluster_cfg, n_threads=n_threads,
+            decluster_cfg=decluster_cfg, n_threads=n_threads, execution_strategy=execution_strategy,
         ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
@@ -667,12 +716,13 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
     inner = list(r_in) if isinstance(r_in, (list, tuple)) else [r_in]
     outer = list(r_out) if isinstance(r_out, (list, tuple)) else [r_out]
 
-    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
-        return _run_new_eventem_via_subprocess('run_vstem', dict(
+    if _needs_subprocess(backend):
+        return _run_eventem_via_subprocess('run_vstem', dict(
             fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns,
             r_in=_to_jsonable(r_in), r_out=_to_jsonable(r_out), offset=_to_jsonable(offset),
             det_shape=list(det_shape), fn_pattern=fn_pattern, repetitions=repetitions,
             backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+            execution_strategy=execution_strategy,
         ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
@@ -735,12 +785,13 @@ def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
     decluster_cfg = decluster_cfg or default_decluster_cfg()
     decluster_on = _decluster_active(backend, decluster_cfg, 'var')
 
-    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
-        return _run_new_eventem_via_subprocess('run_var', dict(
+    if _needs_subprocess(backend):
+        return _run_eventem_via_subprocess('run_var', dict(
             fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns,
             r_in=_to_jsonable(r_in), r_out=_to_jsonable(r_out), offset=_to_jsonable(offset),
             det_shape=list(det_shape), fn_pattern=fn_pattern, repetitions=repetitions,
             backend=backend, decluster_cfg=decluster_cfg, n_threads=n_threads,
+            execution_strategy=execution_strategy,
         ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
@@ -832,12 +883,12 @@ def _run_roi_impl(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=
     else:
         x, y, w, h = roi_rect
 
-    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
-        return _run_new_eventem_via_subprocess('run_roi', dict(
+    if _needs_subprocess(backend):
+        return _run_eventem_via_subprocess('run_roi', dict(
             fn=fn, scan_size=list(scan_size), roi_rect=list(roi_rect) if roi_rect is not None else None,
             dwell_time_ns=dwell_time_ns, det_shape=list(det_shape), fn_pattern=fn_pattern,
             repetitions=repetitions, get_4d=get_4d, backend=backend, decluster_cfg=decluster_cfg,
-            n_threads=n_threads, bitdepth=bitdepth,
+            n_threads=n_threads, bitdepth=bitdepth, execution_strategy=execution_strategy,
         ), logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):
@@ -898,11 +949,12 @@ def _run_roi_masked_impl(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(5
     decluster_on = _decluster_active(backend, decluster_cfg, 'roi')
     mask = np.asarray(mask)
 
-    if backend == BACKEND_NEW and _new_eventem_needs_subprocess():
-        return _run_new_eventem_via_subprocess('run_roi_masked', dict(
+    if _needs_subprocess(backend):
+        return _run_eventem_via_subprocess('run_roi_masked', dict(
             fn=fn, scan_size=list(scan_size), dwell_time_ns=dwell_time_ns, det_shape=list(det_shape),
             fn_pattern=fn_pattern, repetitions=repetitions, backend=backend,
             decluster_cfg=decluster_cfg, n_threads=n_threads, bitdepth=bitdepth,
+            execution_strategy=execution_strategy,
         ), mask_array=mask, logger_=logger_)
 
     if backend in (BACKEND_OLD, BACKEND_NEW):

@@ -236,7 +236,7 @@ def test_pyeventem_run_sequential_declustered_when_single_threaded():
 # New eventem's subprocess delegation (importing eventem_new directly in a
 # process that already has PyQt5 loaded segfaults - see _new_eventem's own
 # comment) - _to_jsonable, the sys.modules-based detection, and
-# _run_new_eventem_via_subprocess's request/response marshaling (mocked
+# _run_eventem_via_subprocess's request/response marshaling (mocked
 # subprocess - these don't need a real eventem_new.pyd or PyQt5 installed).
 # ---------------------------------------------------------------------------
 
@@ -268,16 +268,82 @@ def test_new_eventem_needs_subprocess_reflects_pyqt5_presence(monkeypatch):
         del eb.sys.modules['PyQt5.QtCore']
 
 
+# ---------------------------------------------------------------------------
+# _needs_subprocess / _resident_backend: old eventem and pyeventem cannot
+# coexist in the same OS process (confirmed directly - one corrupts the
+# other's results, then segfaults, far faster than either alone) - the
+# first backend to actually run in-process "owns" the process; every call
+# for a *different* backend must be routed through a subprocess instead.
+# _resident_backend is reset around each test (a plain module-level global,
+# not per-test state) so these can't leak into each other or into whichever
+# other test in this file happens to run first/after.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _reset_resident_backend(monkeypatch):
+    """Only for the tests below - _resident_backend is a plain module-level
+    global, not per-test state, so it (and, where relevant, whether
+    PyQt5.QtCore looks "loaded") must be pinned to a known value around
+    each of these rather than leaking from/into whichever other test in
+    this file happens to run first/after."""
+    monkeypatch.setattr(eb, '_resident_backend', None)
+    monkeypatch.delitem(eb.sys.modules, 'PyQt5.QtCore', raising=False)
+
+
+def test_first_backend_claims_residency_and_stays_in_process(_reset_resident_backend):
+    assert eb._needs_subprocess(eb.BACKEND_OLD) is False
+    assert eb._resident_backend == eb.BACKEND_OLD
+
+
+def test_same_backend_repeated_stays_in_process(_reset_resident_backend):
+    assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is False
+    assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is False
+    assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is False
+
+
+def test_switching_to_a_different_backend_needs_a_subprocess(_reset_resident_backend):
+    assert eb._needs_subprocess(eb.BACKEND_OLD) is False  # old eventem claims residency
+    assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is True  # pyeventem must not run in-process
+    # old eventem itself is still the resident backend - stays fast.
+    assert eb._needs_subprocess(eb.BACKEND_OLD) is False
+
+
+def test_switching_back_and_forth_repeatedly_never_lets_the_non_resident_one_in(_reset_resident_backend):
+    eb._needs_subprocess(eb.BACKEND_PYEVENTEM)  # pyeventem claims residency first this time
+    for _ in range(5):
+        assert eb._needs_subprocess(eb.BACKEND_OLD) is True
+        assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is False
+
+
+def test_new_eventem_with_pyqt5_loaded_always_needs_a_subprocess_regardless_of_residency(_reset_resident_backend):
+    eb.sys.modules['PyQt5.QtCore'] = object()
+    assert eb._needs_subprocess(eb.BACKEND_NEW) is True
+    # And doesn't claim residency by going through that path - a
+    # not-yet-resident old eventem/pyeventem call right after must still
+    # get the fast, in-process path.
+    assert eb._resident_backend is None
+    assert eb._needs_subprocess(eb.BACKEND_OLD) is False
+
+
+def test_new_eventem_without_pyqt5_can_claim_residency_like_any_other_backend(_reset_resident_backend):
+    """The Qt-free case (a real --worker subprocess) - New eventem has no
+    special exemption from the cross-backend rule once it's not being
+    routed out for the PyQt5 reason."""
+    assert eb._needs_subprocess(eb.BACKEND_NEW) is False
+    assert eb._resident_backend == eb.BACKEND_NEW
+    assert eb._needs_subprocess(eb.BACKEND_PYEVENTEM) is True
+
+
 class _FakeCompletedProcess:
     """Stands in for subprocess.Popen - only .pid/.stdout are touched by
-    _run_new_eventem_via_subprocess before pipe_process_output_to_logger
+    _run_eventem_via_subprocess before pipe_process_output_to_logger
     (itself mocked out in these tests) takes over."""
     pid = 12345
     stdout = None
 
 
 def _patch_subprocess_plumbing(monkeypatch, tmp_path, returncode=0, tail_lines=()):
-    """Mocks every external dependency _run_new_eventem_via_subprocess
+    """Mocks every external dependency _run_eventem_via_subprocess
     reaches for (the worker_launch/worker_pool_utils modules it imports
     lazily, and subprocess.Popen itself), so these tests exercise only its
     own request-building/result-unpacking logic - never a real subprocess,
@@ -307,7 +373,7 @@ def _patch_subprocess_plumbing(monkeypatch, tmp_path, returncode=0, tail_lines=(
     )
 
 
-def test_run_new_eventem_via_subprocess_array_result(monkeypatch, tmp_path):
+def test_run_eventem_via_subprocess_array_result(monkeypatch, tmp_path):
     _patch_subprocess_plumbing(monkeypatch, tmp_path)
 
     captured_request = {}
@@ -341,13 +407,13 @@ def test_run_new_eventem_via_subprocess_array_result(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_json, 'dump', _capturing_dump)
 
-    result = eb._run_new_eventem_via_subprocess('run_pacbed', {'fn': 'f.tpx3', 'scan_size': [512, 512]})
+    result = eb._run_eventem_via_subprocess('run_pacbed', {'fn': 'f.tpx3', 'scan_size': [512, 512]})
     np.testing.assert_array_equal(result, [1.0, 2.0, 3.0])
     assert captured_request['func'] == 'run_pacbed'
     assert captured_request['kwargs']['fn'] == 'f.tpx3'
 
 
-def test_run_new_eventem_via_subprocess_roi_result_with_mask(monkeypatch, tmp_path):
+def test_run_eventem_via_subprocess_roi_result_with_mask(monkeypatch, tmp_path):
     _patch_subprocess_plumbing(monkeypatch, tmp_path)
 
     captured_request = {}
@@ -380,7 +446,7 @@ def test_run_new_eventem_via_subprocess_roi_result_with_mask(monkeypatch, tmp_pa
 
     mask = np.zeros((4, 4), dtype=bool)
     mask[1, 1] = True
-    result = eb._run_new_eventem_via_subprocess(
+    result = eb._run_eventem_via_subprocess(
         'run_roi_masked', {'fn': 'f.tpx3', 'scan_size': [4, 4]}, mask_array=mask)
     assert isinstance(result, eb.RoiResult)
     assert 'mask_path' in captured_request['kwargs']
@@ -388,10 +454,10 @@ def test_run_new_eventem_via_subprocess_roi_result_with_mask(monkeypatch, tmp_pa
         result.get_4D()  # no roi_4d in this fake result - matches get_4d=False
 
 
-def test_run_new_eventem_via_subprocess_raises_on_nonzero_exit(monkeypatch, tmp_path):
+def test_run_eventem_via_subprocess_raises_on_nonzero_exit(monkeypatch, tmp_path):
     _patch_subprocess_plumbing(monkeypatch, tmp_path, returncode=1, tail_lines=['Traceback...', 'RuntimeError: boom'])
     with pytest.raises(RuntimeError, match='boom'):
-        eb._run_new_eventem_via_subprocess('run_pacbed', {'fn': 'f.tpx3', 'scan_size': [512, 512]})
+        eb._run_eventem_via_subprocess('run_pacbed', {'fn': 'f.tpx3', 'scan_size': [512, 512]})
 
 
 def test_pyeventem_workers_resolves_auto(monkeypatch):
