@@ -1291,7 +1291,16 @@ class Tab_Create_NavSignal(TabBase):
                                           decluster_cfg=backend_settings.decluster_cfg(),
                                           execution_strategy=backend_settings.execution_strategy)
         worker.signals.results.connect(lambda result, idx, fn=fn: self._on_test_result(result, fn))
+        worker.signals.error.connect(lambda traceback_text, idx, fn=fn: self._on_test_failed(traceback_text, fn))
         QThreadPool.globalInstance().start(worker)
+
+    def _on_test_failed(self, traceback_text, fn):
+        # Without this, a failure here (bad dwell time/scan size/mask
+        # parameters, a corrupt file, ...) vanished with no trace at all -
+        # test_selected_file() itself logs the attempt but never its outcome.
+        self.logger.error('Failed to compute test navigation image for %s:\n%s', fn, traceback_text)
+        qtw.QMessageBox.critical(self, 'Test Failed',
+            f'Computing the test navigation image failed for {fn}:\n\nSee the log for details.')
 
     def _on_test_result(self, result, fn):
         """Display a completed test navigation image (from test_selected_file)
@@ -2677,6 +2686,7 @@ class Tab_Create_NavSignal(TabBase):
         path_imgs = os.path.join(path_save, 'navigation_images')
         os.mkdir(path_imgs)
         worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s.data)
+        worker_frames.signals.error.connect(self._on_background_export_failed)
         threadpool.start(worker_frames)
         fn_clip = os.path.join(path_save, 'navigation_images_clip')
         scale_real = self.lineEdit_scale_real.text()
@@ -2687,6 +2697,7 @@ class Tab_Create_NavSignal(TabBase):
         worker_clip = WorkerThread_General(io.create_clip_tracking, 0, fn_clip,
                                            s.data, None, scale=scale_real,
                                            fps=self.spinbox_fps.value(), logger=self.logger)
+        worker_clip.signals.error.connect(self._on_background_export_failed)
         threadpool.start(worker_clip)
 
         scale_recip = self.lineEdit_scale_recip.text()
@@ -2702,6 +2713,15 @@ class Tab_Create_NavSignal(TabBase):
         metadata['scale_recip_invA_per_px'] = scale_recip
         with open(os.path.join(path_save, 'metadata.json'), 'w') as f:
             json.dump(metadata, f, indent=4)
+
+    def _on_background_export_failed(self, traceback_text, index):
+        """WorkerThread_General.signals.error slot for save_results()'s
+        background frame/clip-export workers (create_frames/
+        create_clip_tracking) - these run silently in the background after
+        Save Results itself already returned, so without this a failure
+        (bad path, ffmpeg crash, disk full, ...) left no trace anywhere at
+        all."""
+        self.logger.error('Background result export failed:\n%s', traceback_text)
 
     def update_progress_bar(self, value, total):
         self.progress_bar.setRange(0, total)

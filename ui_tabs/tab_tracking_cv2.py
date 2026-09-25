@@ -46,7 +46,7 @@ from .transposed_object_table import TransposedObjectTable
 from .pets2_dialog import Pets2ParamsDialog
 from .ribbon import RibbonPanel, RibbonTool
 from .smart_scan_dialog import SmartScanCheckDialog
-from .mask_edit_dialog import MaskEditDialog
+from .mask_edit_dialog import MaskEditDialog, format_frame_list
 from .blob_segmentation_dialog import BlobSegmentationDialog
 from .frame_flag_bar import FrameFlagBar
 from skimage.filters import threshold_otsu, threshold_li, threshold_mean, threshold_yen
@@ -1443,8 +1443,18 @@ class Tab_Tracking_CV2(TabBase):
         # self.s = load(fn)
         worker = WorkerThread_General(get_signal, 0, fn)
         worker.signals.results.connect(self.initiate_processing)
+        worker.signals.error.connect(self._on_navSignal_load_failed)
         self.threadpool.start(worker)
-    
+
+    def _on_navSignal_load_failed(self, traceback_text, index):
+        # Without this, a load failure (corrupt/unsupported file) left the
+        # spinner started above spinning forever, with no way to tell the
+        # user anything went wrong and nothing in the log to debug it from.
+        self.spinner.stop()
+        self.logger.error('Failed to load navigation signal:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Load Failed',
+            'Loading the navigation signal failed - see the log for details.')
+
     def reset_data(self):
         """Clear all ROI patches from the nav/track axes, reset the ROI
         dataframe/tree and displayed images to blank placeholders."""
@@ -1727,6 +1737,7 @@ class Tab_Tracking_CV2(TabBase):
 
         worker = WorkerThread_General(self._load_saved_analysis_worker, 0, path, fn_nav)
         worker.signals.results.connect(self._on_saved_analysis_loaded)
+        worker.signals.error.connect(self._on_navSignal_load_failed)
         self.threadpool.start(worker)
 
     @staticmethod
@@ -2606,6 +2617,9 @@ class Tab_Tracking_CV2(TabBase):
             self._split_blob_segment(idx, imgNo, seed_centroid)  # also clears the centroid cache
         else:
             self._blob_centroid_cache.pop(idx, None)
+        self.logger.info(
+            'Blob Selection settings saved for ROI %d (method=%s, params=%s)%s.',
+            idx, method, params, f', reseeded at frame {imgNo}' if seed_changed else '')
         self._sync_blob_checkbox(idx)
         self.update_canvas()
 
@@ -2719,6 +2733,8 @@ class Tab_Tracking_CV2(TabBase):
         else:
             self.df_rois.at[idx, 'blob'] = {'method': method, 'params': params, 'segments': []}
         self._blob_centroid_cache.pop(idx, None)
+        self.logger.info('Blob Selection %s for ROI %d.',
+                          'enabled' if enabled else 'disabled', idx)
 
     def _split_blob_segment(self, idx, frame_idx, seed_centroid):
         """Seed (or re-seed) ROI `idx`'s Blob Selection at `frame_idx` -
@@ -2790,6 +2806,8 @@ class Tab_Tracking_CV2(TabBase):
             self.logger.info('No blob under the click on ROI %d, frame %d.', idx, imgNo)
             return
         self._split_blob_segment(idx, imgNo, chosen_centroid)
+        self.logger.info('Blob Selection reseeded for ROI %d at frame %d (centroid=%s).',
+                          idx, imgNo, chosen_centroid)
         self.update_canvas(imgNo)
 
     def _draw_blob_overlay(self, idx, frame_idx):
@@ -3833,7 +3851,11 @@ class Tab_Tracking_CV2(TabBase):
             self.df_rois.at[idx, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_rois.at[idx, 'edge'] = dialog.get_edge_settings()
             self._apply_dialog_settings_to_ui(dialog)
-            self.logger.info('Fine-tuned mask saved for ROI %d.', idx)
+            edited_frames = dialog.get_edited_frame_indices()
+            self.logger.info(
+                'Fine-tuned mask saved for ROI %d - %d/%d frame(s) changed: %s.',
+                idx, len(edited_frames), len(dialog.get_mask_stack()),
+                format_frame_list(edited_frames))
             self.update_canvas()
 
     def _apply_dialog_settings_to_ui(self, dialog):
@@ -4005,6 +4027,14 @@ class Tab_Tracking_CV2(TabBase):
         temp_dir = tempfile.mkdtemp(prefix='edyssey_3ded_')
         self._current_obj_temp_dir = temp_dir
         tasks = self._obj_task_specs.pop(idx)
+        # Compared against in _handle_3ded_driver_finished, to detect the
+        # driver process crashing/exiting before it ever reported DONE/FAIL
+        # for every task it was given (e.g. a malformed tasks.json or an
+        # unhandled exception in run_batch() itself) - that would otherwise
+        # go completely unnoticed, since the DONE/FAIL protocol is the only
+        # per-task signal the driver ever sends.
+        self._current_obj_n_tasks = len(tasks)
+        self._current_obj_n_reported = 0
         for task in tasks:
             mask_path = os.path.join(temp_dir, f"mask_f{task['i_index']}.npy")
             np.save(mask_path, self.df_rois.loc[idx, 'mask'][task['i_index']])
@@ -4030,7 +4060,9 @@ class Tab_Tracking_CV2(TabBase):
         process.started.connect(lambda: self._on_3ded_driver_started(process))
         process.readyReadStandardOutput.connect(lambda: self._read_3ded_driver_stdout(process))
         process.readyReadStandardError.connect(lambda: self.handle_error(process))
-        process.finished.connect(lambda: self._handle_3ded_driver_finished(process))
+        process.finished.connect(
+            lambda exit_code, exit_status: self._handle_3ded_driver_finished(
+                process, exit_code, exit_status))
         process.errorOccurred.connect(lambda error: self._3ded_driver_failed_to_start(process, error))
         process.start()
 
@@ -4076,6 +4108,7 @@ class Tab_Tracking_CV2(TabBase):
         except Exception as e:
             self._3ded_failed = True
             self.logger.error('Failed to load DP for ROI %s frame %s: %s', idx, i_fr, e)
+        self._current_obj_n_reported += 1
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
 
@@ -4083,10 +4116,11 @@ class Tab_Tracking_CV2(TabBase):
         self._3ded_failed = True
         self.logger.error('3DED extraction failed for ROI %s frame %s: %s',
                           self._current_obj_idx, i_fr, message)
+        self._current_obj_n_reported += 1
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
 
-    def _handle_3ded_driver_finished(self, process):
+    def _handle_3ded_driver_finished(self, process, exit_code, exit_status):
         """Drain remaining stdout, release the Job Object, clean up this
         object's own temp dir, and - unless this was a Cancel - mark it
         extracted in the tree and move on to the next queued object (or
@@ -4105,7 +4139,27 @@ class Tab_Tracking_CV2(TabBase):
             shutil.rmtree(temp_dir, ignore_errors=True)
         if self._cancelling:
             return
-        self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)
+        # A driver that crashed (or exited early) before reporting DONE/FAIL
+        # for every task it was given (see _launch_next_object_batch) would
+        # otherwise still get marked "extracted" here despite having
+        # produced no per-frame diagnostic at all - worker_extract_frame_batch.py
+        # has no top-level try/except of its own, so e.g. a malformed
+        # tasks.json crashes it silently from the GUI's point of view.
+        n_expected = getattr(self, '_current_obj_n_tasks', 0)
+        n_reported = getattr(self, '_current_obj_n_reported', 0)
+        if exit_code != 0 or n_reported < n_expected:
+            self._3ded_failed = True
+            self.logger.error(
+                '3DED extraction batch driver for ROI %s exited abnormally '
+                '(exit code %s, status %s) after reporting %d/%d task(s) - '
+                'this ROI is NOT fully extracted.',
+                idx, exit_code, exit_status, n_reported, n_expected)
+            missing = n_expected - n_reported
+            if missing > 0:
+                self.tomo_counter += missing
+                self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+        else:
+            self.toggle_tree_icon(self.df_rois.index.get_loc(idx), 'ext', True)
         self._launch_next_object_batch()
 
     def _3ded_driver_failed_to_start(self, process, error):
@@ -4447,6 +4501,7 @@ class Tab_Tracking_CV2(TabBase):
                 os.mkdir(path_pets)
                 fld_frames = os.path.join(path_pets, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp)
+                worker_frames.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_frames)
                 scale_recip = self.lineEdit_scale_recip.text()
                 try:
@@ -4463,6 +4518,7 @@ class Tab_Tracking_CV2(TabBase):
                                                       scale_recip, center=self.dp_center,
                                                       fps=self.spinbox_fps.value(),
                                                       logger=self.logger)
+                worker_clip_dp.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_clip_dp)
 
             # clip for tracking
@@ -4488,8 +4544,18 @@ class Tab_Tracking_CV2(TabBase):
                 io.create_clip_tracking, 0, fn, self.nav_imgs,
                 self.df_rois.loc[idx, 'out_rois'], ref_rois=ref_rois, scale=scale_real,
                 fps=self.spinbox_fps.value(), logger=self.logger)
+            worker_clip_tr_ref.signals.error.connect(self._on_background_export_failed)
             self.threadpool.start(worker_clip_tr_ref)
-            
+
+    def _on_background_export_failed(self, traceback_text, index):
+        """WorkerThread_General.signals.error slot for save_results()'s
+        background frame/clip-export workers (create_frames/create_clip_dp/
+        create_clip_tracking) - these run silently in the background after
+        Save Results itself already returned, so without this a failure
+        (bad path, ffmpeg crash, disk full, ...) left no trace anywhere at
+        all."""
+        self.logger.error('Background result export failed:\n%s', traceback_text)
+
     def kill_3ded_driver(self):
         """Forcefully kill the currently-running 3DED batch driver process
         for whichever object is in flight (if any) - along with every pool

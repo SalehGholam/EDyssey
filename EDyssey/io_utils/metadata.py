@@ -35,7 +35,7 @@ def get_metadata(path_main, count=0):
                 val = val.rstrip(' microseconds\n')
             metadata[key] = float(val)
         except Exception:
-            pass
+            pass  # most comment.txt lines aren't "key: float" pairs at all - not an error
     return metadata
 
 def read_metadata_text(path_main):

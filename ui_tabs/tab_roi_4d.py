@@ -822,8 +822,8 @@ class Tab_ROI_on_4D(TabBase):
         layout_canvas_row.addWidget(self.wrap_canvas_in_scroll(self.canvas), 1)
         layout_canvas_row.addWidget(self.clip_dp)
         layout_canvas.addWidget(self.wrap_canvas_row_in_border(_canvas_row_widget))
-        self.clip_nav.valueChanged.connect(lambda: self.update_canvas(ax='nav'))
-        self.clip_dp.valueChanged.connect(lambda: self.update_canvas(ax='dp'))
+        self.clip_nav.valueChanged.connect(self._update_nav_clim)
+        self.clip_dp.valueChanged.connect(self._update_dp_clim)
 
         #%% ribbon
         # Docked along the right edge (see layout_right_outer above) - an
@@ -1680,6 +1680,29 @@ class Tab_ROI_on_4D(TabBase):
         self.img_display['nav'].set_data(img_temp)
         self.canvas.draw_idle()
 
+    def _update_dp_clim(self):
+        """clip_dp.valueChanged slot: re-apply its current vmin/vmax to the
+        already-displayed DP image only, via draw_idle() - unlike
+        update_canvas('dp'), this skips the scale-bar/reciprocal-circle
+        artist add/remove (neither depends on clim) and the forced
+        synchronous canvas.draw(), both of which otherwise ran on every
+        single slider tick while dragging and were the main source of drag
+        lag (matches Tab_Create_NavSignal/Tab_SAM2's equivalent clim-only
+        slots)."""
+        if 'dp' not in getattr(self, 'img_display', {}):
+            return
+        vmin, vmax = self.clip_dp.values()
+        self.img_display['dp'].set_clim(vmin, vmax)
+        self.canvas.draw_idle()
+
+    def _update_nav_clim(self):
+        """clip_nav.valueChanged slot - see _update_dp_clim's docstring."""
+        if 'nav' not in getattr(self, 'img_display', {}):
+            return
+        vmin, vmax = self.clip_nav.values()
+        self.img_display['nav'].set_clim(vmin=vmin, vmax=vmax)
+        self.canvas.draw_idle()
+
     def update_canvas(self, ax='dp', roiUpdate=False):
         """Refresh the 'dp' or 'nav' image display from current data -
         roiUpdate=True also refreshes the "ROI Image" crop. Scale bars and
@@ -2472,6 +2495,19 @@ class Tab_ROI_on_4D(TabBase):
         # JSON-decode check in _handle_finished_sam below.
         self._stderr_buffer.log_info(self._process_sam, self.logger, 'SAM2')
 
+    def _show_missing_dependency_dialog(self, message):
+        """worker_sam.py reports this when torch/sam2 aren't importable -
+        deliberately not bundled in a frozen build (see INSTALL.md). Matches
+        Tab_SAM2's own dialog of the same name."""
+        self.logger.error('SAM2 worker reported a missing dependency: %s', message)
+        qtw.QMessageBox.warning(self, 'SAM2 Dependencies Not Installed',
+            f'{message}\n\n'
+            'SAM2 needs torch and the sam2 package installed, which this '
+            "app doesn't bundle. Use Help > Set Up SAM2... in the menu bar "
+            'to install them - it runs the required pip commands for you '
+            'and shows the progress. See INSTALL.md for the manual steps if '
+            "you'd rather run them yourself.")
+
     def _handle_finished_sam(self, exit_code=0, exit_status=0):
         """Slot for the SAM2 subprocess's QProcess.finished: parse its
         JSON+npz result into self.seg_mask (or report a failure), then
@@ -2483,9 +2519,12 @@ class Tab_ROI_on_4D(TabBase):
         text = bytes(self._process_sam.readAllStandardOutput()).decode('utf-8')
         try:
             result = json.loads(text.strip())
+            if result.get('error') == 'missing_dependency':
+                self._show_missing_dependency_dialog(result['message'])
+                return
             with np.load(result['path']) as f:
                 mask = f['obj_0']
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, KeyError):
             self.logger.error('Could not decode SAM2 segmentation result: %s', text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',
                 f'Could not decode SAM2 output. Check console for details.\n'

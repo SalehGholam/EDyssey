@@ -44,7 +44,7 @@ from .pets2_dialog import Pets2ParamsDialog
 from .transposed_object_table import TransposedObjectTable
 from .frame_flag_bar import FrameFlagBar
 from .smart_scan_dialog import SmartScanCheckDialog
-from .mask_edit_dialog import MaskEditDialog
+from .mask_edit_dialog import MaskEditDialog, format_frame_list
 from .sam2_auto_detector_widget import SAM2AutoDetectorWidget
 from .ribbon import RibbonPanel, RibbonTool
 from worker_extract_frame import load_dp
@@ -1530,7 +1530,17 @@ class Tab_SAM2(TabBase):
 
         worker = WorkerThread_General(_load, 0, fn)
         worker.signals.results.connect(self._on_navSignal_loaded)
+        worker.signals.error.connect(self._on_navSignal_load_failed)
         self.threadpool.start(worker)
+
+    def _on_navSignal_load_failed(self, traceback_text, index):
+        # Without this, a load failure (corrupt/unsupported file) left the
+        # spinner started above spinning forever, with no way to tell the
+        # user anything went wrong and nothing in the log to debug it from.
+        self.spinner.stop()
+        self.logger.error('Failed to load navigation signal:\n%s', traceback_text)
+        qtw.QMessageBox.critical(self, 'Load Failed',
+            'Loading the navigation signal failed - see the log for details.')
 
     def _on_navSignal_loaded(self, result, index):
         """WorkerThread_General callback for load_navSignal(): apply the
@@ -1828,6 +1838,7 @@ class Tab_SAM2(TabBase):
 
         worker = WorkerThread_General(self._load_saved_analysis_worker, 0, path, fn_nav)
         worker.signals.results.connect(self._on_saved_analysis_loaded)
+        worker.signals.error.connect(self._on_navSignal_load_failed)
         self.threadpool.start(worker)
 
     def _load_saved_analysis_worker(self, path, fn_nav):
@@ -2178,7 +2189,11 @@ class Tab_SAM2(TabBase):
             self.df_obj.at[obj_id, 'mesh'] = dialog.get_mesh_settings()
             self.df_obj.at[obj_id, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_obj.at[obj_id, 'edge'] = dialog.get_edge_settings()
-            self.logger.info('Fine-tuned mask saved for object %d.', obj_id)
+            edited_frames = dialog.get_edited_frame_indices()
+            self.logger.info(
+                'Fine-tuned mask saved for object %d - %d/%d frame(s) changed: %s.',
+                obj_id, len(edited_frames), len(dialog.get_mask_stack()),
+                format_frame_list(edited_frames))
             self.update_canvas()
 
     def on_item_check_changed(self, item):
@@ -3056,9 +3071,9 @@ class Tab_SAM2(TabBase):
                         '\n\nCheck them via the red marks on the frame-flag bar under the '
                         'slider (click one to jump there), or the "Qlty" column in the '
                         'object list.')
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, KeyError):
             self._track_failed = True
-            self.logger.error("Could not decode result: %s", text)
+            self.logger.exception("Could not decode result: %s", text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',
                 f'Could not decode SAM2 output. Check console for details.\n'
                 f'Raw output (first 200 chars): {text[:200]}')
@@ -3219,8 +3234,8 @@ class Tab_SAM2(TabBase):
                 'SAM2 single-image segmentation completed successfully for '
                 '%d object(s), frame %d.', len(obj_ids), imgNo)
             self.update_canvas(imgNo)
-        except json.JSONDecodeError:
-            self.logger.error("Could not decode SAM2 single-image segmentation result: %s", text)
+        except (json.JSONDecodeError, KeyError):
+            self.logger.exception("Could not decode SAM2 single-image segmentation result: %s", text)
             qtw.QMessageBox.warning(self, 'SAM2 Error',
                 f'Could not decode SAM2 output. Check console for details.\n'
                 f'Raw output (first 200 chars): {text[:200]}')
@@ -3550,6 +3565,14 @@ class Tab_SAM2(TabBase):
         temp_dir = tempfile.mkdtemp(prefix='edyssey_3ded_')
         self._current_obj_temp_dir = temp_dir
         tasks = self._obj_task_specs.pop(idx)
+        # Compared against in _handle_3ded_driver_finished, to detect the
+        # driver process crashing/exiting before it ever reported DONE/FAIL
+        # for every task it was given (e.g. a malformed tasks.json or an
+        # unhandled exception in run_batch() itself) - that would otherwise
+        # go completely unnoticed, since the DONE/FAIL protocol is the only
+        # per-task signal the driver ever sends.
+        self._current_obj_n_tasks = len(tasks)
+        self._current_obj_n_reported = 0
         for task in tasks:
             mask = self.apply_edge_mask(self.df_obj.loc[idx, 'mask'][task['i_index']], idx, task['i_index'])
             mask_path = os.path.join(temp_dir, f"mask_f{task['i_index']}.npy")
@@ -3576,7 +3599,9 @@ class Tab_SAM2(TabBase):
         process.started.connect(lambda: self._on_3ded_driver_started(process))
         process.readyReadStandardOutput.connect(lambda: self._read_3ded_driver_stdout(process))
         process.readyReadStandardError.connect(lambda: self.handle_error_3ded(process))
-        process.finished.connect(lambda: self._handle_3ded_driver_finished(process))
+        process.finished.connect(
+            lambda exit_code, exit_status: self._handle_3ded_driver_finished(
+                process, exit_code, exit_status))
         process.errorOccurred.connect(lambda error: self._3ded_driver_failed_to_start(process, error))
         process.start()
 
@@ -3622,6 +3647,7 @@ class Tab_SAM2(TabBase):
         except Exception as e:
             self._3ded_failed = True
             self.logger.error('Failed to load DP for object %s frame %s: %s', idx, i_fr, e)
+        self._current_obj_n_reported += 1
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
 
@@ -3629,6 +3655,7 @@ class Tab_SAM2(TabBase):
         self._3ded_failed = True
         self.logger.error('3DED extraction failed for object %s frame %s: %s',
                           self._current_obj_idx, i_fr, message)
+        self._current_obj_n_reported += 1
         self.tomo_counter += 1
         self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
 
@@ -3643,7 +3670,7 @@ class Tab_SAM2(TabBase):
             return
         self._stderr_buffer.log_info(process, self.logger, 'Worker')
 
-    def _handle_3ded_driver_finished(self, process):
+    def _handle_3ded_driver_finished(self, process, exit_code, exit_status):
         """Drain remaining stdout, release the Job Object, clean up this
         object's own temp dir, and - unless this was a Cancel - mark it
         extracted in the tree and move on to the next queued object (or
@@ -3662,7 +3689,27 @@ class Tab_SAM2(TabBase):
             shutil.rmtree(temp_dir, ignore_errors=True)
         if self._cancelling:
             return
-        self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
+        # A driver that crashed (or exited early) before reporting DONE/FAIL
+        # for every task it was given (see _launch_next_object_batch) would
+        # otherwise still get marked "extracted" here despite having
+        # produced no per-frame diagnostic at all - worker_extract_frame_batch.py
+        # has no top-level try/except of its own, so e.g. a malformed
+        # tasks.json crashes it silently from the GUI's point of view.
+        n_expected = getattr(self, '_current_obj_n_tasks', 0)
+        n_reported = getattr(self, '_current_obj_n_reported', 0)
+        if exit_code != 0 or n_reported < n_expected:
+            self._3ded_failed = True
+            self.logger.error(
+                '3DED extraction batch driver for object %s exited abnormally '
+                '(exit code %s, status %s) after reporting %d/%d task(s) - '
+                'this object is NOT fully extracted.',
+                idx, exit_code, exit_status, n_reported, n_expected)
+            missing = n_expected - n_reported
+            if missing > 0:
+                self.tomo_counter += missing
+                self.update_progress_bar(self.tomo_counter, self.tomo_counter_total)
+        else:
+            self.toggle_tree_icon(self.df_obj.index.get_loc(idx), 'ext', True)
         self._launch_next_object_batch()
 
     def _3ded_driver_failed_to_start(self, process, error):
@@ -3871,6 +3918,7 @@ class Tab_SAM2(TabBase):
                 fld_frames = os.path.join(path_pets, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0,
                                  fld_frames, self.df_obj.loc[idx, 'dp'])
+                worker_frames.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_frames)
 
                 # clip dp
@@ -3888,6 +3936,7 @@ class Tab_SAM2(TabBase):
                 worker_clip_dp = WorkerThread_General(io.create_clip_dp, 0, fn_clip_dp,
                                 self.df_obj.loc[idx, 'dp'], scale_recip, center=self.dp_center,
                                 fps=self.spinbox_fps.value(), logger=self.logger)
+                worker_clip_dp.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_clip_dp)
 
             # clip tracking
@@ -3906,7 +3955,17 @@ class Tab_SAM2(TabBase):
                     fn_clip_tracking, self.imgs,
                     mask_effective, idx, scale_real,
                     fps=self.spinbox_fps.value(), cmap='Grays_r', logger=self.logger)
+                worker_tracking.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_tracking)
+
+    def _on_background_export_failed(self, traceback_text, index):
+        """WorkerThread_General.signals.error slot for save_results()'s
+        background frame/clip-export workers (create_frames/create_clip_dp/
+        create_clip_tracking_with_mask) - these run silently in the
+        background after Save Results itself already returned, so without
+        this a failure (bad path, ffmpeg crash, disk full, ...) left no
+        trace anywhere at all."""
+        self.logger.error('Background result export failed:\n%s', traceback_text)
     
     def kill_3ded_driver(self):
         """Forcefully kill the currently-running 3DED batch driver process

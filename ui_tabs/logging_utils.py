@@ -14,6 +14,7 @@ import os
 import sys
 import html
 import logging
+import threading
 import time
 import traceback
 from logging.handlers import RotatingFileHandler
@@ -281,7 +282,15 @@ def install_excepthook():
     """Route uncaught exceptions (including those raised inside Qt slots,
     which PyQt5 routes through sys.excepthook) to their own log file and
     the GUI console box, instead of them only reaching a console window
-    that may not exist for a windowed app."""
+    that may not exist for a windowed app.
+
+    Also installs `threading.excepthook` for the same reason: sys.excepthook
+    only ever covers the main thread - an exception raised inside a raw
+    `threading.Thread.run()` (as opposed to a QRunnable/WorkerThread_General,
+    which already catch and log their own exceptions - see worker_thread.py)
+    would otherwise fall through to Python's default threading.excepthook,
+    which just prints to stderr - invisible in a windowed/no-console build,
+    and never reaches app.log either."""
     app_logger = get_tab_logger('app')
 
     def _handle(exc_type, exc_value, exc_tb):
@@ -292,3 +301,13 @@ def install_excepthook():
         app_logger.error('Uncaught exception:\n%s', text)
 
     sys.excepthook = _handle
+
+    def _handle_thread(args):
+        if issubclass(args.exc_type, KeyboardInterrupt):
+            return
+        text = ''.join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))
+        thread_name = args.thread.name if args.thread is not None else '?'
+        app_logger.error('Uncaught exception in thread %r:\n%s', thread_name, text)
+
+    threading.excepthook = _handle_thread

@@ -278,6 +278,17 @@ class _SegmentBar(qtw.QWidget):
         self.frameClicked.emit(frame)
 
 
+def format_frame_list(frame_indices, max_shown=10):
+    """'3, 5, 12, ... (+7 more)'-style summary of `frame_indices`, for a
+    one-line log message - see MaskEditDialog.get_edited_frame_indices()."""
+    frame_indices = list(frame_indices)
+    if not frame_indices:
+        return 'none'
+    shown = ', '.join(str(int(i)) for i in frame_indices[:max_shown])
+    extra = len(frame_indices) - max_shown
+    return f'{shown} (+{extra} more)' if extra > 0 else shown
+
+
 class MaskEditDialog(qtw.QDialog):
     """Modal editor for a single tracked object's (N, H, W) boolean mask
     stack. `exec_()` returns QDialog.Accepted once the user confirms;
@@ -1956,6 +1967,16 @@ class MaskEditDialog(qtw.QDialog):
 
     def get_mask_stack(self):
         return self.mask_stack
+
+    def get_edited_frame_indices(self):
+        """Frame indices whose mask actually differs from `_original_stack`
+        (this session's opening state) - a direct before/after array
+        comparison, not the undo stack (which is depth-capped and not
+        meant as a change log - see _push_undo). Used only for a one-line
+        summary log when the caller accepts this dialog, not to drive any
+        editing behavior itself."""
+        changed = np.any(self.mask_stack != self._original_stack, axis=tuple(range(1, self.mask_stack.ndim)))
+        return np.nonzero(changed)[0]
 
     def get_edge_settings(self):
         """The shared Segments timeline's own Edge Detection values, one

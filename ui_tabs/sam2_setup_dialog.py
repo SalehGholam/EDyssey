@@ -23,6 +23,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt, QProcess
 from PyQt5.QtGui import QTextCursor
 
+from ui_tabs.logging_utils import get_tab_logger
 from ui_tabs.python_finder import (
     find_bundled_python, find_system_python, read_interpreter_marker, write_interpreter_marker)
 
@@ -121,6 +122,7 @@ class SAM2SetupDialog(qtw.QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.logger = get_tab_logger('SAM2 Setup')
         self.setWindowTitle('Set Up SAM2')
         self.resize(640, 480)
         self._process = None
@@ -386,10 +388,12 @@ class SAM2SetupDialog(qtw.QDialog):
             "        print('GPU:', torch.cuda.get_device_name(0))\n"
         )
         cmd += ['-c', script]
+        self.logger.info('Checking CUDA availability via: %s', ' '.join(cmd))
         self._append_log('\n$ Check CUDA\n')
         self._process = QProcess(self)
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
+        self._process.errorOccurred.connect(self._on_check_cuda_failed_to_start)
         self._set_process_working_dir(
             self._process, self._torch_import_dir() if self._target_dir else None)
         self._process.start(cmd[0], cmd[1:])
@@ -436,6 +440,8 @@ class SAM2SetupDialog(qtw.QDialog):
         deps_cmd = base_cmd + ['hydra-core', 'iopath', 'pillow', 'tqdm']
         self._steps = [torch_cmd, sam2_cmd, deps_cmd]
 
+        self.logger.info('Starting SAM2 dependency install (device: %s, target: %s)...',
+                          self.combo_device.currentText(), self._target_dir or '(current env)')
         self.button_install.setEnabled(False)
         self.combo_device.setEnabled(False)
         self.button_close.setEnabled(False)
@@ -451,24 +457,35 @@ class SAM2SetupDialog(qtw.QDialog):
             if _torch_sam2_available(self._target_dir):
                 if self._target_dir and self._python_prefix:
                     write_interpreter_marker(self._target_dir, self._python_prefix)
+                self.logger.info('SAM2 dependency install completed successfully.')
                 self._append_log('\nDone - torch and sam2 are installed. '
                                   'You can close this dialog and use the SAM2 tab.')
             else:
+                self.logger.error(
+                    'SAM2 dependency install finished, but torch/sam2 are still not '
+                    'importable - see %s.log for the full pip output.', 'SAM2 Setup')
                 self._append_log('\nInstall finished, but torch/sam2 are still '
                                   'not importable - see the log above for errors.')
             return
         cmd = self._steps.pop(0)
+        self.logger.info('Running: %s', ' '.join(cmd))
         self._append_log(f'$ {" ".join(cmd)}\n')
         self._process = QProcess(self)
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
         self._process.finished.connect(self._on_step_finished)
+        self._process.errorOccurred.connect(self._on_install_step_failed_to_start)
         self._set_process_working_dir(self._process)
         self._process.start(cmd[0], cmd[1:])
 
     def _on_output(self):
         text = bytes(self._process.readAllStandardOutput()).decode('utf-8', errors='replace')
         self._append_log(text, newline=False)
+        # Mirrors the on-screen log box into the app's own log file (rather
+        # than only the textbox above, which the user may not have
+        # screenshotted/saved before closing this dialog) - the only record
+        # of a failed pip/install step otherwise.
+        self.logger.info('%s', text.rstrip())
 
     def _append_log(self, text, newline=True):
         self.log.moveCursor(QTextCursor.End)
@@ -477,8 +494,31 @@ class SAM2SetupDialog(qtw.QDialog):
 
     def _on_step_finished(self, exit_code, exit_status):
         if exit_code != 0 or exit_status == QProcess.CrashExit:
+            self.logger.error(
+                'SAM2 setup command failed (exit code %s, status %s) - stopping remaining steps.',
+                exit_code, exit_status)
             self._append_log(f'\nCommand failed (exit code {exit_code}) - stopping.')
             self._steps = []
+        self._run_next_step()
+
+    def _on_check_cuda_failed_to_start(self, error):
+        """QProcess.errorOccurred slot for Check CUDA - covers the process
+        failing to even start (e.g. the resolved Python interpreter no
+        longer exists on disk), which otherwise left this dialog silently
+        stuck with no further output and nothing in the log."""
+        self.logger.error('Check CUDA process failed to start (error code %s).', error)
+        self._append_log(f'\nCheck CUDA failed to start (error code {error}).')
+
+    def _on_install_step_failed_to_start(self, error):
+        """QProcess.errorOccurred slot for an install step - same failure-
+        to-start gap as _on_check_cuda_failed_to_start, but also needs to
+        unstick the install queue (_on_step_finished's `finished` signal
+        never fires in this case) and restore the dialog's buttons."""
+        self.logger.error(
+            'SAM2 install step failed to start (error code %s) - stopping remaining steps.',
+            error)
+        self._append_log(f'\nCommand failed to start (error code {error}).')
+        self._steps = []
         self._run_next_step()
 
     def closeEvent(self, event):
