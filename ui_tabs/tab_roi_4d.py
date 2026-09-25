@@ -2304,7 +2304,7 @@ class Tab_ROI_on_4D(TabBase):
         self.seg_points.append(p)
         self.seg_labels.append(label)
         scatter_p = self.ax_nav.scatter(
-            p[0], p[1], color='green' if label else 'red',
+            p[0], p[1], color='black' if label else 'red', edgecolors='white',
             marker='o', s=20, linewidth=1.25)
         self.scatter_plots.append(scatter_p)
         self.canvas.draw_idle()
@@ -2943,7 +2943,7 @@ class Tab_ROI_on_4D(TabBase):
         self.seg_labels = list(state['seg_labels'])
         for label, p in zip(self.seg_labels, self.seg_points):
             scatter_p = self.ax_nav.scatter(
-                p[0], p[1], color='green' if label else 'red',
+                p[0], p[1], color='black' if label else 'red', edgecolors='white',
                 marker='o', s=20, linewidth=1.25)
             self.scatter_plots.append(scatter_p)
         if self.seg_points:

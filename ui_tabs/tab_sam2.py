@@ -1045,14 +1045,16 @@ class Tab_SAM2(TabBase):
 #%% load data
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
-        nav/DP colormap - see display_settings.py's nav_colormap/
-        dp_colormap and the Edit menu's Display Size dialog. 'seg'
-        deliberately keeps its own 'gray' default instead - show_mask()
-        draws colored (tab10) translucent mask overlays on top of it, which
-        need a plain grayscale background to stay readable."""
+        DP colormap - see display_settings.py's dp_colormap and the Edit
+        menu's Display Size dialog. 'nav' and 'seg' deliberately keep their
+        own fixed 'gray' instead of following the shared nav_colormap
+        setting: show_mask() draws colored (tab10) translucent mask
+        overlays and the positive/negative SAM2 point markers on top of
+        'nav', which need a plain grayscale background to stay readable
+        (a green point prompt was invisible against the default viridis
+        colormap)."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
-        self.img_display['nav'].set_cmap(settings.nav_colormap)
         self.img_display['dp'].set_cmap(settings.dp_colormap)
         self.canvas.draw_idle()
 
