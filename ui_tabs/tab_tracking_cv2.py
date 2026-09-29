@@ -2786,10 +2786,26 @@ class Tab_Tracking_CV2(TabBase):
         labels = self._label_blobs_for(mask, idx, frame_idx, method, params)
         if cache is None:
             cache = self._blob_centroid_cache.setdefault(idx, {})
-        prev = cache.get(frame_idx - 1)
-        fixed_seed = seg.get('seed_centroid')
-        seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
-            else (tuple(fixed_seed) if fixed_seed is not None else None)
+        # This exact frame's own already-known choice (if the cache was
+        # pre-seeded from the main UI's own live-scrubbing history - see
+        # open_fine_tune_mask_dialog) takes priority over re-deriving one
+        # from frame_idx - 1's choice: seeding io.select_blob_by_centroid
+        # with a point already at/inside the correct blob reliably picks
+        # that exact same blob again, so a frame the user has already
+        # looked at in the main UI resolves to the exact same blob here too,
+        # regardless of whatever a fresh sequential walk's own frame_idx - 1
+        # value would otherwise have produced (which can differ whenever the
+        # main UI's own history wasn't built by visiting frames in strict
+        # order - e.g. scrubbing/jumping around, or extract_3ded's chunked
+        # per-object batches).
+        known = cache.get(frame_idx)
+        if known is not None:
+            seed = known
+        else:
+            prev = cache.get(frame_idx - 1)
+            fixed_seed = seg.get('seed_centroid')
+            seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
+                else (tuple(fixed_seed) if fixed_seed is not None else None)
         restricted, chosen_centroid = io.select_blob_by_centroid(mask, seed, labels=labels)
         if chosen_centroid is not None:
             cache[frame_idx] = chosen_centroid
@@ -3963,9 +3979,26 @@ class Tab_Tracking_CV2(TabBase):
             # both would leave the main UI's own live-scrubbing cache
             # overwritten with default_mask_stack's choices instead of
             # whatever it had actually been showing.
+            #
+            # Each pass's own cache starts as a COPY (never the live dict
+            # itself, so nothing computed here ever writes back into
+            # self._blob_centroid_cache) of the main UI's own live-scrubbing
+            # history instead of empty - a fresh, from-frame-0 walk with an
+            # empty cache re-derives every frame's "nearest blob" purely
+            # from the segment's fixed seed_centroid, which can pick a
+            # DIFFERENT blob than what the main UI is actually showing for
+            # a frame the user has already scrubbed to and looked at
+            # (out-of-order scrubbing, or a chain that drifted differently)
+            # - seeding from the real history instead means any
+            # already-viewed frame (almost certainly including whichever
+            # frame is on screen right now, about to open in this dialog)
+            # resolves to the exact same blob the user is currently seeing,
+            # with the walk below only needing to newly resolve frames the
+            # main UI genuinely never visited.
+            seen_cache = self._blob_centroid_cache.get(idx, {})
             mask_stack = mask_stack.copy()
             default_mask_stack = default_mask_stack.copy()
-            mask_cache, default_cache = {}, {}
+            mask_cache, default_cache = dict(seen_cache), dict(seen_cache)
             for f in range(mask_stack.shape[0]):
                 mask_stack[f] = self._resolve_blob_mask(idx, f, mask_stack[f], cache=mask_cache)
             for f in range(default_mask_stack.shape[0]):

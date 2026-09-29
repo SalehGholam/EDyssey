@@ -101,6 +101,16 @@ dask_datas, dask_binaries, dask_hidden = collect_all('dask')
 # class of problem as hyperspy/rsciio/dask above, so it gets
 # the same collect_all() treatment rather than relying on default tracing.
 sk_datas, sk_binaries, sk_hidden = collect_all('sklearn')
+# pyeventem (EDyssey/io_utils/eventem_backend.py's own BACKEND_PYEVENTEM,
+# plain `import pyeventem`) - a local, non-PyPI package (`pip install -e
+# ../pyeventem` per requirements.txt), so PyInstaller's own metadata-driven
+# discovery never finds it on its own the way a normal PyPI dependency
+# would; explicit collect_all() (same reasoning as sklearn/hyperspy/rsciio/
+# dask above) is what actually bundles it and its numba/llvmlite dependency
+# closure into the frozen build - without this, the "pyeventem" backend
+# radio button exists in the shipped UI but fails at runtime with an
+# ImportError.
+pe_datas, pe_binaries, pe_hidden = collect_all('pyeventem')
 
 torch_datas, torch_binaries, torch_hidden = [], [], []
 torch_excludes = ['torch', 'sam2', 'torchvision']
@@ -260,7 +270,24 @@ a = Analysis(
         ('EDyssey/io_utils/h5ev.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_cpp.dll', 'EDyssey/io_utils'),
         ('EDyssey/io_utils/hdf5_hl.dll', 'EDyssey/io_utils'),
-    ] + hs_binaries + rs_binaries + dask_binaries + sk_binaries + torch_binaries,
+        # New eventem (BACKEND_NEW) - loaded via a `sys.path.insert` onto
+        # this exact 'eventem_new' subfolder + `import eventem_new` (see
+        # eventem_backend.py's own _EVENTEM_NEW_DIR/_new_eventem()), not a
+        # normal package import, so PyInstaller's static tracing never finds
+        # it on its own - previously missing entirely from this spec, which
+        # meant "New eventem" was never actually bundled into the frozen
+        # build despite being a selectable backend in the UI. Only a
+        # cp312 build of eventem_new exists at all right now (unlike old
+        # eventem's own eventem.cp39-win_amd64.pyd..eventem.cp314-win_amd64.pyd
+        # sibling files) - this only ever matters for whichever single
+        # Python version EDyssey itself is frozen with (currently 3.12; see
+        # eventem_backend.py's own comment on why New eventem always
+        # self-relaunches the SAME frozen exe rather than a different
+        # interpreter), so that's the only version this needs to bundle.
+        ('EDyssey/io_utils/eventem_new/eventem_new.cp312-win_amd64.pyd', 'EDyssey/io_utils/eventem_new'),
+        ('EDyssey/io_utils/eventem_new/h5en.dll', 'EDyssey/io_utils/eventem_new'),
+        ('EDyssey/io_utils/eventem_new/hdf5_cpp.dll', 'EDyssey/io_utils/eventem_new'),
+    ] + hs_binaries + rs_binaries + dask_binaries + sk_binaries + torch_binaries + pe_binaries,
     datas=[
         # io_utils_ui.py is imported two ways elsewhere in this codebase:
         # package-relative (EDyssey/io_utils/__init__.py) AND as a bare
@@ -271,13 +298,13 @@ a = Analysis(
         # on disk too.
         ('EDyssey/io_utils/io_utils_ui.py', 'EDyssey/io_utils'),
         ('ui_tabs/logo', 'EDyssey/ui_tabs/logo'),
-    ] + extra_datas + hs_datas + rs_datas + dask_datas + sk_datas + torch_datas,
+    ] + extra_datas + hs_datas + rs_datas + dask_datas + sk_datas + torch_datas + pe_datas,
     hiddenimports=(['matplotlib.backends.backend_qt5agg',
                      # stdlib module PyInstaller's static tracing misses -
                      # torch/sam2's own deps (hydra/omegaconf/iopath) import
                      # it transitively at runtime, not traceably.
                      'modulefinder']
-                    + hs_hidden + rs_hidden + dask_hidden + sk_hidden + torch_hidden),
+                    + hs_hidden + rs_hidden + dask_hidden + sk_hidden + torch_hidden + pe_hidden),
     hookspath=[],
     hooksconfig={},
     # Must run before PyInstaller's own pyi_rth_pyqt5.py - see the hook's
