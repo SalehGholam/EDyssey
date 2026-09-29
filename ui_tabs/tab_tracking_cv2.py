@@ -62,6 +62,23 @@ import shutil
 from .loading_label import LoadingSpinner
 from .object_detection_widget import Object_Detector_Widget
 import pandas as pd
+
+
+def _iter_meshes(seg):
+    """The list of independent mesh dicts a Mesh segment `seg` (one entry
+    of MaskEditDialog.get_mesh_settings()'s 'segments' list) holds - item 2
+    (several meshes per segment): new-shaped segments carry them under
+    'meshes'; a segment saved before that feature existed has its one
+    mesh's fields directly on the segment dict itself, so it's wrapped into
+    a single-item list instead. `seg` may be None (no Mesh segment covers
+    this frame at all)."""
+    if not seg:
+        return []
+    if 'meshes' in seg:
+        return seg['meshes'] or []
+    return [seg]
+
+
 #%% wdiget
 class Tab_Tracking_CV2(TabBase):
     def __init__(self, parent=None):
@@ -702,17 +719,22 @@ class Tab_Tracking_CV2(TabBase):
         # called tree_objects (not literally a QTreeWidget anymore) since
         # renaming the many existing references below wasn't worth it.
         self.cols_tree = ["use", "idx", "init", "end", "ref", "blob", "trk", "ext",
-                          "qlty", "dup", "del"]
+                          "qlty", "dup", "reset", "del"]
         # Kept at or under "Start"'s own length (see TransposedObjectTable.
         # _HEADER_WIDTH_REF) - the ones that don't fit unabbreviated get a
         # row_tooltips entry with their full word instead.
         row_labels = ["Use", "Idx", "Start", "End", "Ref", "Blob",
-                     "Track", "Extr", "Qlty", "Dup", "Del"]
+                     "Track", "Extr", "Qlty", "Dup", "Reset", "Del"]
         row_tooltips = [None, None, None, None, None, None, "Tracked", "Extracted",
                         "Tracking Quality - flagged (see the frame-flag bar under the "
                         "slider) if any frame's mask area looks anomalous after "
                         "tracking, e.g. the tracker may have lost the object",
-                        "Duplicate", "Delete"]
+                        "Duplicate",
+                        "Reset to the latest tracked ROI - re-thresholds a fresh mask from "
+                        "it with the current Threshold settings, discarding every Fine-Tune "
+                        "Mask edit (painted/grown/shrunk pixels, Dilate/Erode, Edge "
+                        "Detection, Mesh) for this ROI at once",
+                        "Delete"]
         # Selected Object / All Active Objects - governs ax_mask (2) only:
         # the nav overlay and DP panel still follow whichever object is
         # actually selected in the table below, regardless of this choice
@@ -769,7 +791,7 @@ class Tab_Tracking_CV2(TabBase):
         # holds a QSpinBox with up/down arrows, ref/blob hold a
         # QComboBox/QCheckBox.
         row_heights = {'use': 24, 'idx': 24, 'init': 24, 'end': 28, 'ref': 28, 'blob': 24,
-                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'del': 34}
+                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'reset': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.itemSelectionChanged.connect(self.update_canvas)
@@ -1136,15 +1158,19 @@ class Tab_Tracking_CV2(TabBase):
     #%% load data
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
-        nav/DP colormap - see display_settings.py's nav_colormap/
-        dp_colormap and the Edit menu's Display Size dialog. img_mask/mask
-        (the mask-editing crop view) deliberately keep their own 'gray'
-        default - a translucent color mask overlay reads better against a
-        plain grayscale background than a colored one."""
+        per-plot colormaps - see display_settings.py's DisplaySettings.
+        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
+        Colormaps..." expansion. img_mask (the mask-editing crop view)
+        defaults to its own fixed 'gray' (see PLOT_COLORMAP_DEFINITIONS)
+        unless overridden - a translucent color mask overlay reads better
+        against a plain grayscale background than a colored one by
+        default. 'mask' is a pure RGBA overlay artist (no colormap of its
+        own - see update_ax_mask), so it's not listed here at all."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
-        self.img_display['nav'].set_cmap(settings.nav_colormap)
-        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.img_display['nav'].set_cmap(settings.colormap_for('tracker_nav'))
+        self.img_display['dp'].set_cmap(settings.colormap_for('tracker_dp'))
+        self.img_display['img_mask'].set_cmap(settings.colormap_for('tracker_mask'))
         self.canvas.draw_idle()
 
     def show_dialog(self, f):
@@ -1782,6 +1808,7 @@ class Tab_Tracking_CV2(TabBase):
             elif os.path.isfile(fn_dp_npy):
                 dp = np.load(fn_dp_npy)
 
+            manual_mask = self._load_npy_or_none(os.path.join(roi_dir, 'manual_edit_mask.npy'))
             rois.append({
                 'idx': idx, 'use': row['use'], 'init': row['init'],
                 'in_rois': row['in_rois'], 'end': row['end'], 'ref': row['ref'],
@@ -1794,6 +1821,10 @@ class Tab_Tracking_CV2(TabBase):
                 'dilate_erode': row.get('dilate_erode', {'segments': []}),
                 'edge': row.get('edge_detection', {'segments': []}),
                 'blob': row.get('blob', {'segments': []}),
+                # item 1 - see MaskEditDialog.get_manual_edit_settings(); the
+                # mask array itself is its own .npy file (like output_mask.
+                # npy above), not embedded in this JSON.
+                'manual_edits': {'protect': row.get('manual_edits_protect', True), 'mask': manual_mask},
             })
         return s, rois, path, fn_nav
 
@@ -1808,7 +1839,8 @@ class Tab_Tracking_CV2(TabBase):
             idx = roi['idx']
             self.df_rois.loc[idx] = [roi['use'], roi['init'], roi['in_rois'], roi['end'],
                                       roi['ref'], roi['out_rois'], roi['mask'], roi['dp'],
-                                      roi['mesh'], roi['dilate_erode'], roi['edge'], roi['blob']]
+                                      roi['mesh'], roi['dilate_erode'], roi['edge'], roi['blob'],
+                                      roi['manual_edits']]
             self.add_item_tree(idx, roi['init'], roi['end'], roi['ref'], roi['use'])
             row_index = self.df_rois.index.get_loc(idx)
             if roi['out_rois'] is not None:
@@ -1873,12 +1905,13 @@ class Tab_Tracking_CV2(TabBase):
         """(Re)create df_rois as an empty dataframe with the expected
         columns/dtypes, and clear the cached ROI patch lists."""
         self.cols_df = ['use', 'init', 'in_rois', 'end',
-                        'ref', 'out_rois', 'mask', 'dp', 'mesh', 'dilate_erode', 'edge', 'blob']
+                        'ref', 'out_rois', 'mask', 'dp', 'mesh', 'dilate_erode', 'edge', 'blob',
+                        'manual_edits']
         self.df_rois = pd.DataFrame([], columns=self.cols_df)
         self.df_rois = self.df_rois.astype({'use': int, 'init': object, 'in_rois': object, 'end': int,
                                             'out_rois': object, 'dp': object, 'ref':str, 'mask':object,
                                             'mesh': object, 'dilate_erode': object, 'edge': object,
-                                            'blob': object})
+                                            'blob': object, 'manual_edits': object})
         
         self.patches_axTrack.clear()
         self.patches_axNav.clear()
@@ -2444,6 +2477,66 @@ class Tab_Tracking_CV2(TabBase):
         img_mask = img_mask[x:x+w, y:y+h]
         return img_mask, img_cut
 
+    def _reset_roi_to_tracking(self, idx):
+        """Object list's own "Reset" button: put ROI `idx` back to a fresh
+        re-threshold of its latest tracked out_rois (with the CURRENT main-
+        tab Threshold settings) - the same discard-everything semantics as
+        MaskEditDialog's own "Reset to Tracking" (mask AND every Dilate/
+        Erode/Edge Detection/Mesh/manual-edit setting - not Blob Selection,
+        which MaskEditDialog's own Reset to Tracking never touches either,
+        since it's a main-tab-only feature outside that dialog), just
+        reachable directly from the main object list without opening Fine-
+        Tune Mask first. Unlike SAM2 (mask_default, snapshotted once at
+        tracking time), ROI Tracker's mask is threshold-derived from
+        out_rois - re-thresholding fresh here (like open_fine_tune_mask_
+        dialog's own `default_mask_stack`) is what "the latest tracking
+        result" means, since a stale mask snapshot would go stale the
+        moment Threshold settings changed. A no-op (with a warning) if this
+        ROI hasn't been tracked at all yet."""
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if not isinstance(out_rois, np.ndarray):
+            qtw.QMessageBox.warning(self, 'Not Tracked Yet',
+                f'ROI {idx} has not been tracked yet - run "Track!" first.')
+            return
+        if qtw.QMessageBox.question(
+                self, 'Reset to Tracking',
+                f'Discard every edit for ROI {idx} - the mask on every frame (back to a '
+                'fresh re-threshold of the latest tracked ROI) and every Dilate/Erode/'
+                'Edge Detection/Mesh setting? This cannot be undone.',
+                qtw.QMessageBox.Yes | qtw.QMessageBox.No, qtw.QMessageBox.No
+        ) != qtw.QMessageBox.Yes:
+            return
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value() / 100
+        blur_sigma = self.spinbox_blur.value()
+        self.df_rois.at[idx, 'mask'] = tr.create_masks(
+            self.nav_imgs, out_rois, thresh_method, thresh_offset, blur_sigma)
+        self.df_rois.at[idx, 'mesh'] = None
+        self.df_rois.at[idx, 'dilate_erode'] = None
+        self.df_rois.at[idx, 'edge'] = None
+        self.df_rois.at[idx, 'manual_edits'] = None
+        self.logger.info('ROI %d reset to a fresh re-threshold of its latest tracking result.', idx)
+        self.update_canvas()
+
+    def _default_mask_for_frame(self, idx, frame_idx):
+        """This ROI's un-edited, freshly re-thresholded mask for just
+        `frame_idx` (item 4 - "Center on: Initial Mask" needs the object's
+        own pristine mask for this frame to compute its centroid from) -
+        same convention as MaskEditDialog's own `default_mask_stack`
+        (see open_fine_tune_mask_dialog), computed fresh from out_rois + the
+        CURRENT main-tab threshold settings via tr.create_masks - sliced to
+        just this one frame (not the whole stack) since this can run once
+        per displayed/extracted frame rather than once per fine-tune-mask
+        session. None if this ROI has no out_rois yet."""
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if not isinstance(out_rois, np.ndarray) or frame_idx >= len(out_rois):
+            return None
+        thresh_method = self.combo_thresh_method.currentText()
+        thresh_offset = self.slider_thresh.value() / 100
+        blur_sigma = self.spinbox_blur.value()
+        return tr.create_masks(self.nav_imgs[frame_idx:frame_idx + 1], out_rois[frame_idx:frame_idx + 1],
+                               thresh_method, thresh_offset, blur_sigma)[0]
+
     def _mesh_settings_for(self, idx):
         """This ROI's Mesh settings (see MaskEditDialog/get_mesh_settings),
         or None if it has none set / idx is None."""
@@ -2451,6 +2544,16 @@ class Tab_Tracking_CV2(TabBase):
             return None
         mesh = self.df_rois.at[idx, 'mesh']
         return mesh if isinstance(mesh, dict) else None
+
+    def _manual_edit_settings_for(self, idx):
+        """This ROI's manual-edit protection settings (see MaskEditDialog/
+        get_manual_edit_settings - item 1: which pixels were set by a
+        manual tool, and whether Dilate/Erode/Edge Detection should keep
+        excluding them), or None if it has none set / idx is None."""
+        if idx is None:
+            return None
+        manual = self.df_rois.at[idx, 'manual_edits']
+        return manual if isinstance(manual, dict) else None
 
     def _dilate_erode_settings_for(self, idx):
         """This ROI's Dilate/Erode segments (see MaskEditDialog/
@@ -2631,10 +2734,13 @@ class Tab_Tracking_CV2(TabBase):
         def _any_enabled(settings, extra=lambda s: True):
             segs = (settings or {}).get('segments') or []
             return any(s.get('enabled') and extra(s) for s in segs)
+        mesh_segments = (self._mesh_settings_for(idx) or {}).get('segments') or []
+        mesh_active = any(m.get('enabled') and m.get('cells')
+                          for seg in mesh_segments for m in _iter_meshes(seg))
         return (_any_enabled(self._edge_settings_for(idx))
                or _any_enabled(self._dilate_erode_settings_for(idx), lambda s: (
                    s.get('kernel', 0) != 0 or s.get('open_kernel', 0) != 0 or s.get('close_kernel', 0) != 0))
-               or _any_enabled(self._mesh_settings_for(idx), lambda s: s.get('cells'))
+               or mesh_active
                or _any_enabled(self._blob_settings_for(idx)))
 
     def _resolve_blob_mask(self, idx, frame_idx, mask, cache=None):
@@ -2885,25 +2991,27 @@ class Tab_Tracking_CV2(TabBase):
         then reduce it to just its edge/outline when that frame's Edge
         Detection segment is enabled (isotropic, or one-sided along
         "Directional"'s angle when that's also set - see
-        io.erode_mask_edge), then - if `idx` is given and that frame's Mesh
-        segment has a restriction set - restrict it to the selected mesh
-        cell(s), relative to the object's own position on THIS frame (see
-        io.mesh_restrict_mask/io.mask_centroid, and MaskEditDialog.
-        _effective_mask's identical convention) so a tracked ROI's motion
-        across frames doesn't throw off which part of it the selection
-        actually covers. A no-op otherwise."""
+        io.erode_mask_edge), then restores any pixel MaskEditDialog's own
+        "Exclude Manual Edits from Effects" marked as manually set back to
+        its raw (post-blob-selection, pre-Dilate/Erode/Edge-Detection)
+        value, then - if `idx` is given - restricts it to the INTERSECTION
+        of every ENABLED mesh's own selected cell(s) for that frame's Mesh
+        segment (item 2 - several independent meshes per segment; a single
+        mesh is just the trivial case), each relative to the object's own
+        position on THIS frame unless that particular mesh is "Fixed" (item
+        3 - see MaskEditDialog._mesh_origin_for_mesh's identical
+        convention, which this mirrors) so a tracked ROI's motion across
+        frames doesn't throw off which part of it the selection actually
+        covers. A no-op otherwise."""
         mask = self._resolve_blob_mask(idx, frame_idx, mask)
-
-        mesh_segments = (self._mesh_settings_for(idx) or {}).get('segments')
-        mesh = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
-        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells'))
-        origin = io.mask_centroid(mask) if mesh_on else None
+        original = mask
 
         de_segments = (self._dilate_erode_settings_for(idx) or {}).get('segments')
         de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
         if de and de.get('enabled'):
             if de.get('kernel', 0) != 0:
-                mask = io.dilate_erode_mask(mask, de['kernel'])
+                direction = de.get('direction') if de.get('directional') else None
+                mask = io.dilate_erode_mask(mask, de['kernel'], direction=direction)
             if de.get('open_kernel', 0) != 0:
                 mask = io.open_mask(mask, de['open_kernel'])
             if de.get('close_kernel', 0) != 0:
@@ -2916,10 +3024,32 @@ class Tab_Tracking_CV2(TabBase):
             mask = io.erode_mask_edge(mask, edge.get('kernel', 3), direction=direction,
                                       revert=edge.get('revert', False))
 
-        if mesh_on:
-            mask = io.mesh_restrict_mask(mask, mesh.get('angle', 0), mesh.get('cell_size', 20),
-                                         [tuple(c) for c in mesh['cells']], origin=origin,
-                                         lines_only=mesh.get('lines_only', False))
+        manual = self._manual_edit_settings_for(idx)
+        if manual and manual.get('protect') and frame_idx is not None:
+            manual_stack = manual.get('mask')
+            if manual_stack is not None and frame_idx < len(manual_stack):
+                manual_frame = manual_stack[frame_idx]
+                if manual_frame.any():
+                    mask = np.where(manual_frame, original, mask)
+
+        mesh_segments = (self._mesh_settings_for(idx) or {}).get('segments')
+        mesh_seg = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
+        active_meshes = [m for m in _iter_meshes(mesh_seg) if m.get('enabled') and m.get('cells')]
+        if active_meshes:
+            keep = None
+            for m in active_meshes:
+                if m.get('fixed') and m.get('origin') is not None:
+                    origin = tuple(m['origin'])
+                elif m.get('center_basis') == 'initial' and idx is not None and frame_idx is not None:
+                    default_frame = self._default_mask_for_frame(idx, frame_idx)
+                    origin = io.mask_centroid(default_frame) if default_frame is not None else io.mask_centroid(mask)
+                else:
+                    origin = io.mask_centroid(mask)
+                keep_m = io.mesh_restrict_mask(mask, m.get('angle', 0), m.get('cell_size', 20),
+                                               [tuple(c) for c in m['cells']], origin=origin,
+                                               lines_only=m.get('lines_only', False))
+                keep = keep_m if keep is None else (keep & keep_m)
+            mask = keep
         return mask
 
     def _on_ribbon_tool_changed(self, tool_id):
@@ -3078,7 +3208,7 @@ class Tab_Tracking_CV2(TabBase):
         self.rect = None
         if new_row:
             self.df_rois.loc[idx] = [1, init, [roi], len(self.nav_imgs),
-                                                   ref, None, None, None, None, None, None, None]
+                                                   ref, None, None, None, None, None, None, None, None]
             self.add_item_tree(idx=idx, init=init, end=None, ref=ref)
 
         else:
@@ -3220,6 +3350,25 @@ class Tab_Tracking_CV2(TabBase):
         container_dup.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
         container_dup.setLayout(layout_dup)
         self.tree_objects.setItemWidget(item, cols['dup'], container_dup)
+
+        # reset to latest tracking
+        reset_button = qtw.QPushButton()
+        reset_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_BrowserReload))
+        reset_button.setFixedSize(30, 30)
+        reset_button.setToolTip(
+            "Reset to the latest tracked ROI - re-thresholds a fresh mask from it with the "
+            "current Threshold settings, discarding every Fine-Tune Mask edit "
+            "(painted/grown/shrunk pixels, Dilate/Erode, Edge Detection, Mesh) for this "
+            "ROI at once")
+        reset_button.clicked.connect(
+            lambda: self._reset_roi_to_tracking(self.df_rois.index[self.tree_objects.indexOfTopLevelItem(item)]))
+        container_reset = qtw.QWidget()
+        layout_reset = qtw.QHBoxLayout(container_reset)
+        layout_reset.addWidget(reset_button)
+        layout_reset.setContentsMargins(0, 0, 0, 0)
+        layout_reset.setAlignment(Qt.AlignLeft)
+        container_reset.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+        self.tree_objects.setItemWidget(item, cols['reset'], container_reset)
 
         # delete
         delete_button = qtw.QPushButton()
@@ -3514,7 +3663,7 @@ class Tab_Tracking_CV2(TabBase):
             # non-null string) and then crashes _refresh_ref_combos'
             # int(current_ref) the moment ANY row is added afterwards.
             self.df_rois.loc[i+idx_max] = [1, [self.imgNo_autoDet], [obj], len(self.nav_imgs),
-                                           None, None, None, None, None, None, None, None]
+                                           None, None, None, None, None, None, None, None, None]
             self.add_item_tree(idx=i+idx_max, init=[self.imgNo_autoDet], end=None, ref=None)
         # print(self.df_rois)
         self.update_canvas(self.imgNo_autoDet)
@@ -3827,6 +3976,7 @@ class Tab_Tracking_CV2(TabBase):
             'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_sigma}
         mesh_settings = self._mesh_settings_for(idx)
         dilate_erode_settings = self._dilate_erode_settings_for(idx)
+        manual_edit_settings = self._manual_edit_settings_for(idx)
         # Contrast-only (no denoise) - MaskEditDialog applies its own
         # Denoise box fresh on top of this, seeded from box_contrast's own
         # current state below, so its preview starts out looking the same
@@ -3839,8 +3989,10 @@ class Tab_Tracking_CV2(TabBase):
                                 thresh_settings=thresh_settings, mesh_settings=mesh_settings,
                                 dilate_erode_settings=dilate_erode_settings,
                                 denoise_state=self.box_contrast.box_denoise.get_state(),
-                                recompute_thresh_fn=lambda method, offset, blur:
-                                    tr.create_masks(self.nav_imgs, out_rois, method, offset, blur))
+                                manual_edit_settings=manual_edit_settings,
+                                recompute_thresh_fn=lambda method, offset, blur, denoised_imgs=None:
+                                    tr.create_masks(denoised_imgs if denoised_imgs is not None else self.nav_imgs,
+                                                    out_rois, method, offset, blur))
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_rois.at[idx, 'mask'] = dialog.get_mask_stack()
             # Mesh/Dilate-Erode/Edge Detection are all per-ROI (no main-tab
@@ -3850,6 +4002,7 @@ class Tab_Tracking_CV2(TabBase):
             self.df_rois.at[idx, 'mesh'] = dialog.get_mesh_settings()
             self.df_rois.at[idx, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_rois.at[idx, 'edge'] = dialog.get_edge_settings()
+            self.df_rois.at[idx, 'manual_edits'] = dialog.get_manual_edit_settings()
             self._apply_dialog_settings_to_ui(dialog)
             edited_frames = dialog.get_edited_frame_indices()
             self.logger.info(
@@ -4485,9 +4638,16 @@ class Tab_Tracking_CV2(TabBase):
             df['mesh'] = self._mesh_settings_for(idx) or {'segments': []}
             df['dilate_erode'] = self._dilate_erode_settings_for(idx) or {'segments': []}
             df['blob'] = self._blob_settings_for(idx) or {'segments': []}
+            manual_edits = self._manual_edit_settings_for(idx) or {}
+            # item 1 - just the flag here; the (potentially large) manual
+            # mask array itself is its own .npy file below, like output_
+            # mask.npy, not embedded in this JSON.
+            df['manual_edits_protect'] = manual_edits.get('protect', True)
             df.to_json(os.path.join(path_save_roi, f'roi No {idx}.json'), orient='index', indent=4)
             np.save(os.path.join(path_save_roi, 'output_rois.npy'), self.df_rois.loc[idx, 'out_rois'])
             np.save(os.path.join(path_save_roi, 'output_mask.npy'), self.df_rois.loc[idx, 'mask'])
+            if manual_edits.get('mask') is not None:
+                np.save(os.path.join(path_save_roi, 'manual_edit_mask.npy'), manual_edits['mask'])
 
             # write frames (only if extraction was run for this roi)
             dp = self.df_rois.loc[idx, 'dp'] if 'dp' in self.df_rois.columns else None

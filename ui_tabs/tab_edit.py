@@ -15,6 +15,7 @@ import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
 from .display_settings import DisplaySettings, PLOT_DEFINITIONS, COLORMAP_OPTIONS
 from .app_theme import AppTheme, PALETTES, THEME_LABELS
+from .plot_colormap_dialog import PlotColormapDialog
 
 
 class EditSettingsDialog(qtw.QDialog):
@@ -85,6 +86,16 @@ class EditSettingsDialog(qtw.QDialog):
         self.combo_dpCmap.setCurrentText(settings.dp_colormap)
         self.combo_dpCmap.currentTextChanged.connect(self._on_colormap_changed)
         cmap_layout.addRow('Diffraction Pattern', self.combo_dpCmap)
+        # Expansion: every individual image plot across all 4 tabs (masks/
+        # segmentation-overlay backgrounds included, not just these two
+        # shared roles) gets its own colormap combo in a separate dialog -
+        # see plot_colormap_dialog.py/DisplaySettings.colormap_for().
+        self.button_plotColormaps = qtw.QPushButton('Per-Plot Colormaps...')
+        self.button_plotColormaps.setToolTip(
+            'Override the colormap of an individual plot, on any of the 4 tabs, '
+            'independent of the two shared settings above')
+        self.button_plotColormaps.clicked.connect(self._open_plot_colormap_dialog)
+        cmap_layout.addRow('', self.button_plotColormaps)
         self.layout.addWidget(cmap_box)
 
         form_box = qtw.QGroupBox('Ribbon')
@@ -208,6 +219,17 @@ class EditSettingsDialog(qtw.QDialog):
         docstring for exactly what re-colors and what doesn't)."""
         AppTheme.instance().set_theme(self.combo_theme.currentData())
 
+    def _open_plot_colormap_dialog(self):
+        """"Per-Plot Colormaps..." button: open the expansion dialog -
+        singleton, non-modal, same show()/raise_() convention as this
+        dialog's own opening from the main window's Edit menu (see
+        EDyssey_MainWindow.show_display_size_dialog)."""
+        if getattr(self, '_plot_colormap_dialog', None) is None:
+            self._plot_colormap_dialog = PlotColormapDialog(self)
+        self._plot_colormap_dialog.show()
+        self._plot_colormap_dialog.raise_()
+        self._plot_colormap_dialog.activateWindow()
+
     def _on_colormap_changed(self, _text):
         """Either colormap combo changed: apply live, same as Theme above -
         both combos funnel through here since only one of the two values
@@ -237,6 +259,15 @@ class EditSettingsDialog(qtw.QDialog):
         too, rather than the old customized values coming back next launch."""
         DisplaySettings.instance().reset()
         settings = DisplaySettings.instance()
+        self.combo_navCmap.blockSignals(True)
+        self.combo_navCmap.setCurrentText(settings.nav_colormap)
+        self.combo_navCmap.blockSignals(False)
+        self.combo_dpCmap.blockSignals(True)
+        self.combo_dpCmap.setCurrentText(settings.dp_colormap)
+        self.combo_dpCmap.blockSignals(False)
+        plot_cmap_dlg = getattr(self, '_plot_colormap_dialog', None)
+        if plot_cmap_dlg is not None:
+            plot_cmap_dlg.resync_combos()
         self._sync(self.slider_ribbonText, self.spinbox_ribbonText,
                   round(settings.ribbon_text_scale * 100))
         self._sync(self.slider_ribbonIcon, self.spinbox_ribbonIcon, settings.ribbon_icon_size)

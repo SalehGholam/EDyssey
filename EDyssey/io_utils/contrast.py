@@ -246,21 +246,35 @@ def shift_mask_edge(mask, direction, grow=True):
     return cv2.erode(mask_u8, kernel, anchor=anchor, iterations=1).astype(bool)
 
 
-def dilate_erode_mask(mask, kernel_size):
-    """Uniformly grow or shrink a binary mask with a plain isotropic square
-    structuring element - unlike shift_mask_edge (one direction, one pixel
-    per call) or erode_mask_edge (reduces the mask to a boundary band
-    instead of keeping its interior), this dilates/erodes the whole mask
-    by `kernel_size` on every side at once. Used by the "Dilate / Erode"
-    control shared by ROI Tracker, SAM2 Tracker and mask_edit_dialog.py's
-    Fine-Tune Mask dialog.
+def dilate_erode_mask(mask, kernel_size, direction=None):
+    """Grow or shrink a binary mask - uniformly, on every side at once, with
+    a plain isotropic square structuring element when `direction` is None
+    (prior behavior) - or, when `direction` is a float angle in degrees
+    (0 = +x/right, increasing clockwise - same convention as
+    erode_mask_edge/shift_mask_edge), only from that one side instead,
+    leaving the mask's other sides untouched - e.g. eroding at 0 only pulls
+    the mask's right-hand edge inward; dilating at 0 only pushes its
+    right-hand edge outward. Unlike shift_mask_edge (always exactly one
+    pixel per call, for manual D-pad fine-tuning) this takes an arbitrary
+    `kernel_size`, and unlike erode_mask_edge this keeps the mask's grown/
+    shrunk INTERIOR rather than reducing it to a boundary band. Used by the
+    "Dilate / Erode" control shared by ROI Tracker, SAM2 Tracker and
+    mask_edit_dialog.py's Fine-Tune Mask dialog.
+
+    Reuses _directional_kernel's one-sided ray kernel for the directional
+    case - see shift_mask_edge's own docstring for why dilating "towards
+    `direction`" needs that ray kernel rotated 180 degrees from the one
+    erosion uses for that same `direction`.
 
     Args:
         mask: 2-D array, truthy where the mask is set (any dtype).
         kernel_size: Signed kernel size, in pixels - sign picks dilate
             (positive, grows the mask) vs. erode (negative, shrinks it);
-            0 is a no-op. Same `np.ones((k, k))` square-kernel convention
-            as erode_mask_edge's own `kernel_size`.
+            0 is a no-op. The isotropic square kernel's own side length
+            when `direction` is None, the directional ray's length
+            otherwise.
+        direction: None (default, prior isotropic behavior) or a float
+            angle in degrees for one-sided dilation/erosion instead.
 
     Returns:
         numpy.ndarray of dtype bool, same shape as `mask`.
@@ -268,10 +282,17 @@ def dilate_erode_mask(mask, kernel_size):
     kernel_size = int(round(kernel_size))
     if kernel_size == 0:
         return mask.astype(bool)
-    kernel = np.ones((abs(kernel_size), abs(kernel_size)), np.uint8)
     mask_u8 = mask.astype('uint8')
-    op = cv2.dilate if kernel_size > 0 else cv2.erode
-    return op(mask_u8, kernel, anchor=(-1, -1), iterations=1).astype(bool)
+    grow = kernel_size > 0
+    if direction is None:
+        kernel = np.ones((abs(kernel_size), abs(kernel_size)), np.uint8)
+        anchor = (-1, -1)
+    elif grow:
+        kernel, anchor = _directional_kernel(abs(kernel_size), direction + 180)
+    else:
+        kernel, anchor = _directional_kernel(abs(kernel_size), direction)
+    op = cv2.dilate if grow else cv2.erode
+    return op(mask_u8, kernel, anchor=anchor, iterations=1).astype(bool)
 
 
 def open_mask(mask, kernel_size):

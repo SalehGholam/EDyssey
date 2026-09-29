@@ -61,6 +61,23 @@ from .loading_label import LoadingSpinner
 _ffmpeg = shutil.which('ffmpeg')
 if _ffmpeg:
     plt.rcParams['animation.ffmpeg_path'] = _ffmpeg
+
+
+def _iter_meshes(seg):
+    """The list of independent mesh dicts a Mesh segment `seg` (one entry
+    of MaskEditDialog.get_mesh_settings()'s 'segments' list) holds - item 2
+    (several meshes per segment): new-shaped segments carry them under
+    'meshes'; a segment saved before that feature existed has its one
+    mesh's fields directly on the segment dict itself, so it's wrapped into
+    a single-item list instead. `seg` may be None (no Mesh segment covers
+    this frame at all)."""
+    if not seg:
+        return []
+    if 'meshes' in seg:
+        return seg['meshes'] or []
+    return [seg]
+
+
 #%% tab class
 class Tab_SAM2(TabBase):
     def __init__(self, parent=None):
@@ -684,17 +701,21 @@ class Tab_SAM2(TabBase):
         # object adds a column - still called tree_objects (not literally a
         # QTreeWidget anymore) since renaming the many existing references
         # below wasn't worth it.
-        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "qlty", "dup", "del"]
+        self.cols_tree = ["use", "idx", "fr_idx", "end", "trk", "ext", "qlty", "dup", "reset", "del"]
         # Kept at or under "Start"'s own length (see TransposedObjectTable.
         # _HEADER_WIDTH_REF, matching ROI Tracker's identical object list) -
         # the ones that don't fit unabbreviated get a row_tooltips entry
         # with their full word instead.
-        row_labels = ["Use", "Idx", "Frame", "End", "Track", "Extr", "Qlty", "Dup", "Del"]
+        row_labels = ["Use", "Idx", "Frame", "End", "Track", "Extr", "Qlty", "Dup", "Reset", "Del"]
         row_tooltips = [None, None, None, None, "Tracked", "Extracted",
                         "Tracking Quality - flagged (see the frame-flag bar under the "
                         "slider) if any frame's mask area looks anomalous after tracking, "
                         "e.g. the tracker may have lost the object",
-                        "Duplicate", "Delete"]
+                        "Duplicate",
+                        "Reset to the latest SAM2 tracking result - discards every Fine-Tune "
+                        "Mask edit (painted/grown/shrunk pixels, Dilate/Erode, Edge Detection, "
+                        "Mesh) for this object at once",
+                        "Delete"]
         # Selected Object / All Active Objects - governs the Segmented
         # panel's mask overlay only: the DP panel still follows whichever
         # object is actually selected in the table below, regardless of
@@ -721,7 +742,7 @@ class Tab_SAM2(TabBase):
         # Tall enough for their content: dup/del hold a 30px button, end
         # holds a QSpinBox with up/down arrows, trk/ext hold a status icon.
         row_heights = {'use': 24, 'idx': 24, 'fr_idx': 24, 'end': 28,
-                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'del': 34}
+                       'trk': 24, 'ext': 24, 'qlty': 24, 'dup': 34, 'reset': 34, 'del': 34}
         for i, col in enumerate(self.cols_tree):
             self.tree_objects.setRowHeight(i, row_heights[col])
         self.tree_objects.setMinimumWidth(200)
@@ -1045,17 +1066,19 @@ class Tab_SAM2(TabBase):
 #%% load data
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
-        DP colormap - see display_settings.py's dp_colormap and the Edit
-        menu's Display Size dialog. 'nav' and 'seg' deliberately keep their
-        own fixed 'gray' instead of following the shared nav_colormap
-        setting: show_mask() draws colored (tab10) translucent mask
-        overlays and the positive/negative SAM2 point markers on top of
-        'nav', which need a plain grayscale background to stay readable
-        (a green point prompt was invisible against the default viridis
-        colormap)."""
+        per-plot colormaps - see display_settings.py's DisplaySettings.
+        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
+        Colormaps..." expansion. 'nav' and 'seg' default to their own fixed
+        'gray' (see PLOT_COLORMAP_DEFINITIONS) unless overridden:
+        show_mask() draws colored (tab10) translucent mask overlays and the
+        positive/negative SAM2 point markers on top of 'nav', which need a
+        plain grayscale background to stay readable by default (a green
+        point prompt was invisible against viridis)."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
-        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.img_display['nav'].set_cmap(settings.colormap_for('sam2_nav'))
+        self.img_display['seg'].set_cmap(settings.colormap_for('sam2_seg'))
+        self.img_display['dp'].set_cmap(settings.colormap_for('sam2_dp'))
         self.canvas.draw_idle()
 
     def show_dialog(self, f):
@@ -1138,6 +1161,16 @@ class Tab_SAM2(TabBase):
         mesh = self.df_obj.at[obj_id, 'mesh']
         return mesh if isinstance(mesh, dict) else None
 
+    def _manual_edit_settings_for(self, obj_id):
+        """This object's manual-edit protection settings (see
+        MaskEditDialog/get_manual_edit_settings - item 1: which pixels were
+        set by a manual tool, and whether Dilate/Erode/Edge Detection should
+        keep excluding them), or None if it has none set / obj_id is None."""
+        if obj_id is None:
+            return None
+        manual = self.df_obj.at[obj_id, 'manual_edits']
+        return manual if isinstance(manual, dict) else None
+
     def _dilate_erode_settings_for(self, obj_id):
         """This object's Dilate/Erode segments (see MaskEditDialog/
         get_dilate_erode_settings - `{'segments': [...]}`), or None if it
@@ -1170,10 +1203,13 @@ class Tab_SAM2(TabBase):
         def _any_enabled(settings, extra=lambda s: True):
             segs = (settings or {}).get('segments') or []
             return any(s.get('enabled') and extra(s) for s in segs)
+        mesh_segments = (self._mesh_settings_for(obj_id) or {}).get('segments') or []
+        mesh_active = any(m.get('enabled') and m.get('cells')
+                          for seg in mesh_segments for m in _iter_meshes(seg))
         return (_any_enabled(self._edge_settings_for(obj_id))
                or _any_enabled(self._dilate_erode_settings_for(obj_id), lambda s: (
                    s.get('kernel', 0) != 0 or s.get('open_kernel', 0) != 0 or s.get('close_kernel', 0) != 0))
-               or _any_enabled(self._mesh_settings_for(obj_id), lambda s: s.get('cells')))
+               or mesh_active)
 
     def apply_edge_mask(self, mask, obj_id=None, frame_idx=None):
         """Grow/shrink a single 2-D mask uniformly when `obj_id`'s
@@ -1181,29 +1217,32 @@ class Tab_SAM2(TabBase):
         Segments - resolved via io.segment_for_frame) is enabled (see
         io.dilate_erode_mask), then reduce it to just its edge/outline when
         that frame's Edge Detection segment is enabled (see
-        io.erode_mask_edge), then - if `obj_id` is given and that frame's
-        Mesh segment has a restriction set - restrict it to the selected
-        mesh cell(s), relative to the object's own position on THIS frame
-        (see io.mesh_restrict_mask/io.mask_centroid, and
-        MaskEditDialog._effective_mask's identical convention) so a
-        tracked object's motion across frames doesn't throw off which part
-        of it the selection actually covers. A no-op otherwise. SAM2 masks
-        are always kept raw in self.df_obj (see handle_finished_sam/
+        io.erode_mask_edge), then - if `obj_id` is given - restore any pixel
+        MaskEditDialog's own "Exclude Manual Edits from Effects" marked as
+        manually set back to its raw (pre-Dilate/Erode/Edge-Detection)
+        value, then - if that frame's Mesh segment has any mesh actually
+        restricting - restrict it to the INTERSECTION of every ENABLED
+        mesh's own selected cell(s) (item 2 - several independent meshes per
+        segment; a single mesh is just the trivial case), each relative to
+        the object's own position on THIS frame unless that particular mesh
+        is "Fixed" (item 3 - see MaskEditDialog._mesh_origin_for_mesh's
+        identical convention, which this mirrors) so a tracked object's
+        motion across frames doesn't throw off which part of it the
+        selection actually covers. A no-op otherwise. SAM2 masks are always
+        kept raw in self.df_obj (see handle_finished_sam/
         handle_finished_image_sam) so this can be applied fresh - and
         re-applied live whenever any segment's settings change - as a view
         at display/extraction/save time, instead of destructively baking
         any of them into the stored mask (which would make it impossible
         to undo by unchecking/re-editing it)."""
-        mesh_segments = (self._mesh_settings_for(obj_id) or {}).get('segments')
-        mesh = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
-        mesh_on = bool(mesh and mesh.get('enabled') and mesh.get('cells'))
-        origin = io.mask_centroid(mask) if mesh_on else None
+        original = mask
 
         de_segments = (self._dilate_erode_settings_for(obj_id) or {}).get('segments')
         de = io.segment_for_frame(de_segments, frame_idx) if de_segments else None
         if de and de.get('enabled'):
             if de.get('kernel', 0) != 0:
-                mask = io.dilate_erode_mask(mask, de['kernel'])
+                direction = de.get('direction') if de.get('directional') else None
+                mask = io.dilate_erode_mask(mask, de['kernel'], direction=direction)
             if de.get('open_kernel', 0) != 0:
                 mask = io.open_mask(mask, de['open_kernel'])
             if de.get('close_kernel', 0) != 0:
@@ -1216,10 +1255,40 @@ class Tab_SAM2(TabBase):
             mask = io.erode_mask_edge(mask, edge.get('kernel', 3), direction=direction,
                                       revert=edge.get('revert', False))
 
-        if mesh_on:
-            mask = io.mesh_restrict_mask(mask, mesh.get('angle', 0), mesh.get('cell_size', 20),
-                                         [tuple(c) for c in mesh['cells']], origin=origin,
-                                         lines_only=mesh.get('lines_only', False))
+        manual = self._manual_edit_settings_for(obj_id)
+        if manual and manual.get('protect') and frame_idx is not None:
+            manual_stack = manual.get('mask')
+            if manual_stack is not None and frame_idx < len(manual_stack):
+                manual_frame = manual_stack[frame_idx]
+                if manual_frame.any():
+                    mask = np.where(manual_frame, original, mask)
+
+        mesh_segments = (self._mesh_settings_for(obj_id) or {}).get('segments')
+        mesh_seg = io.segment_for_frame(mesh_segments, frame_idx) if mesh_segments else None
+        active_meshes = [m for m in _iter_meshes(mesh_seg) if m.get('enabled') and m.get('cells')]
+        if active_meshes:
+            # item 4 - "Center on: Initial Mask" needs the object's own
+            # pristine, un-edited mask for THIS frame - 'mask_default' is
+            # exactly that (see MaskEditDialog's own _default_stack), and
+            # (unlike ROI Tracker's threshold-derived equivalent) already
+            # persisted per-object, so no extra recompute is needed here.
+            default_stack = self.df_obj.at[obj_id, 'mask_default'] if obj_id is not None else None
+            if not isinstance(default_stack, np.ndarray):
+                default_stack = None
+            keep = None
+            for m in active_meshes:
+                if m.get('fixed') and m.get('origin') is not None:
+                    origin = tuple(m['origin'])
+                elif (m.get('center_basis') == 'initial' and default_stack is not None
+                      and frame_idx is not None and frame_idx < len(default_stack)):
+                    origin = io.mask_centroid(default_stack[frame_idx])
+                else:
+                    origin = io.mask_centroid(mask)
+                keep_m = io.mesh_restrict_mask(mask, m.get('angle', 0), m.get('cell_size', 20),
+                                               [tuple(c) for c in m['cells']], origin=origin,
+                                               lines_only=m.get('lines_only', False))
+                keep = keep_m if keep is None else (keep & keep_m)
+            mask = keep
         return mask
 
     def apply_edge_mask_stack(self, mask_stack, obj_id=None):
@@ -1903,7 +1972,7 @@ class Tab_SAM2(TabBase):
             # stand-in for it.
             self.df_obj.loc[idx] = [obj['use'], idx, obj['frame_idx'], obj['points'],
                                      obj['labels'], obj['end'], None, obj['mask'],
-                                     obj['mask'], obj['rois'], obj['dp'], None, None, None]
+                                     obj['mask'], obj['rois'], obj['dp'], None, None, None, None]
             self.add_item_tree(idx, obj['frame_idx'], obj['end'], obj['use'])
             row_index = self.df_obj.index.get_loc(idx)
             if obj['mask'] is not None:
@@ -1931,14 +2000,14 @@ class Tab_SAM2(TabBase):
         schema, and reset the added-points history."""
         self.cols_df = ['use', 'idx', 'frame_idx', 'points', 'labels', 'end',
                         'single_mask', 'mask', 'mask_default', 'rois', 'dp', 'mesh',
-                        'dilate_erode', 'edge']
+                        'dilate_erode', 'edge', 'manual_edits']
         self.df_obj = pd.DataFrame([], columns=self.cols_df)
         self.df_obj = self.df_obj.astype({'use': int, 'idx': int,'frame_idx': object,
                                           'points': object, 'labels': object,
                                           'end': int, 'single_mask': object,
                                           'dp': object,'mask':object, 'mask_default': object,
                                           'rois':object, 'mesh': object, 'dilate_erode': object,
-                                          'edge': object})
+                                          'edge': object, 'manual_edits': object})
         self.initiate_adding_points()
         
     def reset_data(self):
@@ -2019,6 +2088,23 @@ class Tab_SAM2(TabBase):
         container_dup.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
         self.tree_objects.setItemWidget(item, cols['dup'], container_dup)
 
+        reset_button = qtw.QPushButton()
+        reset_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_BrowserReload))
+        reset_button.setFixedSize(30, 30)
+        reset_button.setToolTip(
+            "Reset to the latest SAM2 tracking result - discards every Fine-Tune Mask "
+            "edit (painted/grown/shrunk pixels, Dilate/Erode, Edge Detection, Mesh) for "
+            "this object at once")
+        reset_button.clicked.connect(
+            lambda: self._reset_object_to_tracking(self.df_obj.index[self.tree_objects.indexOfTopLevelItem(item)]))
+        container_reset = qtw.QWidget()
+        layout_reset = qtw.QHBoxLayout(container_reset)
+        layout_reset.addWidget(reset_button)
+        layout_reset.setContentsMargins(0, 0, 0, 0)
+        layout_reset.setAlignment(Qt.AlignLeft)
+        container_reset.setSizePolicy(qtw.QSizePolicy.Preferred, qtw.QSizePolicy.Preferred)
+        self.tree_objects.setItemWidget(item, cols['reset'], container_reset)
+
         delete_button = qtw.QPushButton()
         delete_button.setIcon(self.style().standardIcon(qtw.QStyle.SP_TrashIcon))
         delete_button.setFixedSize(30, 30)
@@ -2053,6 +2139,38 @@ class Tab_SAM2(TabBase):
 
         self.tree_objects.setCurrentItem(item)
         item.setSelected(True)  # optional: highlight
+
+    def _reset_object_to_tracking(self, obj_id):
+        """Object list's own "Reset" button: put object `obj_id` back to
+        its latest SAM2 tracking result - the same discard-everything
+        semantics as MaskEditDialog's own "Reset to Tracking" (mask AND
+        every Dilate/Erode/Edge Detection/Mesh/manual-edit setting), just
+        reachable directly from the main object list without opening Fine-
+        Tune Mask first. 'mask_default' is always this object's MOST
+        RECENT tracking run (re-snapshotted every time tracking finishes -
+        see handle_finished_sam/handle_finished_image_sam), never a stale
+        one from an earlier run. A no-op (with a warning) if this object
+        hasn't been tracked at all yet."""
+        default = self.df_obj.at[obj_id, 'mask_default']
+        if not isinstance(default, np.ndarray):
+            qtw.QMessageBox.warning(self, 'Not Tracked Yet',
+                f'Object {obj_id} has no tracked mask yet - run "Track" or "Seg Image" first.')
+            return
+        if qtw.QMessageBox.question(
+                self, 'Reset to Tracking',
+                f'Discard every edit for object {obj_id} - the mask on every frame (back to '
+                'the latest tracked result) and every Dilate/Erode/Edge Detection/Mesh '
+                'setting? This cannot be undone.',
+                qtw.QMessageBox.Yes | qtw.QMessageBox.No, qtw.QMessageBox.No
+        ) != qtw.QMessageBox.Yes:
+            return
+        self.df_obj.at[obj_id, 'mask'] = default.copy()
+        self.df_obj.at[obj_id, 'mesh'] = None
+        self.df_obj.at[obj_id, 'dilate_erode'] = None
+        self.df_obj.at[obj_id, 'edge'] = None
+        self.df_obj.at[obj_id, 'manual_edits'] = None
+        self.logger.info('Object %d reset to its latest tracking result.', obj_id)
+        self.update_canvas()
 
     def toggle_tree_icon(self, row_index: int, col, status):
         item = self.tree_objects.topLevelItem(row_index)
@@ -2169,6 +2287,7 @@ class Tab_SAM2(TabBase):
         edge_settings = self._edge_settings_for(obj_id)
         mesh_settings = self._mesh_settings_for(obj_id)
         dilate_erode_settings = self._dilate_erode_settings_for(obj_id)
+        manual_edit_settings = self._manual_edit_settings_for(obj_id)
         # Contrast-only (no denoise) - MaskEditDialog applies its own
         # Denoise box fresh on top of this, seeded from box_contrast's own
         # current state below, so its preview starts out looking the same
@@ -2179,7 +2298,8 @@ class Tab_SAM2(TabBase):
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
                                 default_mask_stack=default_mask_stack, edge_settings=edge_settings,
                                 mesh_settings=mesh_settings, dilate_erode_settings=dilate_erode_settings,
-                                denoise_state=self.box_contrast.box_denoise.get_state())
+                                denoise_state=self.box_contrast.box_denoise.get_state(),
+                                manual_edit_settings=manual_edit_settings)
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_obj.at[obj_id, 'mask'] = dialog.get_mask_stack()
             # Mesh/Dilate-Erode/Edge Detection are all per-object (no
@@ -2191,6 +2311,7 @@ class Tab_SAM2(TabBase):
             self.df_obj.at[obj_id, 'mesh'] = dialog.get_mesh_settings()
             self.df_obj.at[obj_id, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_obj.at[obj_id, 'edge'] = dialog.get_edge_settings()
+            self.df_obj.at[obj_id, 'manual_edits'] = dialog.get_manual_edit_settings()
             edited_frames = dialog.get_edited_frame_indices()
             self.logger.info(
                 'Fine-tuned mask saved for object %d - %d/%d frame(s) changed: %s.',
@@ -3263,20 +3384,19 @@ class Tab_SAM2(TabBase):
             rois = []
             for i_img, mask in enumerate(self.df_obj.loc[obj_id, 'mask']):
                 temp = np.where(mask==True)
-                try:
-                    if temp[0].shape != 0: # no pixel found
-                        ymin = temp[0].min()
-                        ymax = temp[0].max() +1
-                        xmin = temp[1].min()
-                        xmax = temp[1].max() +1
-                        w = xmax - xmin
-                        h = ymax - ymin
-                        r = [xmin, ymin, w, h]
-                        r = tuple([int(item) for item in r])
-                        # rois[i_obj][i_img] = r
-                        rois.append(r)
-                except ValueError:
-                    rois.append((0,0,0,0))
+                if len(temp[0]) == 0:  # no pixel found
+                    rois.append((0, 0, 0, 0))
+                else:
+                    ymin = temp[0].min()
+                    ymax = temp[0].max() +1
+                    xmin = temp[1].min()
+                    xmax = temp[1].max() +1
+                    w = xmax - xmin
+                    h = ymax - ymin
+                    r = [xmin, ymin, w, h]
+                    r = tuple([int(item) for item in r])
+                    # rois[i_obj][i_img] = r
+                    rois.append(r)
             rois = np.array(rois)
             self.df_obj.at[obj_id, 'rois'] = rois
 

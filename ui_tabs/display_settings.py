@@ -54,6 +54,42 @@ PLOT_DEFINITIONS = [
 ]
 PLOT_KEYS = [key for key, *_ in PLOT_DEFINITIONS]
 
+# Every individually-recolorable image plot across all 4 tabs: (key, label,
+# role, fixed_default). `role` is 'nav'/'dp' for a plot that (with no
+# override set - see DisplaySettings.colormap_for) follows the shared
+# nav_colormap/dp_colormap setting above, same as it always has; None for a
+# plot that's deliberately hardcoded to its own `fixed_default` regardless
+# of the shared settings (a translucent color mask/segmentation overlay
+# drawn on top needs a plain, predictable background to stay legible - see
+# each tab's own apply_display_settings()). A per-plot override (see
+# plot_colormap_overrides) takes precedence over both.
+PLOT_COLORMAP_DEFINITIONS = [
+    ('navigator_nav', 'Navigator - Navigation Image', 'nav', None),
+    ('navigator_dp', 'Navigator - Summed DP', 'dp', None),
+    ('roi4d_nav', 'ROI on 4D - Navigation Image', 'nav', None),
+    ('roi4d_dp', 'ROI on 4D - Diffraction Pattern', 'dp', None),
+    ('roi4d_nav_roi', 'ROI on 4D - Nav+ROI Overlay Background', None, 'gray'),
+    ('tracker_nav', 'ROI Tracker - Navigation Image', 'nav', None),
+    ('tracker_dp', 'ROI Tracker - Diffraction Pattern', 'dp', None),
+    ('tracker_mask', 'ROI Tracker - Segmented Object Background', None, 'gray'),
+    ('sam2_nav', 'SAM2 Tracker - Navigation Image Background', None, 'gray'),
+    ('sam2_seg', 'SAM2 Tracker - Segmented Object Background', None, 'gray'),
+    ('sam2_dp', 'SAM2 Tracker - Diffraction Pattern', 'dp', None),
+]
+PLOT_COLORMAP_KEYS = [key for key, *_ in PLOT_COLORMAP_DEFINITIONS]
+_PLOT_COLORMAP_META = {key: (role, fixed_default)
+                       for key, _label, role, fixed_default in PLOT_COLORMAP_DEFINITIONS}
+
+
+def _reversed_colormap_name(name):
+    """The paired _r (reversed) variant of `name` - every entry in
+    COLORMAP_OPTIONS has one (see its own comment) - or `name` with a
+    trailing '_r' stripped if it's already the reversed one. Used wherever
+    a "Revert Contrast"-style toggle needs to flip whichever colormap is
+    ACTUALLY in effect (possibly a per-plot override, not always the
+    hardcoded 'viridis' an in-effect colormap used to be assumed to be)."""
+    return name[:-2] if name.endswith('_r') else name + '_r'
+
 _CONFIG_DIR = os.path.join(writable_data_dir(), 'config')
 DEFAULTS_FILE = os.path.join(_CONFIG_DIR, 'display_defaults.json')
 SETTINGS_FILE = os.path.join(_CONFIG_DIR, 'display_settings.json')
@@ -70,6 +106,7 @@ def _default_state():
         'figure_size_scales': {key: FIGURE_SIZE_SCALE_DEFAULT for key in PLOT_KEYS},
         'nav_colormap': NAV_COLORMAP_DEFAULT,
         'dp_colormap': DP_COLORMAP_DEFAULT,
+        'plot_colormap_overrides': {key: None for key in PLOT_COLORMAP_KEYS},
     }
 
 
@@ -142,6 +179,16 @@ class DisplaySettings(QObject):
         self.nav_colormap = nav_cmap if nav_cmap in COLORMAP_OPTIONS else defaults['nav_colormap']
         dp_cmap = state.get('dp_colormap', defaults['dp_colormap'])
         self.dp_colormap = dp_cmap if dp_cmap in COLORMAP_OPTIONS else defaults['dp_colormap']
+        # Per-plot colormap overrides (None = no override, follow this
+        # plot's role/fixed default instead - see colormap_for()) - same
+        # merge-by-key/validate-each-value convention as figure_size_scales/
+        # nav_colormap above, so an old settings file (missing a plot added
+        # since, or with a hand-edited invalid name) never breaks loading.
+        saved_overrides = state.get('plot_colormap_overrides') or {}
+        self.plot_colormap_overrides = {
+            key: (saved_overrides.get(key) if saved_overrides.get(key) in COLORMAP_OPTIONS else None)
+            for key in PLOT_COLORMAP_KEYS
+        }
 
     def _current_state(self):
         return {
@@ -152,6 +199,7 @@ class DisplaySettings(QObject):
             'figure_size_scales': dict(self.figure_size_scales),
             'nav_colormap': self.nav_colormap,
             'dp_colormap': self.dp_colormap,
+            'plot_colormap_overrides': dict(self.plot_colormap_overrides),
         }
 
     def _persist(self):
@@ -168,7 +216,7 @@ class DisplaySettings(QObject):
 
     def set_values(self, ribbon_text_scale=None, ribbon_icon_size=None,
                    ribbon_height_scale=None, plot_font_scale=None, figure_size_scales=None,
-                   nav_colormap=None, dp_colormap=None):
+                   nav_colormap=None, dp_colormap=None, plot_colormap_overrides=None):
         """Update whichever values are given (None = leave unchanged), then
         emit `changed` once for the whole batch and persist to disk - the
         Display Size dialog's "Apply" button calls this once with every
@@ -179,6 +227,15 @@ class DisplaySettings(QObject):
         only the keys present are updated, so the dialog can pass just the
         1-5 plots the user actually touched (or all of them, e.g. via its
         "Apply to All Plots" action).
+
+        `plot_colormap_overrides`, if given, is a dict of {plot_key:
+        colormap_name_or_None} - same partial-update convention as
+        figure_size_scales; a value of None for a given key explicitly
+        CLEARS that plot's override (falls back to following nav_colormap/
+        dp_colormap/its own fixed default again - see colormap_for()),
+        rather than being treated as "leave unchanged" the way the plain
+        `nav_colormap`/`dp_colormap` parameters above are - only a key's
+        ABSENCE from this dict means "leave that one plot's override alone".
         """
         if ribbon_text_scale is not None:
             self.ribbon_text_scale = ribbon_text_scale
@@ -195,8 +252,29 @@ class DisplaySettings(QObject):
             self.nav_colormap = nav_colormap
         if dp_colormap is not None:
             self.dp_colormap = dp_colormap
+        if plot_colormap_overrides:
+            self.plot_colormap_overrides.update(
+                {k: v for k, v in plot_colormap_overrides.items() if k in self.plot_colormap_overrides})
         self._persist()
         self.changed.emit()
+
+    def colormap_for(self, plot_key):
+        """The colormap actually in effect for plot `plot_key` right now -
+        its own override if one is set, else whichever of nav_colormap/
+        dp_colormap its role follows, else its fixed default (see
+        PLOT_COLORMAP_DEFINITIONS) - the single place every tab's own
+        apply_display_settings() should read a per-plot colormap from,
+        instead of nav_colormap/dp_colormap directly, so a per-plot
+        override actually takes effect."""
+        override = self.plot_colormap_overrides.get(plot_key)
+        if override:
+            return override
+        role, fixed_default = _PLOT_COLORMAP_META.get(plot_key, (None, 'gray'))
+        if role == 'nav':
+            return self.nav_colormap
+        if role == 'dp':
+            return self.dp_colormap
+        return fixed_default
 
     def reset(self):
         """Reset every value to DEFAULTS_FILE's contents (falling back to

@@ -941,15 +941,17 @@ class Tab_ROI_on_4D(TabBase):
 #%% functions
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
-        nav/DP colormap - see display_settings.py's nav_colormap/
-        dp_colormap and the Edit menu's Display Size dialog. 'nav_roi'
-        deliberately keeps its own 'gray' default instead - show_seg_mask()
+        per-plot colormaps - see display_settings.py's DisplaySettings.
+        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
+        Colormaps..." expansion. 'nav_roi' defaults to its own fixed 'gray'
+        (see PLOT_COLORMAP_DEFINITIONS) unless overridden - show_seg_mask()
         draws a translucent segmentation-mask overlay on it, which needs a
-        plain grayscale background to stay readable."""
+        plain grayscale background to stay readable by default."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
-        self.img_display['nav'].set_cmap(settings.nav_colormap)
-        self.img_display['dp'].set_cmap(settings.dp_colormap)
+        self.img_display['nav'].set_cmap(settings.colormap_for('roi4d_nav'))
+        self.img_display['dp'].set_cmap(settings.colormap_for('roi4d_dp'))
+        self.img_display['nav_roi'].set_cmap(settings.colormap_for('roi4d_nav_roi'))
         self.canvas.draw_idle()
 
     def activate_lineEdit_scanSize(self):

@@ -21,7 +21,20 @@ import EDyssey.io_utils as io
 from .ribbon import RibbonPanel, RibbonTool
 from .denoise_widget import DenoiseBox
 
-_MASK_COLOR = np.array([1.0, 0.55, 0.0, 0.65])  # translucent orange overlay
+_DEFAULT_MASK_ALPHA = 0.28  # starting value for both spinbox_initialMaskAlpha/spinbox_tunedMaskAlpha
+# tab:brown - the same hue as the Mesh box's own selected-cell highlight
+# (_MESH_SELECTED_COLOR below, which shares this exact RGB). By request,
+# used for the INITIAL (pre-edit) mask rather than the current/tuned one -
+# _TUNED_MASK_RGB below is that one's own color instead.
+_MASK_RGB = (0.549, 0.337, 0.294)
+# A different hue (blue, not brown) for the current/tuned mask, drawn ON
+# TOP of the initial-mask reference layer below it (item 5) - so the two are
+# distinguishable at a glance even at the same opacity. Each mask's actual
+# alpha is instance state (self._initial_mask_alpha/_tuned_mask_alpha, set
+# from spinbox_initialMaskAlpha/spinbox_tunedMaskAlpha - see _mask_rgba/
+# _initial_mask_rgba), not baked into a module-level constant, since it's
+# now a live, per-session user preference rather than a fixed look.
+_TUNED_MASK_RGB = (0.15, 0.45, 0.95)
 _DIRECTIONS = [('Top', 270), ('Bottom', 90), ('Left', 180), ('Right', 0)]
 # Full reference for the "?" help button below the canvas (see
 # _show_help_dialog) - promoted from the old always-visible label_tip
@@ -89,11 +102,11 @@ _HELP_TEXT = (
     'Edit Scope (above the canvas):\n'
     '  The "Single Frame"/"Segment" radios govern what a Dilate/Erode, '
     'Edge Detection, or Mesh change (a control tweak or a mesh cell click) '
-    'actually applies to - "Single Frame" (the default) silently splits '
+    'actually applies to - "Segment" (the default) applies it to the whole '
+    'segment currently on screen; "Single Frame" instead silently splits '
     'the current segment down to just this one frame first, inheriting '
     'whatever settings already covered it, then applies the change to '
-    'only that frame; "Segment" applies it to the whole segment currently '
-    'on screen instead, same as before this toggle existed. Either way, '
+    'only that frame. Either way, '
     'the result is an ordinary segment - scrubbing back to an already '
     'frame-isolated frame later shows its own settings regardless of '
     'which mode is currently selected.\n'
@@ -108,37 +121,63 @@ _HELP_TEXT = (
     'once - the mask on every frame, back to the original tracked/'
     'segmented result, and every segment boundary/setting, back to one '
     'plain-default segment spanning the whole stack.\n'
+    '  "Exclude Manual Edits from Effects" (checked by default) - pixels '
+    'you painted, rect-painted, or grew/shrunk by hand keep exactly that '
+    'value even while Dilate/Erode or Edge Detection is on, instead of '
+    'those effects reprocessing them along with the rest of the mask. '
+    'Uncheck to go back to effects applying uniformly everywhere, manual '
+    'edits included.\n'
     '\n'
     'Dilate / Erode Mask:\n'
     '  Live preview only - never changes the returned mask. Grows or '
     'shrinks the mask uniformly by "Kernel Size" pixels: positive dilates '
-    '(grows), negative erodes (shrinks). "Opening Kernel Size" (erode then '
-    'dilate) removes small bright specks/thin protrusions without changing '
-    'the mask\'s overall size; "Closing Kernel Size" (dilate then erode) '
-    'fills small dark holes/gaps the same way - both 0 (off) by default, '
-    'applied in that order right after Kernel Size above. All three apply '
-    'before Edge Detection below, scoped to either the current frame or '
-    'segment depending on Edit Scope (see above).\n'
+    '(grows), negative erodes (shrinks) - optionally one-sided instead via '
+    '"Directional" + Angle (0 = grow/shrink the right-hand edge, 90 = '
+    'bottom, 180 = left, 270 = top), leaving the mask\'s other sides '
+    'untouched. "Opening Kernel Size" (erode then dilate) removes small '
+    'bright specks/thin protrusions without changing the mask\'s overall '
+    'size; "Closing Kernel Size" (dilate then erode) fills small dark '
+    'holes/gaps the same way - both 0 (off) by default, always isotropic '
+    '(no direction), applied in that order right after Kernel Size above. '
+    'All three apply before Edge Detection below, scoped to either the '
+    'current frame or segment depending on Edit Scope (see above), and '
+    'skip any manually painted pixel unless "Exclude Manual Edits from '
+    'Effects" is off.\n'
     '\n'
     'Edge Detection:\n'
     '  Live preview only - never changes the returned mask. Reduces the '
     'mask to its outline (optionally one-sided via "Directional" + Angle). '
     'Scoped by Edit Scope like Dilate/Erode and Mesh (see above) - each '
-    'segment has its own independent Edge Detection settings.\n'
+    'segment has its own independent Edge Detection settings, and (like '
+    'Dilate/Erode) skips manually painted pixels unless "Exclude Manual '
+    'Edits from Effects" is off.\n'
     '\n'
     'Mesh:\n'
-    '  Divides the mask into a rotated grid; left-click cell(s) to '
-    'restrict extraction to just those cells (live preview only), scoped '
-    'by Edit Scope like the other two (see above). The full mask keeps '
-    'showing in orange as a '
-    'reference - the part of it inside the selected cell(s) is highlighted '
-    'brown on top, instead of the mask shrinking down to just the '
-    'selection. "Lines Only" restricts to full-width stripes along the '
-    'grid angle instead of individual square cells - clicking one keeps '
-    'its whole stripe. Switching it clears the current selection. '
-    '"Center on Initial Mask" anchors the grid to where the object '
-    'started (its first tracked/segmented position) instead of wherever '
-    "it's been edited to since - useful once the mask has moved a lot.\n"
+    '  A segment can hold several independent meshes - pick which one to '
+    'edit from the list (its own inline checkbox is that mesh\'s "enabled", '
+    'independent of just being selected there); "Add Mesh"/"Delete Mesh" '
+    'manage the list. Left-click cell(s) on the canvas to restrict '
+    'extraction to just those cells in whichever mesh is selected (live '
+    'preview only), scoped by Edit Scope like the other two (see above). '
+    'The full mask keeps showing in orange as a reference - the part of it '
+    'kept by every ENABLED mesh at once (their INTERSECTION, when more '
+    'than one is enabled - each additional enabled mesh narrows the '
+    'selection further) is highlighted brown on top, instead of the mask '
+    'shrinking down to just the selection. "Lines Only" restricts to '
+    'full-width stripes along the grid angle instead of individual square '
+    'cells - clicking one keeps its whole stripe. Switching it clears the '
+    'current selection. "Fixed Mesh" anchors the selected mesh\'s grid to '
+    'one fixed point - by default, captured from where the object started '
+    '(its centroid on the segment\'s initial, pre-edit mask) - instead of '
+    'recentering on wherever the mask has been edited to since; "Center '
+    'Grid (Click)" instead lets you pick that point yourself: click it, '
+    'then click the canvas where you want the grid anchored (also turns on '
+    'Fixed Mesh). While NOT Fixed, "Center on:" picks which mask the '
+    "grid's per-frame recentering tracks - the object's live/edited mask "
+    '(the default) or its initial/pre-edit one (same source Fixed Mesh '
+    "itself captures its point from), useful when you'd rather the grid "
+    'keep following the original tracked/segmented position instead of '
+    'wherever the mask has since been painted/grown/shrunk to.\n'
     '\n'
     'Find Tilt Axis:\n'
     '  Estimates the tomography tilt axis from how this object\'s mask '
@@ -148,12 +187,12 @@ _HELP_TEXT = (
     'Assumes every frame is a tilt of the same specimen about one fixed '
     'in-plane axis, with little translational drift between frames.')
 _MESH_GRID_COLOR = 'cyan'
-# tab:brown, on top of _MASK_COLOR's tab:orange - highlights just the part
-# of the mask that falls inside the selected mesh cell(s) (see
-# _redraw_mesh_overlay), so the full mask (still shown underneath,
-# unrestricted) stays visible as a reference while picking cells instead of
-# being replaced by the cell-restricted view.
-_MESH_SELECTED_COLOR = np.array([0.549, 0.337, 0.294, 0.7])
+# Same hue as _MASK_COLOR (_MASK_RGB), at a much higher alpha - drawn on top
+# of it, highlighting just the part of the mask that falls inside the
+# selected mesh cell(s) (see _redraw_mesh_overlay), so the full mask (still
+# shown underneath, unrestricted) stays visible as a reference while
+# picking cells instead of being replaced by the cell-restricted view.
+_MESH_SELECTED_COLOR = np.array([*_MASK_RGB, 0.7])
 _SEGMENT_BAR_COLORS = [QColor('#3a3a3a'), QColor('#4c4c4c')]  # alternating segment blocks
 _SEGMENT_BOUNDARY_COLOR = QColor('orange')
 _SEGMENT_PLAYHEAD_COLOR = QColor('yellow')
@@ -168,10 +207,14 @@ def _dilate_erode_fields(d):
     'kernel' (signed: grows or shrinks the mask), these are unsigned sizes
     (0 = off) since opening/closing each apply as one fixed erode-then-
     dilate (or reverse) pair, with no "which direction" to pick - see
-    io.open_mask/io.close_mask."""
+    io.open_mask/io.close_mask. 'directional'/'direction' apply only to the
+    signed 'kernel' step (see io.dilate_erode_mask's own `direction`
+    argument) - Opening/Closing stay isotropic, same as Edge Detection's
+    own "Directional" only ever applying to its one erosion step."""
     d = d or {}
     return {'enabled': bool(d.get('enabled', False)), 'kernel': int(d.get('kernel', 0)),
-            'open_kernel': int(d.get('open_kernel', 0)), 'close_kernel': int(d.get('close_kernel', 0))}
+            'open_kernel': int(d.get('open_kernel', 0)), 'close_kernel': int(d.get('close_kernel', 0)),
+            'directional': bool(d.get('directional', False)), 'direction': float(d.get('direction', 0))}
 
 
 def _edge_fields(d):
@@ -183,12 +226,48 @@ def _edge_fields(d):
 
 
 def _mesh_fields(d):
-    """Mesh-relevant fields out of `d` - see _dilate_erode_fields."""
+    """A single mesh's own fields out of `d` - see _dilate_erode_fields.
+    'fixed'/'origin' (item 3, "Fixed Mesh") replace the old single
+    'center_on_initial' boolean: 'fixed' still means "don't recenter on the
+    object's live position every frame", but the actual anchor point is now
+    captured once into 'origin' ((x, y), None until first set) instead of
+    being recomputed from the initial mask on every redraw - see
+    MaskEditDialog._mesh_origin_for_mesh for why (the old flag was silently
+    ignored at real extraction time, since apply_edge_mask always recomputed
+    a fresh live centroid - this is what made "Center on Initial Mask" look
+    like it did nothing). Old saved dicts only ever have 'center_on_initial'
+    (no 'origin') - read as fixed-but-not-yet-anchored, same as freshly
+    checking the box now.
+
+    'center_basis' (item 4) is which mask the DYNAMIC (non-'fixed') per-frame
+    centroid tracking is computed from - 'edited' (self.mask_stack, the
+    default, same as the old always-on behavior) or 'initial' (this
+    segment's initial/pre-edit mask, same source 'fixed' captures its own
+    one-time origin from - _default_stack if the caller gave one, else
+    _original_stack). Only matters while 'fixed' is off - a fixed mesh
+    always uses its own captured 'origin' regardless."""
     d = d or {}
+    origin = d.get('origin')
     return {'enabled': bool(d.get('enabled', False)), 'angle': float(d.get('angle', 0)),
             'cell_size': int(d.get('cell_size', 20)), 'cells': [list(c) for c in d.get('cells', [])],
             'lines_only': bool(d.get('lines_only', False)),
-            'center_on_initial': bool(d.get('center_on_initial', False))}
+            'fixed': bool(d.get('fixed', d.get('center_on_initial', False))),
+            'origin': [float(origin[0]), float(origin[1])] if origin is not None else None,
+            'center_basis': d.get('center_basis', 'edited') if d.get('center_basis') in ('edited', 'initial') else 'edited'}
+
+
+def _meshes_from_raw(raw):
+    """Normalize whatever a segment's raw stored mesh settings looked like
+    into this dialog's own internal shape: a list of mesh dicts (item 2,
+    "multiple meshes per segment") - `raw` is either already
+    `{'meshes': [...]}` (this feature's own shape), a single old-style flat
+    mesh dict (pre-item-2 saved data - one mesh, its fields directly on the
+    segment/settings dict), or None/empty (no mesh at all)."""
+    if not raw:
+        return []
+    if isinstance(raw, dict) and 'meshes' in raw:
+        return [_mesh_fields(m) for m in raw['meshes']]
+    return [_mesh_fields(raw)]
 
 
 def _build_initial_segments(n_frames, dilate_erode_settings, edge_settings, mesh_settings):
@@ -196,7 +275,7 @@ def _build_initial_segments(n_frames, dilate_erode_settings, edge_settings, mesh
     old-shape settings dicts, or new `{'segments': [...]}`-shaped ones from
     a previous Fine-Tune Mask session with this same feature) into this
     dialog's own internal segment list: a sorted, contiguous list of
-    {'start', 'end' (both inclusive), 'dilate_erode', 'edge', 'mesh'}
+    {'start', 'end' (both inclusive), 'dilate_erode', 'edge', 'meshes'}
     dicts spanning every frame in [0, n_frames) - one shared timeline all
     three boxes carry their own settings against, instead of one fixed
     setting (Dilate/Erode, Edge Detection) or a single this-frame/all-
@@ -222,14 +301,14 @@ def _build_initial_segments(n_frames, dilate_erode_settings, edge_settings, mesh
                 'start': start, 'end': end,
                 'dilate_erode': _dilate_erode_fields(io.segment_for_frame(de_list, start)),
                 'edge': _edge_fields(io.segment_for_frame(edge_list, start)),
-                'mesh': _mesh_fields(io.segment_for_frame(mesh_list, start)),
+                'meshes': _meshes_from_raw(io.segment_for_frame(mesh_list, start)),
             })
         return segments
     return [{
         'start': 0, 'end': n_frames - 1,
         'dilate_erode': _dilate_erode_fields(dilate_erode_settings),
         'edge': _edge_fields(edge_settings),
-        'mesh': _mesh_fields(mesh_settings),
+        'meshes': _meshes_from_raw(mesh_settings),
     }]
 
 
@@ -309,15 +388,17 @@ class MaskEditDialog(qtw.QDialog):
     explicit button, since it discards every other frame's edits at once.
 
     A Denoise box (see denoise_widget.DenoiseBox) controls the displayed
-    background image only - never the mask itself, and never what
-    recompute_thresh_fn re-thresholds from (that still reads the caller's
-    own already-processed stack) - purely so different denoise methods can
-    be compared live while deciding the OTHER settings above. `bg_stack`
-    must be contrast-only (not already denoised) so this never double-
-    applies denoising on top of whatever the caller's own main-tab setting
-    already baked in; it defaults to `denoise_state` (typically the calling
-    tab's own current Denoise state, via ContrastScalingBox.box_denoise.
-    get_state()) so the preview starts out looking the same either way.
+    background image, and - for a threshold-derived caller (Tab_Tracking_
+    CV2, via recompute_thresh_fn's own `denoised_imgs` argument - see
+    _denoised_bg_stack) - what the Threshold box actually rebuilds the mask
+    from too, so choosing a denoise method here isn't just cosmetic; it
+    still never touches mask_stack itself directly, the same as Dilate/
+    Erode/Edge Detection/Mesh. `bg_stack` must be contrast-only (not already
+    denoised) so this never double-applies denoising on top of whatever the
+    caller's own main-tab setting already baked in; it defaults to
+    `denoise_state` (typically the calling tab's own current Denoise state,
+    via ContrastScalingBox.box_denoise.get_state()) so the preview starts
+    out looking the same either way.
 
     Dilate/Erode, Edge Detection, and Mesh all share one timeline of
     "segments" (self._segments - see _build_initial_segments) instead of one
@@ -336,7 +417,7 @@ class MaskEditDialog(qtw.QDialog):
     def __init__(self, parent, mask_stack, bg_stack=None, start_frame=0, logger=None,
                  default_mask_stack=None, edge_settings=None,
                  thresh_settings=None, recompute_thresh_fn=None, mesh_settings=None,
-                 dilate_erode_settings=None, denoise_state=None):
+                 dilate_erode_settings=None, denoise_state=None, manual_edit_settings=None):
         super().__init__(parent)
         self.setWindowTitle('Fine-Tune Mask')
         # Maximize button too (off by default on a QDialog) - the image
@@ -367,6 +448,20 @@ class MaskEditDialog(qtw.QDialog):
         self.recompute_thresh_fn = recompute_thresh_fn
         self._original_stack = np.asarray(mask_stack).astype(bool)
         self.mask_stack = self._original_stack.copy()
+        # Item 1: which pixels were set by a manual tool (paint/rect paint,
+        # D-pad grow/shrink) rather than Dilate/Erode/Edge Detection's own
+        # live-preview recompute - see _effective_mask/_paint_pixel/
+        # _on_release/_grow_shrink. Restored from a previous session's own
+        # get_manual_edit_settings() when the shape still matches (same
+        # object, same frame count/size); otherwise starts empty (nothing
+        # manually touched yet).
+        manual_edit_settings = manual_edit_settings or {}
+        stored_manual = manual_edit_settings.get('mask')
+        if stored_manual is not None and np.asarray(stored_manual).shape == self.mask_stack.shape:
+            self._manual_mask_stack = np.asarray(stored_manual).astype(bool).copy()
+        else:
+            self._manual_mask_stack = np.zeros_like(self.mask_stack, dtype=bool)
+        self._initial_protect_manual_edits = bool(manual_edit_settings.get('protect', True))
         # The pristine tracking-derived stack (SAM2 output, or a freshly
         # recomputed cv2-tracking threshold mask) - independent of anything
         # edited in this dialog, this session or any previous one. Falls
@@ -381,6 +476,15 @@ class MaskEditDialog(qtw.QDialog):
         # See _bg_frame(), the single place every displayed background
         # image is read from.
         self.bg_stack = bg_stack
+        # Cache for _denoised_bg_stack() - see its own docstring.
+        self._denoised_threshold_stack = None
+        # Live per-session opacity for each mask layer - see spinbox_
+        # initialMaskAlpha/spinbox_tunedMaskAlpha and _mask_rgba/
+        # _initial_mask_rgba. Set here (before the widgets exist) so
+        # img_initial_mask/img_mask's very first construction below already
+        # uses the right value, not a stale module-level default.
+        self._initial_mask_alpha = _DEFAULT_MASK_ALPHA
+        self._tuned_mask_alpha = _DEFAULT_MASK_ALPHA
         self.n_frames = self.mask_stack.shape[0]
         self.frame = int(np.clip(start_frame, 0, self.n_frames - 1))
 
@@ -432,6 +536,14 @@ class MaskEditDialog(qtw.QDialog):
                 break
         self._mesh_grid_artists = []   # grid-line contour artists
         self._mesh_cell_artist = None  # selected-cells highlight overlay
+        # Item 2: which of the current segment's self._segments[i]['meshes']
+        # list is shown/edited by the Mesh box's own widgets - reset to 0
+        # whenever the segment changes (see _load_segment_into_widgets).
+        self._active_mesh_idx = 0
+        # Item 3: True while "Center Grid (Click)" is armed, waiting for the
+        # next canvas click to set the active mesh's fixed origin - see
+        # _arm_mesh_center_pick/_on_press.
+        self._picking_mesh_center = False
 
         # Tilt axis: set once "Find Tilt Axis" has been clicked (see
         # _find_tilt_axis) - None until then, so _redraw_tilt_axis_overlay
@@ -486,11 +598,11 @@ class MaskEditDialog(qtw.QDialog):
         row_edit_scope = qtw.QHBoxLayout()
         row_edit_scope.addWidget(qtw.QLabel('Edit Scope:'))
         self.radio_scopeFrame = qtw.QRadioButton('Single Frame')
-        self.radio_scopeFrame.setChecked(True)
         self.radio_scopeFrame.setToolTip(
             'Dilate/Erode, Edge Detection, and Mesh changes apply to just this one frame')
         row_edit_scope.addWidget(self.radio_scopeFrame)
         self.radio_scopeSegment = qtw.QRadioButton('Segment')
+        self.radio_scopeSegment.setChecked(True)
         self.radio_scopeSegment.setToolTip(
             'Dilate/Erode, Edge Detection, and Mesh changes apply to the whole current '
             'segment (the frame range shown below the slider)')
@@ -501,6 +613,65 @@ class MaskEditDialog(qtw.QDialog):
         self._scope_group = qtw.QButtonGroup(self)
         self._scope_group.addButton(self.radio_scopeFrame)
         self._scope_group.addButton(self.radio_scopeSegment)
+        # Visual break between the Edit Scope radios and the two unrelated
+        # checkboxes that follow in this same row - a plain addSpacing()
+        # alone still read as "one long group" at a glance; a vertical
+        # divider line makes the grouping unambiguous.
+        row_edit_scope.addSpacing(12)
+        sep_edit_scope = qtw.QFrame()
+        sep_edit_scope.setFrameShape(qtw.QFrame.VLine)
+        sep_edit_scope.setFrameShadow(qtw.QFrame.Sunken)
+        row_edit_scope.addWidget(sep_edit_scope)
+        row_edit_scope.addSpacing(12)
+        # Item 1: pixels set by a manual tool (paint/rect paint, D-pad grow/
+        # shrink) used to get re-processed by Dilate/Erode/Edge Detection
+        # right along with everything else on every redraw (see
+        # _effective_mask) - inaccurate for a region the user just placed by
+        # hand. Checked by default: those pixels now keep exactly the value
+        # the manual tool gave them, regardless of what Dilate/Erode/Edge
+        # Detection do to the rest of the mask. Unchecking restores the old
+        # behavior (effects apply uniformly, manual edits included).
+        self.checkbox_protectManualEdits = qtw.QCheckBox('Exclude Manual Edits from Effects')
+        self.checkbox_protectManualEdits.setChecked(self._initial_protect_manual_edits)
+        self.checkbox_protectManualEdits.setToolTip(
+            'Pixels painted, rect-painted, or grown/shrunk by hand keep '
+            'exactly that manually-set value even when Dilate/Erode or Edge '
+            'Detection is enabled, instead of those effects reprocessing '
+            'them too. Uncheck to let effects apply uniformly across the '
+            'whole mask again, manual edits included.')
+        self.checkbox_protectManualEdits.stateChanged.connect(lambda *_: self._redraw_mask())
+        row_edit_scope.addWidget(self.checkbox_protectManualEdits)
+        # Item 5's always-visible initial-mask reference layer (img_initial_
+        # mask) can get in the way once it's served its purpose for a given
+        # edit - this hides it (set_visible only, the layer itself keeps
+        # updating per-frame underneath) without touching whether it's ever
+        # drawn at all.
+        self.checkbox_showInitialMask = qtw.QCheckBox('Show Initial Mask')
+        self.checkbox_showInitialMask.setChecked(True)
+        self.checkbox_showInitialMask.setToolTip(
+            "Show the mask as it was before any edit this session (see the color legend "
+            "at the bottom-left) underneath the current/tuned mask - uncheck to hide it")
+        self.checkbox_showInitialMask.stateChanged.connect(self._on_show_initial_mask_toggled)
+        row_edit_scope.addWidget(self.checkbox_showInitialMask)
+        # Live opacity for each mask layer (see _mask_rgba/_initial_mask_
+        # rgba) - a per-session preference, not persisted anywhere, same as
+        # every other control in this row.
+        row_edit_scope.addWidget(qtw.QLabel('Initial α'))
+        self.spinbox_initialMaskAlpha = qtw.QSpinBox()
+        self.spinbox_initialMaskAlpha.setRange(0, 100)
+        self.spinbox_initialMaskAlpha.setSuffix(' %')
+        self.spinbox_initialMaskAlpha.setValue(round(_DEFAULT_MASK_ALPHA * 100))
+        self.spinbox_initialMaskAlpha.setToolTip("Opacity of the initial (pre-edit) mask layer")
+        self.spinbox_initialMaskAlpha.valueChanged.connect(self._on_mask_alpha_changed)
+        row_edit_scope.addWidget(self.spinbox_initialMaskAlpha)
+        row_edit_scope.addWidget(qtw.QLabel('Tuned α'))
+        self.spinbox_tunedMaskAlpha = qtw.QSpinBox()
+        self.spinbox_tunedMaskAlpha.setRange(0, 100)
+        self.spinbox_tunedMaskAlpha.setSuffix(' %')
+        self.spinbox_tunedMaskAlpha.setValue(round(_DEFAULT_MASK_ALPHA * 100))
+        self.spinbox_tunedMaskAlpha.setToolTip("Opacity of the current/tuned mask layer")
+        self.spinbox_tunedMaskAlpha.valueChanged.connect(self._on_mask_alpha_changed)
+        row_edit_scope.addWidget(self.spinbox_tunedMaskAlpha)
         row_edit_scope.addStretch(1)
         self.button_resetFrame = qtw.QPushButton('Reset Frame')
         self.button_resetFrame.setToolTip(
@@ -528,9 +699,28 @@ class MaskEditDialog(qtw.QDialog):
         self.ax = self.figure.add_subplot(111)
         self.ax.set_xticks([])
         self.ax.set_yticks([])
+        # Just the coordinate, not matplotlib's own default "x=.. y=.. [val]"
+        # (which also appends the underlying pixel value) - see
+        # label_cursorCoords/_mirror_cursor_coords_to_label: a fixed, short,
+        # single-line format keeps that label's own size constant as the
+        # mouse moves, instead of varying with however long the value
+        # happened to format to (which was forcing this whole row - and,
+        # via the dialog's own layout minimum width, the canvas above it -
+        # to subtly resize on every hover).
+        self.ax.format_coord = lambda x, y: f'x={x:.1f}, y={y:.1f}'
         h, w = self.mask_stack.shape[1:]
         bg0 = self.bg_stack[self.frame] if self.bg_stack is not None else np.zeros((h, w))
         self.img_bg = self.ax.imshow(bg0, cmap='gray')
+        # Item 5: the mask as it was BEFORE any edit in this session
+        # (_original_stack), always shown - fainter than the live/tuned mask
+        # below it (see _INITIAL_MASK_COLOR) - as a constant reference for
+        # how much has changed, instead of disappearing the moment the first
+        # edit is made. Never affected by Dilate/Erode/Edge Detection (it's
+        # not run through _effective_mask) - it's a static snapshot, not a
+        # preview. See _redraw_frame_content/_on_frame_changed, the only
+        # other place its data is updated (once per frame change).
+        self.img_initial_mask = self.ax.imshow(
+            self._initial_mask_rgba(self._original_stack[self.frame]))
         self.img_mask = self.ax.imshow(self._mask_rgba(self.mask_stack[self.frame]))
 
         # Any real view change - Ctrl+scroll (_on_scroll) or the ribbon's
@@ -745,7 +935,12 @@ class MaskEditDialog(qtw.QDialog):
         # the canvas with the frame slider/segment bar.
         box_tilt = qtw.QGroupBox('Tilt Axis')
         left_layout.addWidget(box_tilt)
-        row_tilt = qtw.QVBoxLayout(box_tilt)
+        box_tilt_layout = qtw.QVBoxLayout(box_tilt)
+        # Item 4: the two buttons side by side, not stacked - they're a
+        # single "run the estimate, then optionally inspect it" pair, not an
+        # ordered sequence of independent actions worth a full row each.
+        row_tilt = qtw.QHBoxLayout()
+        box_tilt_layout.addLayout(row_tilt)
         self.button_findTiltAxis = qtw.QPushButton('Find Tilt Axis')
         self.button_findTiltAxis.setToolTip(
             "Estimate the tomography tilt axis from how this object's mask "
@@ -763,8 +958,8 @@ class MaskEditDialog(qtw.QDialog):
         self.button_tiltAxisDetails.clicked.connect(self._show_tilt_axis_details)
         row_tilt.addWidget(self.button_tiltAxisDetails)
         self.label_tiltAxis = qtw.QLabel('')
-        row_tilt.addWidget(self.label_tiltAxis)
-        row_tilt.addStretch(1)
+        box_tilt_layout.addWidget(self.label_tiltAxis)
+        box_tilt_layout.addStretch(1)
 
         # The left panel's own controls (Denoise, Grow/Shrink Mask,
         # Threshold, Edge Detection, Dilate/Erode, Mesh) go straight into
@@ -891,35 +1086,37 @@ class MaskEditDialog(qtw.QDialog):
         #%% edge detection - live preview only (see class docstring). Not
         # grid-placed directly - stacked above Dilate/Erode into one shared
         # column below (see the "Row 2" comment further down).
+        # A shared QGridLayout, not stacked QHBoxLayouts, so every row's
+        # label/spinbox column lines up with every other row's - both here
+        # and in Dilate/Erode/Mesh below, which follow the exact same
+        # column convention: 0 = the row's own enable/mode checkbox,
+        # 1 = a field label, 2 = its control, 3 = a second checkbox where
+        # one exists, with a trailing stretch column soaking up the rest of
+        # the box's width.
         box_edge = qtw.QGroupBox('Edge Detection')
-        layout_edge = qtw.QVBoxLayout()
+        layout_edge = qtw.QGridLayout()
+        layout_edge.setColumnStretch(4, 1)
         box_edge.setLayout(layout_edge)
 
-        row1 = qtw.QHBoxLayout()
-        layout_edge.addLayout(row1)
-        self.checkbox_edgeOnly = qtw.QCheckBox('Edge Detection')
+        self.checkbox_edgeOnly = qtw.QCheckBox('Enable')
         self.checkbox_edgeOnly.setToolTip('Live preview only - doesn\'t change the returned mask')
-        row1.addWidget(self.checkbox_edgeOnly)
-        row1.addWidget(qtw.QLabel('Kernel'))
+        layout_edge.addWidget(self.checkbox_edgeOnly, 0, 0)
+        layout_edge.addWidget(qtw.QLabel('Kernel'), 0, 1)
         self.spinbox_edgeKernel = qtw.QSpinBox()
         self.spinbox_edgeKernel.setRange(1, 99)
         self.spinbox_edgeKernel.setValue(3)
-        row1.addWidget(self.spinbox_edgeKernel)
+        layout_edge.addWidget(self.spinbox_edgeKernel, 0, 2)
         self.checkbox_revertMask = qtw.QCheckBox('Revert Mask')
-        row1.addWidget(self.checkbox_revertMask)
-        row1.addStretch(1)
+        layout_edge.addWidget(self.checkbox_revertMask, 0, 3)
 
-        row2 = qtw.QHBoxLayout()
-        layout_edge.addLayout(row2)
         self.checkbox_edgeDirectional = qtw.QCheckBox('Directional')
-        row2.addWidget(self.checkbox_edgeDirectional)
-        row2.addWidget(qtw.QLabel('Angle (°)'))
+        layout_edge.addWidget(self.checkbox_edgeDirectional, 1, 0)
+        layout_edge.addWidget(qtw.QLabel('Angle (°)'), 1, 1)
         self.spinbox_edgeDirection = qtw.QDoubleSpinBox()
         self.spinbox_edgeDirection.setRange(-360, 360)
         self.spinbox_edgeDirection.setSingleStep(5)
         self.spinbox_edgeDirection.setDisabled(True)
-        row2.addWidget(self.spinbox_edgeDirection)
-        row2.addStretch(1)
+        layout_edge.addWidget(self.spinbox_edgeDirection, 1, 2)
         self.checkbox_edgeDirectional.stateChanged.connect(
             lambda: self.spinbox_edgeDirection.setEnabled(self.checkbox_edgeDirectional.isChecked()))
 
@@ -947,21 +1144,41 @@ class MaskEditDialog(qtw.QDialog):
         # set/edited; the caller round-trips it via
         # get_dilate_erode_settings() into its own per-object column.
         box_dilate = qtw.QGroupBox('Dilate / Erode Mask')
-        layout_dilate = qtw.QVBoxLayout()
+        layout_dilate = qtw.QGridLayout()
+        layout_dilate.setColumnStretch(4, 1)
         box_dilate.setLayout(layout_dilate)
 
-        row_dilate = qtw.QHBoxLayout()
-        layout_dilate.addLayout(row_dilate)
         self.checkbox_dilateErode = qtw.QCheckBox('Enable')
         self.checkbox_dilateErode.setToolTip('Live preview only - doesn\'t change the returned mask '
                                              '- governs Opening/Closing below too')
-        row_dilate.addWidget(self.checkbox_dilateErode)
-        row_dilate.addWidget(qtw.QLabel('Kernel Size'))
+        layout_dilate.addWidget(self.checkbox_dilateErode, 0, 0)
+        layout_dilate.addWidget(qtw.QLabel('Kernel Size'), 0, 1)
         self.spinbox_dilateErode = qtw.QSpinBox()
         self.spinbox_dilateErode.setRange(-99, 99)
         self.spinbox_dilateErode.setToolTip('Positive = dilate (grow the mask); Negative = erode (shrink it)')
-        row_dilate.addWidget(self.spinbox_dilateErode)
-        row_dilate.addStretch(1)
+        layout_dilate.addWidget(self.spinbox_dilateErode, 0, 2)
+
+        # Directional (item: user request) - restricts the signed Kernel
+        # Size step above to grow/shrink from just one side instead of
+        # uniformly all around, same "Directional" + Angle convention as
+        # Edge Detection above (see io.dilate_erode_mask's own `direction`
+        # argument) - Opening/Closing stay isotropic (no direction to pick,
+        # same as Edge Detection's own Directional only affecting its own
+        # one erosion step, not anything else in the box).
+        self.checkbox_dilateDirectional = qtw.QCheckBox('Directional')
+        self.checkbox_dilateDirectional.setToolTip(
+            'Grow/shrink the mask from just one side (the angle below) '
+            'instead of uniformly all around - applies to Kernel Size only, '
+            'not Opening/Closing.')
+        layout_dilate.addWidget(self.checkbox_dilateDirectional, 1, 0)
+        layout_dilate.addWidget(qtw.QLabel('Angle (°)'), 1, 1)
+        self.spinbox_dilateDirection = qtw.QDoubleSpinBox()
+        self.spinbox_dilateDirection.setRange(-360, 360)
+        self.spinbox_dilateDirection.setSingleStep(5)
+        self.spinbox_dilateDirection.setDisabled(True)
+        layout_dilate.addWidget(self.spinbox_dilateDirection, 1, 2)
+        self.checkbox_dilateDirectional.stateChanged.connect(
+            lambda: self.spinbox_dilateDirection.setEnabled(self.checkbox_dilateDirectional.isChecked()))
 
         # Opening (erode then dilate) and Closing (dilate then erode) -
         # unlike the signed Dilate/Erode control above, these don't grow or
@@ -972,33 +1189,28 @@ class MaskEditDialog(qtw.QDialog):
         # order: Opening first strips small bright specks/thin protrusions
         # before Closing fills small dark holes/gaps, so Closing doesn't
         # end up bridging noise Opening would otherwise have removed.
-        row_open = qtw.QHBoxLayout()
-        layout_dilate.addLayout(row_open)
-        row_open.addWidget(qtw.QLabel('Opening Kernel Size'))
+        layout_dilate.addWidget(qtw.QLabel('Opening Kernel Size'), 2, 1)
         self.spinbox_openKernel = qtw.QSpinBox()
         self.spinbox_openKernel.setRange(0, 99)
         self.spinbox_openKernel.setToolTip(
             'Erode then dilate by this much (0 = off) - removes small bright '
             "specks/thin protrusions from the mask's edge without changing its "
             'overall size.')
-        row_open.addWidget(self.spinbox_openKernel)
-        row_open.addStretch(1)
+        layout_dilate.addWidget(self.spinbox_openKernel, 2, 2)
 
-        row_close = qtw.QHBoxLayout()
-        layout_dilate.addLayout(row_close)
-        row_close.addWidget(qtw.QLabel('Closing Kernel Size'))
+        layout_dilate.addWidget(qtw.QLabel('Closing Kernel Size'), 3, 1)
         self.spinbox_closeKernel = qtw.QSpinBox()
         self.spinbox_closeKernel.setRange(0, 99)
         self.spinbox_closeKernel.setToolTip(
             'Dilate then erode by this much (0 = off) - fills small dark holes/'
             "gaps inside the mask without changing its overall size.")
-        row_close.addWidget(self.spinbox_closeKernel)
-        row_close.addStretch(1)
+        layout_dilate.addWidget(self.spinbox_closeKernel, 3, 2)
 
         # No per-box scope here either - see the Edge Detection box's own
         # comment above.
         for signal in (self.checkbox_dilateErode.stateChanged, self.spinbox_dilateErode.valueChanged,
-                       self.spinbox_openKernel.valueChanged, self.spinbox_closeKernel.valueChanged):
+                       self.spinbox_openKernel.valueChanged, self.spinbox_closeKernel.valueChanged,
+                       self.checkbox_dilateDirectional.stateChanged, self.spinbox_dilateDirection.valueChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
         # Threshold, if this tab has one.
@@ -1017,20 +1229,60 @@ class MaskEditDialog(qtw.QDialog):
         # get_mesh_settings(). No main-tab equivalent to sync against (mesh
         # only makes sense relative to one specific object's mask), so this
         # dialog is the only place it's ever edited.
+        #
+        # Item 2: a segment can hold several independent meshes (its own
+        # differently angled/sized/positioned grid and cell selection each) -
+        # self.list_meshes picks which one the controls below show/edit;
+        # each row's own inline checkbox is that mesh's "enabled" (whether it
+        # actually restricts extraction, independent of just being present in
+        # the list). When more than one mesh is enabled, the final kept
+        # region is their INTERSECTION (see _redraw_mesh_overlay) - each
+        # additional enabled mesh narrows the selection further, letting one
+        # mesh's selection be refined by another rather than replaced by it.
         box_mesh = qtw.QGroupBox('Mesh (restrict extraction to selected cell(s))')
         grid_boxes.addWidget(box_mesh)
         layout_mesh = qtw.QVBoxLayout()
         box_mesh.setLayout(layout_mesh)
 
-        row_m1 = qtw.QHBoxLayout()
-        layout_mesh.addLayout(row_m1)
-        self.checkbox_meshEnabled = qtw.QCheckBox('Enable Mesh')
-        self.checkbox_meshEnabled.setToolTip(
-            'Divide the mask into a grid and restrict it to just the cell(s) '
-            'clicked below - left-click a cell to toggle it. Live preview '
-            "only, like Edge Detection - doesn't change the returned mask.")
-        row_m1.addWidget(self.checkbox_meshEnabled)
-        row_m1.addWidget(qtw.QLabel('Angle (°)'))
+        row_m0 = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m0)
+        row_m0.addWidget(qtw.QLabel('Meshes (checked = enabled; when several are checked, the '
+                                    'kept region is their intersection):'))
+        self.label_meshCount = qtw.QLabel()
+        row_m0.addWidget(self.label_meshCount)
+        row_m0.addStretch(1)
+
+        self.list_meshes = qtw.QListWidget()
+        self.list_meshes.setFixedHeight(84)
+        self.list_meshes.setToolTip(
+            "Select a mesh to edit its own Angle/Cell Size/Lines Only/Fixed "
+            "settings and cell selection below - click a checkbox to enable/"
+            "disable that mesh without selecting it.")
+        self.list_meshes.currentRowChanged.connect(self._on_mesh_selected)
+        self.list_meshes.itemChanged.connect(self._on_mesh_item_changed)
+        layout_mesh.addWidget(self.list_meshes)
+
+        row_m0b = qtw.QHBoxLayout()
+        layout_mesh.addLayout(row_m0b)
+        row_m0b.addStretch(1)
+        self.button_meshAdd = qtw.QPushButton('Add Mesh')
+        self.button_meshAdd.setToolTip('Add a new, independent mesh to this segment')
+        self.button_meshAdd.clicked.connect(self._add_mesh)
+        row_m0b.addWidget(self.button_meshAdd)
+        self.button_meshDelete = qtw.QPushButton('Delete Mesh')
+        self.button_meshDelete.setToolTip('Remove the selected mesh from this segment')
+        self.button_meshDelete.clicked.connect(self._delete_mesh)
+        row_m0b.addWidget(self.button_meshDelete)
+
+        # The active mesh's own geometry/anchoring controls, in one grid -
+        # same "line every row's fields up in columns" idea as Edge
+        # Detection/Dilate-Erode above, adapted to this box's own mix of
+        # paired fields, a checkbox+button row, and a labeled radio pair.
+        grid_mesh = qtw.QGridLayout()
+        grid_mesh.setColumnStretch(4, 1)
+        layout_mesh.addLayout(grid_mesh)
+
+        grid_mesh.addWidget(qtw.QLabel('Angle (°)'), 0, 0)
         self.spinbox_meshAngle = qtw.QDoubleSpinBox()
         # +-180 (item 2) - was 0-179.9 (a rotation is only unique mod 180 for
         # an unoriented grid, but the user asked for the full +-180 range,
@@ -1040,28 +1292,62 @@ class MaskEditDialog(qtw.QDialog):
         self.spinbox_meshAngle.setRange(-179.9, 179.9)
         self.spinbox_meshAngle.setSingleStep(5)
         self.spinbox_meshAngle.setToolTip('Grid rotation relative to horizontal.')
-        row_m1.addWidget(self.spinbox_meshAngle)
-        row_m1.addWidget(qtw.QLabel('Cell Size (px)'))
+        grid_mesh.addWidget(self.spinbox_meshAngle, 0, 1)
+        grid_mesh.addWidget(qtw.QLabel('Cell Size (px)'), 0, 2)
         self.spinbox_meshCellSize = qtw.QSpinBox()
         self.spinbox_meshCellSize.setRange(1, 9999)
         self.spinbox_meshCellSize.setValue(20)
-        row_m1.addWidget(self.spinbox_meshCellSize)
-        row_m1.addStretch(1)
+        grid_mesh.addWidget(self.spinbox_meshCellSize, 0, 3)
 
-        # Item 2: anchor the grid to where the object STARTED (its initial
-        # tracked/segmented mask) instead of the live-edited one - see
-        # _mesh_origin(). Its own row (rather than squeezing into the
-        # already-busy row_m1) since it reads as a standalone toggle, not
-        # one more grid-geometry field alongside Angle/Cell Size.
-        row_m1b = qtw.QHBoxLayout()
-        layout_mesh.addLayout(row_m1b)
-        self.checkbox_meshCenterInitial = qtw.QCheckBox('Center on Initial Mask')
-        self.checkbox_meshCenterInitial.setToolTip(
-            "Anchor the grid to the object's centroid on its initial "
-            '(pre-edit) tracked/segmented mask, instead of recentering on '
-            "wherever the mask has been edited to since - useful once the "
-            "object's position has drifted a lot from where it started.")
-        row_m1b.addWidget(self.checkbox_meshCenterInitial)
+        # Item 3: "Fixed Mesh" (renamed from "Center on Initial Mask") - see
+        # _mesh_fields'/_on_mesh_fixed_toggled's own docstrings for why the
+        # anchor is now a captured (x, y) 'origin' rather than a flag
+        # recomputed from the initial mask on every redraw. "Center Grid
+        # (Click)" is the alternative, manual way to set that same origin -
+        # see _arm_mesh_center_pick.
+        self.checkbox_meshFixed = qtw.QCheckBox('Fixed Mesh')
+        self.checkbox_meshFixed.setToolTip(
+            "Anchor this mesh's grid to one fixed point - by default, "
+            "captured now from the object's centroid on this segment's "
+            "initial (pre-edit) mask - instead of recentering on wherever "
+            "the mask has been edited to since. Use \"Center Grid (Click)\" "
+            "to instead pick that point yourself.")
+        self.checkbox_meshFixed.stateChanged.connect(self._on_mesh_fixed_toggled)
+        grid_mesh.addWidget(self.checkbox_meshFixed, 1, 0)
+        self.button_meshCenterClick = qtw.QPushButton('Center Grid (Click)')
+        self.button_meshCenterClick.setCheckable(True)
+        self.button_meshCenterClick.setToolTip(
+            'Click this, then click a point on the canvas to move this '
+            "mesh's fixed grid there (also turns on Fixed Mesh).")
+        self.button_meshCenterClick.clicked.connect(self._arm_mesh_center_pick)
+        grid_mesh.addWidget(self.button_meshCenterClick, 1, 1, 1, 2)
+
+        # Item 4: while NOT "Fixed Mesh" (the grid recentering every frame),
+        # which mask that per-frame centroid comes from - the object's
+        # live/edited mask (the old, and still default, behavior) or its
+        # initial/pre-edit one (same source "Fixed Mesh" itself captures its
+        # one-time origin from - see _mesh_origin_for_mesh). Belongs to the
+        # active mesh, same as every other control in this box.
+        grid_mesh.addWidget(qtw.QLabel('Center on:'), 2, 0)
+        self.radio_meshCenterEdited = qtw.QRadioButton('Edited Mask')
+        self.radio_meshCenterEdited.setChecked(True)
+        self.radio_meshCenterEdited.setToolTip(
+            "While not Fixed, recenter this mesh's grid every frame on the "
+            "object's current, live-edited mask.")
+        grid_mesh.addWidget(self.radio_meshCenterEdited, 2, 1)
+        self.radio_meshCenterInitial = qtw.QRadioButton('Initial Mask')
+        self.radio_meshCenterInitial.setToolTip(
+            "While not Fixed, recenter this mesh's grid every frame on the "
+            "object's initial (pre-edit) mask instead - keeps it tracking "
+            "the original tracked/segmented position even as the live mask "
+            "is painted/grown/shrunk away from it.")
+        grid_mesh.addWidget(self.radio_meshCenterInitial, 2, 2)
+        self._mesh_center_basis_group = qtw.QButtonGroup(self)
+        self._mesh_center_basis_group.addButton(self.radio_meshCenterEdited)
+        self._mesh_center_basis_group.addButton(self.radio_meshCenterInitial)
+        for radio in (self.radio_meshCenterEdited, self.radio_meshCenterInitial):
+            radio.toggled.connect(lambda checked: checked and self._on_mesh_widgets_changed())
+
         self.checkbox_meshLinesOnly = qtw.QCheckBox('Lines Only')
         self.checkbox_meshLinesOnly.setToolTip(
             "Restrict to full-width stripes along the grid's rotated angle "
@@ -1070,8 +1356,7 @@ class MaskEditDialog(qtw.QDialog):
             'the current selection (a square-cell and a stripe selection '
             "aren't interchangeable).")
         self.checkbox_meshLinesOnly.stateChanged.connect(self._on_mesh_lines_only_toggled)
-        row_m1b.addWidget(self.checkbox_meshLinesOnly)
-        row_m1b.addStretch(1)
+        grid_mesh.addWidget(self.checkbox_meshLinesOnly, 3, 0)
 
         row_m2 = qtw.QHBoxLayout()
         layout_mesh.addLayout(row_m2)
@@ -1086,14 +1371,60 @@ class MaskEditDialog(qtw.QDialog):
         # comment above; the grid itself is still always anchored to
         # *whichever* frame is on screen's own mask (mask_centroid), so the
         # same selected cell(s) stay aligned with the same relative part of
-        # the object however much it's moved/tracked by then.
-        for signal in (self.checkbox_meshEnabled.stateChanged, self.spinbox_meshAngle.valueChanged,
-                       self.spinbox_meshCellSize.valueChanged, self.checkbox_meshCenterInitial.stateChanged):
-            signal.connect(lambda *_: self._on_segment_widgets_changed())
+        # the object however much it's moved/tracked by then (unless Fixed
+        # Mesh is on for this mesh).
+        for signal in (self.spinbox_meshAngle.valueChanged, self.spinbox_meshCellSize.valueChanged):
+            signal.connect(lambda *_: self._on_mesh_widgets_changed())
 
-        # Full dialog width, below both columns.
+        # Soaks up any leftover height in the left panel (e.g. once the
+        # dialog is maximized) as blank space at the bottom, instead of the
+        # group boxes above stretching to fill it - grid_boxes itself
+        # already has stretch-factor 1 within left_layout (see its own
+        # comment above), but with nothing here to claim that extra space
+        # a Qt layout distributes it across the boxes/their inner widgets
+        # instead of leaving it empty.
+        grid_boxes.addStretch(1)
+
+        # Full dialog width, below both columns - the window's own true
+        # bottom-left/bottom-right corners (not just the right column's own
+        # bottom, which sits above the left panel's option boxes when
+        # they're taller - see class docstring's layout note): a small
+        # legend for the two mask colors always on screen (item 3/5 -
+        # initial vs. tuned mask) and a live cursor position readout at
+        # bottom-left (via the main tabs' own (hidden) navigation toolbar's
+        # hover mechanism - see _mirror_cursor_coords_to_label - just
+        # surfaced here instead of the main window's status bar, since this
+        # dialog is its own separate top-level window), Save&&Close/Cancel
+        # at bottom-right.
         row_buttons = qtw.QHBoxLayout()
         outer_layout.addLayout(row_buttons)
+        status_col = qtw.QVBoxLayout()
+        self.label_colorLegend = qtw.QLabel(
+            'Mask colors: initial (pre-edit) mask = brown (same as a selected Mesh cell, '
+            'just fainter), current/tuned mask = blue')
+        self.label_colorLegend.setStyleSheet('color: gray; font-size: 9pt;')
+        status_col.addWidget(self.label_colorLegend)
+        self.label_cursorCoords = qtw.QLabel('')
+        self.label_cursorCoords.setStyleSheet('font-size: 9pt;')
+        # No wrapping, and a fixed height matching exactly one line - a
+        # wrapped second line (however briefly, as the text's own width
+        # fluctuates) would change this label's height just as visibly as
+        # its width changing would. Combined with the fixed width below and
+        # ax.format_coord's own short, fixed-format "x=.., y=.." (no pixel
+        # value - see its own comment above), this label's size never
+        # changes at all as the mouse moves - otherwise row_buttons (which
+        # spans the full dialog width, in outer_layout) reflows on every
+        # hover, and since Qt won't let the window shrink below its layout's
+        # own minimum size, that was pulling the whole dialog (and the
+        # canvas's own share of it) very slightly bigger/smaller on every
+        # hover - a visible canvas "jitter".
+        self.label_cursorCoords.setWordWrap(False)
+        self.label_cursorCoords.setFixedHeight(self.label_cursorCoords.fontMetrics().height())
+        self.label_cursorCoords.setMinimumWidth(
+            self.label_cursorCoords.fontMetrics().horizontalAdvance('x=-9999.9, y=-9999.9'))
+        status_col.addWidget(self.label_cursorCoords)
+        row_buttons.addLayout(status_col)
+        self._mirror_cursor_coords_to_label()
         row_buttons.addStretch(1)
         self.button_ok = qtw.QPushButton('Save && Close')
         self.button_ok.clicked.connect(self.accept)
@@ -1114,6 +1445,40 @@ class MaskEditDialog(qtw.QDialog):
         # set (everything above), not before.
         self.toolbar.update()
         self.toolbar.push_current()
+
+    def _on_mask_alpha_changed(self):
+        """Either mask-opacity spinbox changed: update the live alpha and
+        redraw both layers - img_initial_mask directly (its own data is
+        only ever refreshed by _redraw_frame_content/here, not _redraw_mask,
+        since it's frame-driven, not edit-driven), img_mask via the normal
+        _redraw_mask() path."""
+        self._initial_mask_alpha = self.spinbox_initialMaskAlpha.value() / 100
+        self._tuned_mask_alpha = self.spinbox_tunedMaskAlpha.value() / 100
+        self.img_initial_mask.set_data(self._initial_mask_rgba(self._original_stack[self.frame]))
+        self._redraw_mask()
+
+    def _on_show_initial_mask_toggled(self):
+        """"Show Initial Mask" checkbox: just a visibility toggle on
+        img_initial_mask - the layer itself keeps being updated per-frame
+        underneath regardless (see _redraw_frame_content), so re-checking
+        it immediately shows the correct frame's initial mask again."""
+        self.img_initial_mask.set_visible(self.checkbox_showInitialMask.isChecked())
+        self._blit_mask_display()
+
+    def _mirror_cursor_coords_to_label(self):
+        """self.toolbar's own hover coordinate/pixel-value readout (its
+        locLabel) is invisible along with the rest of it (see .hide() in
+        __init__) - mirror its set_message() calls into self.label_
+        cursorCoords instead, same trick as TabBase.
+        _mirror_toolbar_coords_to_statusbar (base_tab.py), just targeting a
+        label in THIS dialog's own bottom-left corner rather than the main
+        window's status bar, since this dialog is its own separate
+        top-level window, not embedded in the main window."""
+        orig_set_message = self.toolbar.set_message
+        def _set_message(s, _orig=orig_set_message):
+            _orig(s)
+            self.label_cursorCoords.setText(s)
+        self.toolbar.set_message = _set_message
 
     def _show_help_dialog(self):
         """The ribbon-style "?" button's slot: show this dialog's own
@@ -1136,7 +1501,12 @@ class MaskEditDialog(qtw.QDialog):
 
     def _mask_rgba(self, mask):
         rgba = np.zeros((*mask.shape, 4))
-        rgba[mask] = _MASK_COLOR
+        rgba[mask] = (*_TUNED_MASK_RGB, self._tuned_mask_alpha)
+        return rgba
+
+    def _initial_mask_rgba(self, mask):
+        rgba = np.zeros((*mask.shape, 4))
+        rgba[mask] = (*_MASK_RGB, self._initial_mask_alpha)
         return rgba
 
     def _update_frame_label(self):
@@ -1170,7 +1540,8 @@ class MaskEditDialog(qtw.QDialog):
         de = seg['dilate_erode']
         if de['enabled']:
             if de['kernel'] != 0:
-                mask = io.dilate_erode_mask(mask, de['kernel'])
+                direction = de['direction'] if de['directional'] else None
+                mask = io.dilate_erode_mask(mask, de['kernel'], direction=direction)
             if de['open_kernel'] != 0:
                 mask = io.open_mask(mask, de['open_kernel'])
             if de['close_kernel'] != 0:
@@ -1179,6 +1550,14 @@ class MaskEditDialog(qtw.QDialog):
         if edge['enabled']:
             direction = edge['direction'] if edge['directional'] else None
             mask = io.erode_mask_edge(mask, edge['kernel'], direction=direction, revert=edge['revert'])
+        # Item 1: pixels set by a manual tool keep that exact value, instead
+        # of whatever Dilate/Erode/Edge Detection just did to them above -
+        # see checkbox_protectManualEdits/_paint_pixel/_on_release/
+        # _grow_shrink for where self._manual_mask_stack gets marked.
+        if self.checkbox_protectManualEdits.isChecked():
+            manual = self._manual_mask_stack[frame]
+            if manual.any():
+                mask = np.where(manual, base, mask)
         return mask
 
     def _redraw_mask(self):
@@ -1207,13 +1586,13 @@ class MaskEditDialog(qtw.QDialog):
         overlay - a contour set can't just have its data updated), so
         they're read fresh here rather than cached, the same convention
         as the main tabs' own per-frame ROI-rectangle overlays."""
-        dynamic = [self.img_bg, self.img_mask] + self._mesh_grid_artists
+        dynamic = [self.img_bg, self.img_initial_mask, self.img_mask] + self._mesh_grid_artists
         if self._mesh_cell_artist is not None:
             dynamic.append(self._mesh_cell_artist)
         if self._tilt_axis_line_artist is not None:
             dynamic.append(self._tilt_axis_line_artist)
         self._blit_canvas(self.canvas, self.figure, '_mask_frame_bg', dynamic,
-                          hide_for_background=[self.img_bg, self.img_mask])
+                          hide_for_background=[self.img_bg, self.img_initial_mask, self.img_mask])
 
     def _blit_canvas(self, canvas, figure, bg_attr, artists,
                      hide_for_background=(), titles_for_background=()):
@@ -1243,39 +1622,42 @@ class MaskEditDialog(qtw.QDialog):
 
     #%% segments
     def _load_segment_into_widgets(self):
-        """Populate the Dilate/Erode, Edge Detection, and Mesh widgets from
+        """Populate the Dilate/Erode and Edge Detection widgets, and the
+        Mesh list/active-mesh widgets, from
         self._segments[self._current_segment_idx] - called on init and
         whenever _sync_current_segment finds the current frame now belongs
         to a different segment than before. Signals blocked throughout so
         this doesn't loop back into _on_segment_widgets_changed and
         overwrite the very segment it's loading from."""
         seg = self._segments[self._current_segment_idx]
-        de, edge, mesh = seg['dilate_erode'], seg['edge'], seg['mesh']
+        de, edge = seg['dilate_erode'], seg['edge']
         widgets = (self.checkbox_dilateErode, self.spinbox_dilateErode, self.spinbox_openKernel,
-                  self.spinbox_closeKernel, self.checkbox_edgeOnly,
+                  self.spinbox_closeKernel, self.checkbox_dilateDirectional, self.spinbox_dilateDirection,
+                  self.checkbox_edgeOnly,
                   self.spinbox_edgeKernel, self.checkbox_edgeDirectional, self.spinbox_edgeDirection,
-                  self.checkbox_revertMask, self.checkbox_meshEnabled, self.spinbox_meshAngle,
-                  self.spinbox_meshCellSize, self.checkbox_meshLinesOnly, self.checkbox_meshCenterInitial)
+                  self.checkbox_revertMask)
         for wid in widgets:
             wid.blockSignals(True)
         self.checkbox_dilateErode.setChecked(de['enabled'])
         self.spinbox_dilateErode.setValue(de['kernel'])
         self.spinbox_openKernel.setValue(de['open_kernel'])
         self.spinbox_closeKernel.setValue(de['close_kernel'])
+        self.checkbox_dilateDirectional.setChecked(de['directional'])
+        self.spinbox_dilateDirection.setValue(de['direction'])
+        self.spinbox_dilateDirection.setEnabled(de['directional'])
         self.checkbox_edgeOnly.setChecked(edge['enabled'])
         self.spinbox_edgeKernel.setValue(edge['kernel'])
         self.checkbox_edgeDirectional.setChecked(edge['directional'])
         self.spinbox_edgeDirection.setValue(edge['direction'])
         self.spinbox_edgeDirection.setEnabled(edge['directional'])
         self.checkbox_revertMask.setChecked(edge['revert'])
-        self.checkbox_meshEnabled.setChecked(mesh['enabled'])
-        self.spinbox_meshAngle.setValue(mesh['angle'])
-        self.spinbox_meshCellSize.setValue(mesh['cell_size'])
-        self.checkbox_meshLinesOnly.setChecked(mesh['lines_only'])
-        self.checkbox_meshCenterInitial.setChecked(mesh['center_on_initial'])
         for wid in widgets:
             wid.blockSignals(False)
-        self._update_mesh_cell_label()
+        # New segment - start showing its first mesh (if any) again, rather
+        # than whatever index happened to be selected in the previous one.
+        self._active_mesh_idx = 0
+        self._refresh_mesh_list_widget()
+        self._load_active_mesh_into_widgets()
 
     def _isolate_current_frame_as_segment(self):
         """Split the segment currently covering self.frame down to exactly
@@ -1284,8 +1666,8 @@ class MaskEditDialog(qtw.QDialog):
         Here") into the pieces before/after it, so the rest of the
         original range is left exactly as it was. Called before writing an
         edit while Edit Scope is "Single Frame" (see
-        _write_widgets_to_current_segment/_mesh_cells' setter). A no-op if
-        the current segment is already exactly this one frame."""
+        _isolate_if_single_frame_scope). A no-op if the current segment is
+        already exactly this one frame."""
         idx = self._current_segment_idx
         seg = self._segments[idx]
         if seg['start'] == seg['end'] == self.frame:
@@ -1295,13 +1677,13 @@ class MaskEditDialog(qtw.QDialog):
             before = {'start': seg['start'], 'end': self.frame - 1,
                      'dilate_erode': copy.deepcopy(seg['dilate_erode']),
                      'edge': copy.deepcopy(seg['edge']),
-                     'mesh': copy.deepcopy(seg['mesh'])}
+                     'meshes': copy.deepcopy(seg['meshes'])}
         after = None
         if self.frame < seg['end']:
             after = {'start': self.frame + 1, 'end': seg['end'],
                     'dilate_erode': copy.deepcopy(seg['dilate_erode']),
                     'edge': copy.deepcopy(seg['edge']),
-                    'mesh': copy.deepcopy(seg['mesh'])}
+                    'meshes': copy.deepcopy(seg['meshes'])}
         seg['start'] = seg['end'] = self.frame
         insert_at = idx
         if before is not None:
@@ -1322,11 +1704,12 @@ class MaskEditDialog(qtw.QDialog):
         without touching neighboring frames."""
         self._push_undo(self.frame)
         self.mask_stack[self.frame] = self._original_stack[self.frame].copy()
+        self._manual_mask_stack[self.frame] = False
         self._isolate_current_frame_as_segment()
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = _dilate_erode_fields(None)
         seg['edge'] = _edge_fields(None)
-        seg['mesh'] = _mesh_fields(None)
+        seg['meshes'] = []
         self._load_segment_into_widgets()
         self._redraw_mask()
         self._update_segment_ui()
@@ -1341,38 +1724,47 @@ class MaskEditDialog(qtw.QDialog):
             'start': 0, 'end': self.n_frames - 1,
             'dilate_erode': _dilate_erode_fields(None),
             'edge': _edge_fields(None),
-            'mesh': _mesh_fields(None),
+            'meshes': [],
         }]
         self._current_segment_idx = 0
         self._load_segment_into_widgets()
         self._update_segment_ui()
 
-    def _write_widgets_to_current_segment(self):
-        """The inverse of _load_segment_into_widgets - called whenever a
-        Dilate/Erode/Edge Detection/Mesh control changes, so the currently-
-        active segment's own stored Dilate/Erode/Edge/Mesh settings (not
-        just the live widget state) reflect the edit. If Edit Scope is
-        "Single Frame", isolates the current frame into its own segment
-        first (see _isolate_current_frame_as_segment) so the edit lands on
-        just this frame, not the whole range. Doesn't touch mesh['cells'] -
-        that's kept in sync separately via the _mesh_cells property."""
+    def _isolate_if_single_frame_scope(self):
+        """Isolate the current frame into its own segment (see
+        _isolate_current_frame_as_segment) when Edit Scope is "Single
+        Frame" - shared by every Dilate/Erode/Edge Detection/Mesh-editing
+        method (_write_widgets_to_current_segment, the _mesh_cells setter,
+        and every per-mesh mutator below) so they all honor Edit Scope the
+        same way. A no-op under "Segment" scope, or if the current segment
+        is already exactly this one frame."""
         if self.radio_scopeFrame.isChecked():
             self._isolate_current_frame_as_segment()
+
+    def _write_widgets_to_current_segment(self):
+        """The inverse of _load_segment_into_widgets - called whenever a
+        Dilate/Erode/Edge Detection control changes, so the currently-
+        active segment's own stored Dilate/Erode/Edge settings (not just the
+        live widget state) reflect the edit. If Edit Scope is "Single
+        Frame", isolates the current frame into its own segment first (see
+        _isolate_if_single_frame_scope) so the edit lands on just this
+        frame, not the whole range. Mesh is handled separately (item 2 -
+        several independent meshes per segment) - see
+        _on_mesh_widgets_changed/_on_mesh_fixed_toggled/_add_mesh/
+        _delete_mesh/_on_mesh_enabled_toggled/the _mesh_cells property."""
+        self._isolate_if_single_frame_scope()
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = {'enabled': self.checkbox_dilateErode.isChecked(),
                                'kernel': self.spinbox_dilateErode.value(),
                                'open_kernel': self.spinbox_openKernel.value(),
-                               'close_kernel': self.spinbox_closeKernel.value()}
+                               'close_kernel': self.spinbox_closeKernel.value(),
+                               'directional': self.checkbox_dilateDirectional.isChecked(),
+                               'direction': self.spinbox_dilateDirection.value()}
         seg['edge'] = {'enabled': self.checkbox_edgeOnly.isChecked(),
                        'kernel': self.spinbox_edgeKernel.value(),
                        'directional': self.checkbox_edgeDirectional.isChecked(),
                        'direction': self.spinbox_edgeDirection.value(),
                        'revert': self.checkbox_revertMask.isChecked()}
-        seg['mesh'].update({'enabled': self.checkbox_meshEnabled.isChecked(),
-                            'angle': self.spinbox_meshAngle.value(),
-                            'cell_size': self.spinbox_meshCellSize.value(),
-                            'lines_only': self.checkbox_meshLinesOnly.isChecked(),
-                            'center_on_initial': self.checkbox_meshCenterInitial.isChecked()})
 
     def _on_segment_widgets_changed(self):
         """Any Dilate/Erode/Edge Detection/Mesh control changed (except
@@ -1449,7 +1841,7 @@ class MaskEditDialog(qtw.QDialog):
             'start': self.frame, 'end': seg['end'],
             'dilate_erode': _dilate_erode_fields(None),
             'edge': _edge_fields(None),
-            'mesh': _mesh_fields(None),
+            'meshes': [],
         }
         seg['end'] = self.frame - 1
         self._segments.insert(idx + 1, new_seg)
@@ -1469,7 +1861,7 @@ class MaskEditDialog(qtw.QDialog):
         seg = self._segments[self._current_segment_idx]
         seg['dilate_erode'] = _dilate_erode_fields(None)
         seg['edge'] = _edge_fields(None)
-        seg['mesh'] = _mesh_fields(None)
+        seg['meshes'] = []
         self._load_segment_into_widgets()
         self._redraw_mask()
         self._update_segment_ui()
@@ -1492,9 +1884,238 @@ class MaskEditDialog(qtw.QDialog):
         self._update_segment_ui()
         self._redraw_mask()
 
+    @property
+    def _active_mesh(self):
+        """The mesh dict currently shown/edited by the Mesh box's widgets -
+        self._segments[self._current_segment_idx]['meshes'][self.
+        _active_mesh_idx] (item 2), or None if the current segment has no
+        meshes at all yet."""
+        meshes = self._segments[self._current_segment_idx]['meshes']
+        if not meshes:
+            return None
+        return meshes[min(self._active_mesh_idx, len(meshes) - 1)]
+
+    @property
+    def _mesh_cells(self):
+        """The active mesh's selected cells, as a set of (i, j) tuples -
+        backed by its own ['cells'] (a plain list-of-lists, JSON/dataframe-
+        friendly), converted on the fly. Empty (not an error) if there's no
+        active mesh. Returns a fresh set each read, so mutating it
+        (.add()/.discard()/.clear()) does NOT persist - reassign the
+        property instead (`self._mesh_cells = cells`) after mutating a
+        local copy, same as _toggle_mesh_cell/_clear_mesh_selection do."""
+        mesh = self._active_mesh
+        return set(tuple(c) for c in mesh['cells']) if mesh is not None else set()
+
+    @_mesh_cells.setter
+    def _mesh_cells(self, value):
+        self._isolate_if_single_frame_scope()
+        mesh = self._active_mesh
+        if mesh is not None:
+            mesh['cells'] = [list(c) for c in value]
+
+    def _mesh_origin_for_mesh(self, mesh, frame):
+        """The centroid `mesh`'s grid overlay/click-toggling/extraction are
+        built relative to, for `frame`.
+
+        When `mesh['fixed']` is set (item 3, "Fixed Mesh") and it already
+        has a captured `mesh['origin']`, that fixed (x, y) point is used,
+        on every frame, regardless of where the object has since moved to -
+        captured once (see _on_mesh_fixed_toggled/_arm_mesh_center_pick),
+        not recomputed here. This is also what tab_sam2.py/
+        tab_tracking_cv2.py's own apply_edge_mask must do with the same
+        mesh dict at real extraction time for "Fixed Mesh" to actually take
+        effect there too, not just in this dialog's preview.
+
+        Otherwise (dynamic, per-frame tracking), `mesh['center_basis']`
+        (item 4) picks which mask that per-frame centroid comes from -
+        'edited' (self.mask_stack, the default - the grid recenters onto
+        wherever the object has been edited to since) or 'initial' (the
+        segment's initial/pre-edit mask - `_default_stack` if the caller
+        gave one, else `_original_stack` - so the grid keeps tracking the
+        object's ORIGINAL tracked/segmented position on this frame even as
+        the live mask is painted/grown/shrunk away from it)."""
+        if mesh is not None and mesh.get('fixed') and mesh.get('origin') is not None:
+            return tuple(mesh['origin'])
+        if mesh is not None and mesh.get('center_basis') == 'initial':
+            source = self._default_stack if self._default_stack is not None else self._original_stack
+            return io.mask_centroid(source[frame])
+        return io.mask_centroid(self.mask_stack[frame])
+
+    def _mesh_origin_for_frame(self, frame):
+        """_mesh_origin_for_mesh for the ACTIVE mesh - used by the grid
+        overlay/click-toggling, which always edit whichever mesh is
+        currently selected in self.list_meshes."""
+        return self._mesh_origin_for_mesh(self._active_mesh, frame)
+
+    def _mesh_origin(self):
+        """_mesh_origin_for_frame for the currently-displayed frame."""
+        return self._mesh_origin_for_frame(self.frame)
+
+    def _refresh_mesh_list_widget(self):
+        """Rebuild self.list_meshes's rows from the current segment's own
+        ['meshes'] list - called whenever that list's length/order changes
+        (segment switch, Add/Delete Mesh) - see _load_segment_into_widgets/
+        _add_mesh/_delete_mesh. Each row is a plain, natively-checkable
+        QListWidgetItem (its check state is that mesh's 'enabled',
+        independent of which row is SELECTED/being edited - self.
+        _active_mesh_idx) rather than a custom row widget - a widget filling
+        the whole row (an earlier version of this used one, via
+        setItemWidget) swallows every mouse click before the list view ever
+        sees it, so clicking a row never actually selected it; a native
+        checkable item's own checkbox indicator is the one small area that
+        does NOT change selection on click, while the rest of the row still
+        does, exactly as a checkable list is expected to behave."""
+        seg = self._segments[self._current_segment_idx]
+        self.list_meshes.blockSignals(True)
+        self.list_meshes.clear()
+        for i, mesh in enumerate(seg['meshes']):
+            item = qtw.QListWidgetItem(f'Mesh {i + 1}')
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if mesh['enabled'] else Qt.Unchecked)
+            self.list_meshes.addItem(item)
+        if seg['meshes']:
+            self.list_meshes.setCurrentRow(min(self._active_mesh_idx, len(seg['meshes']) - 1))
+        self.list_meshes.blockSignals(False)
+        self.button_meshDelete.setEnabled(bool(seg['meshes']))
+        self.label_meshCount.setText(f'({len(seg["meshes"])})')
+
+    def _load_active_mesh_into_widgets(self):
+        """Populate the Angle/Cell Size/Lines Only/Fixed Mesh/Center-on
+        widgets (and the cell-count label) from the active mesh - or, if the
+        current segment has none yet, just disable them (nothing to edit)."""
+        mesh = self._active_mesh
+        widgets = (self.spinbox_meshAngle, self.spinbox_meshCellSize,
+                  self.checkbox_meshLinesOnly, self.checkbox_meshFixed,
+                  self.radio_meshCenterEdited, self.radio_meshCenterInitial)
+        for wid in widgets:
+            wid.blockSignals(True)
+        editable = mesh is not None
+        for wid in widgets + (self.button_meshCenterClick, self.button_meshClear):
+            wid.setEnabled(editable)
+        if mesh is not None:
+            self.spinbox_meshAngle.setValue(mesh['angle'])
+            self.spinbox_meshCellSize.setValue(mesh['cell_size'])
+            self.checkbox_meshLinesOnly.setChecked(mesh['lines_only'])
+            self.checkbox_meshFixed.setChecked(mesh['fixed'])
+            if mesh['center_basis'] == 'initial':
+                self.radio_meshCenterInitial.setChecked(True)
+            else:
+                self.radio_meshCenterEdited.setChecked(True)
+        for wid in widgets:
+            wid.blockSignals(False)
+        self._update_mesh_cell_label()
+
+    def _on_mesh_selected(self, row):
+        """self.list_meshes' currentRowChanged: switch which mesh the
+        widgets below show/edit - a row deselecting entirely (row < 0, e.g.
+        the list just got cleared/rebuilt with nothing left) is a no-op,
+        not "select nothing"."""
+        if row < 0:
+            return
+        self._active_mesh_idx = row
+        self._load_active_mesh_into_widgets()
+        self._redraw_mask()
+
+    def _add_mesh(self):
+        """"Add Mesh": append a new, independent, plain-default mesh to the
+        current segment and select it - see class docstring/item 2. Honors
+        Edit Scope like every other Mesh edit (see
+        _isolate_if_single_frame_scope)."""
+        self._isolate_if_single_frame_scope()
+        seg = self._segments[self._current_segment_idx]
+        seg['meshes'].append(_mesh_fields(None))
+        self._active_mesh_idx = len(seg['meshes']) - 1
+        self._refresh_mesh_list_widget()
+        self._load_active_mesh_into_widgets()
+        self._update_segment_ui()
+        self._redraw_mask()
+
+    def _delete_mesh(self):
+        """"Delete Mesh": remove the active mesh from the current segment -
+        a no-op if there isn't one."""
+        self._isolate_if_single_frame_scope()
+        seg = self._segments[self._current_segment_idx]
+        if not seg['meshes']:
+            return
+        idx = min(self._active_mesh_idx, len(seg['meshes']) - 1)
+        del seg['meshes'][idx]
+        self._active_mesh_idx = max(0, idx - 1)
+        self._refresh_mesh_list_widget()
+        self._load_active_mesh_into_widgets()
+        self._update_segment_ui()
+        self._redraw_mask()
+
+    def _on_mesh_item_changed(self, item):
+        """A mesh row's own native check state (its 'enabled') changed -
+        by row index (self.list_meshes.row(item)), independent of
+        self._active_mesh_idx (the row being EDITED, not necessarily the
+        one just checked/unchecked). Guarded by blockSignals during
+        _refresh_mesh_list_widget's own rebuild, so this only ever fires
+        from an actual user click."""
+        idx = self.list_meshes.row(item)
+        seg_before = self._segments[self._current_segment_idx]
+        if idx < 0 or idx >= len(seg_before['meshes']):
+            return
+        checked = item.checkState() == Qt.Checked
+        self._isolate_if_single_frame_scope()
+        seg = self._segments[self._current_segment_idx]
+        seg['meshes'][idx]['enabled'] = checked
+        self._update_segment_ui()
+        self._redraw_mask()
+
+    def _on_mesh_widgets_changed(self):
+        """Angle/Cell Size/"Center on" changed for the active mesh."""
+        self._isolate_if_single_frame_scope()
+        mesh = self._active_mesh
+        if mesh is None:
+            return
+        mesh['angle'] = self.spinbox_meshAngle.value()
+        mesh['cell_size'] = self.spinbox_meshCellSize.value()
+        mesh['center_basis'] = 'initial' if self.radio_meshCenterInitial.isChecked() else 'edited'
+        self._update_segment_ui()
+        self._redraw_mask()
+
+    def _on_mesh_fixed_toggled(self):
+        """Item 3: "Fixed Mesh" checked/unchecked for the active mesh. The
+        first time it's checked with no origin captured yet, this captures
+        one now - the centroid of the object's INITIAL (pre-edit) mask
+        (`_default_stack` if the caller gave one, else `_original_stack`)
+        on this SEGMENT's own start frame (its earliest frame, not
+        necessarily the one on screen) - so re-checking later (after
+        unchecking) doesn't silently drop a manually-clicked point (see
+        _arm_mesh_center_pick) by recomputing over it."""
+        self._isolate_if_single_frame_scope()
+        mesh = self._active_mesh
+        if mesh is None:
+            return
+        checked = self.checkbox_meshFixed.isChecked()
+        mesh['fixed'] = checked
+        if checked and mesh.get('origin') is None:
+            seg = self._segments[self._current_segment_idx]
+            source = self._default_stack if self._default_stack is not None else self._original_stack
+            cx, cy = io.mask_centroid(source[seg['start']])
+            mesh['origin'] = [float(cx), float(cy)]
+        self._update_segment_ui()
+        self._redraw_mask()
+
+    def _arm_mesh_center_pick(self):
+        """"Center Grid (Click)": arm/disarm picking a new fixed origin for
+        the active mesh by clicking the canvas - see _on_press, which
+        completes the pick (also resetting this button/the cursor) on the
+        next canvas click while self._picking_mesh_center is True."""
+        if self._active_mesh is None:
+            self.button_meshCenterClick.setChecked(False)
+            return
+        self._picking_mesh_center = self.button_meshCenterClick.isChecked()
+        if self._picking_mesh_center:
+            self.canvas.setCursor(Qt.CrossCursor)
+        else:
+            self._apply_ribbon_cursor()
+
     def _rotated_coords(self, origin):
         """(rot_x, rot_y) continuous rotated-coordinate arrays for the
-        current mesh angle, centered on `origin` - a pure display concern
+        active mesh's angle, centered on `origin` - a pure display concern
         (grid-line contouring), so kept local here rather than in the
         shared io.mesh_cell_ids (which only needs the floored/integer form)."""
         h, w = self.mask_stack.shape[1:]
@@ -1506,50 +2127,15 @@ class MaskEditDialog(qtw.QDialog):
         rot_y = -x * np.sin(theta) + y * np.cos(theta)
         return rot_x, rot_y
 
-    @property
-    def _mesh_cells(self):
-        """The current segment's selected mesh cells, as a set of (i, j)
-        tuples - backed by self._segments[self._current_segment_idx]
-        ['mesh']['cells'] (a plain list-of-lists, JSON/dataframe-friendly),
-        converted on the fly. Returns a fresh set each read, so mutating it
-        (.add()/.discard()/.clear()) does NOT persist - reassign the
-        property instead (`self._mesh_cells = cells`) after mutating a
-        local copy, same as _toggle_mesh_cell/_clear_mesh_selection do."""
-        return set(tuple(c) for c in self._segments[self._current_segment_idx]['mesh']['cells'])
-
-    @_mesh_cells.setter
-    def _mesh_cells(self, value):
-        if self.radio_scopeFrame.isChecked():
-            self._isolate_current_frame_as_segment()
-        self._segments[self._current_segment_idx]['mesh']['cells'] = [list(c) for c in value]
-
-    def _mesh_origin_for_frame(self, frame):
-        """The centroid the grid overlay/click-toggling/_effective_mask are
-        built relative to, for `frame`. By default this is the object's own
-        centroid on its currently-edited mask (self.mask_stack).
-
-        When "Center on Initial Mask" (item 2) is checked instead, the grid
-        is anchored to the centroid of the INITIAL mask on this frame -
-        `_default_stack` (the pristine tracking/segmentation output) if the
-        caller gave one, else `_original_stack` (this session's opening
-        state) - rather than `self.mask_stack`, which reflects whatever has
-        been edited (grown/shrunk/painted) since. The point is to keep the
-        grid anchored to where the object STARTED even after its live mask
-        has drifted from that, instead of recentering on every edit."""
-        if self.checkbox_meshCenterInitial.isChecked():
-            source = self._default_stack if self._default_stack is not None else self._original_stack
-            return io.mask_centroid(source[frame])
-        return io.mask_centroid(self.mask_stack[frame])
-
-    def _mesh_origin(self):
-        """_mesh_origin_for_frame for the currently-displayed frame - used
-        by the grid overlay/click-toggling, which always work relative to
-        *this* frame regardless of the Mesh box's "Apply To" scope."""
-        return self._mesh_origin_for_frame(self.frame)
-
     def _redraw_mesh_overlay(self):
-        """(Re)draw the grid-line + selected-cell overlay - a no-op cleanup
-        (removing any previous artists) when Mesh is off."""
+        """(Re)draw the active mesh's own grid lines (only the active one -
+        drawing every mesh's grid at once would be unreadable clutter), plus
+        one combined selected-cell highlight for the current segment's
+        every ENABLED mesh that actually has cells picked - their
+        INTERSECTION (item 2: each additional enabled mesh narrows the kept
+        region further, rather than adding to it), matching what
+        tab_sam2.py/tab_tracking_cv2.py's own apply_edge_mask computes at
+        real extraction time."""
         for artist in self._mesh_grid_artists:
             artist.remove()
         self._mesh_grid_artists = []
@@ -1557,31 +2143,38 @@ class MaskEditDialog(qtw.QDialog):
             self._mesh_cell_artist.remove()
             self._mesh_cell_artist = None
 
-        if not self.checkbox_meshEnabled.isChecked():
-            return
-        cell_size = self.spinbox_meshCellSize.value()
-        origin = self._mesh_origin()
-        rot_x, rot_y = self._rotated_coords(origin)
-        levels_x = np.arange(np.floor(rot_x.min() / cell_size),
-                             np.ceil(rot_x.max() / cell_size) + 1) * cell_size
-        levels_y = np.arange(np.floor(rot_y.min() / cell_size),
-                             np.ceil(rot_y.max() / cell_size) + 1) * cell_size
-        contour_x = self.ax.contour(rot_x, levels=levels_x, colors=_MESH_GRID_COLOR,
-                                    linestyles='dashed', linewidths=0.7)
-        contour_y = self.ax.contour(rot_y, levels=levels_y, colors=_MESH_GRID_COLOR,
-                                    linestyles='dashed', linewidths=0.7)
-        self._mesh_grid_artists = [contour_x, contour_y]
+        active = self._active_mesh
+        if active is not None:
+            cell_size = self.spinbox_meshCellSize.value()
+            origin = self._mesh_origin()
+            rot_x, rot_y = self._rotated_coords(origin)
+            levels_x = np.arange(np.floor(rot_x.min() / cell_size),
+                                 np.ceil(rot_x.max() / cell_size) + 1) * cell_size
+            levels_y = np.arange(np.floor(rot_y.min() / cell_size),
+                                 np.ceil(rot_y.max() / cell_size) + 1) * cell_size
+            contour_x = self.ax.contour(rot_x, levels=levels_x, colors=_MESH_GRID_COLOR,
+                                        linestyles='dashed', linewidths=0.7)
+            contour_y = self.ax.contour(rot_y, levels=levels_y, colors=_MESH_GRID_COLOR,
+                                        linestyles='dashed', linewidths=0.7)
+            self._mesh_grid_artists = [contour_x, contour_y]
 
-        if self._mesh_cells:
-            # Delegate to io.mesh_restrict_mask - the same function real
-            # extraction uses (tab_tracking_cv2.py/tab_sam2.py's own
-            # apply_edge_mask) - rather than re-deriving the cell-membership
-            # logic here, so "Lines Only" (or anything else about how cells
-            # translate to kept pixels) can never drift out of sync between
-            # this preview and the real thing.
-            keep = io.mesh_restrict_mask(
-                self._effective_mask(self.frame), self.spinbox_meshAngle.value(), cell_size,
-                self._mesh_cells, origin=origin, lines_only=self.checkbox_meshLinesOnly.isChecked())
+        # Delegate to io.mesh_restrict_mask - the same function real
+        # extraction uses (tab_tracking_cv2.py/tab_sam2.py's own
+        # apply_edge_mask) - rather than re-deriving the cell-membership
+        # logic here, so "Lines Only" (or anything else about how cells
+        # translate to kept pixels) can never drift out of sync between
+        # this preview and the real thing.
+        effective = self._effective_mask(self.frame)
+        keep = None
+        for mesh in self._segments[self._current_segment_idx]['meshes']:
+            if not mesh['enabled'] or not mesh['cells']:
+                continue
+            origin_m = self._mesh_origin_for_mesh(mesh, self.frame)
+            keep_m = io.mesh_restrict_mask(
+                effective, mesh['angle'], mesh['cell_size'],
+                set(tuple(c) for c in mesh['cells']), origin=origin_m, lines_only=mesh['lines_only'])
+            keep = keep_m if keep is None else (keep & keep_m)
+        if keep is not None:
             rgba = np.zeros((*keep.shape, 4))
             rgba[keep] = _MESH_SELECTED_COLOR
             self._mesh_cell_artist = self.ax.imshow(rgba)
@@ -1601,15 +2194,18 @@ class MaskEditDialog(qtw.QDialog):
         """A square-cell selection and a stripe selection aren't
         interchangeable (same (i, j) values, different meaning) - clear
         whatever was picked rather than silently reinterpreting it. Also
-        writes the toggle itself back into the current segment, same as
-        every other Mesh control (see _on_segment_widgets_changed) -
-        _clear_mesh_selection's own _redraw_mask alone won't do that."""
-        self._write_widgets_to_current_segment()
+        writes the toggle itself back into the active mesh first, same as
+        every other Mesh control - _clear_mesh_selection's own _redraw_mask
+        alone won't do that."""
+        self._isolate_if_single_frame_scope()
+        mesh = self._active_mesh
+        if mesh is not None:
+            mesh['lines_only'] = self.checkbox_meshLinesOnly.isChecked()
         self._clear_mesh_selection()
 
     def _toggle_mesh_cell(self, event):
-        """Toggle the mesh cell (or, with "Lines Only" checked, the whole
-        stripe sharing the clicked cell's `cell_i`) under the cursor -
+        """Toggle the active mesh's cell (or, with "Lines Only" checked, the
+        whole stripe sharing the clicked cell's `cell_i`) under the cursor -
         always relative to the object's own position on whichever frame is
         currently displayed (see _mesh_origin). In "Lines Only" mode, a
         stripe is stored/toggled as a single representative (i, 0) entry in
@@ -1617,8 +2213,10 @@ class MaskEditDialog(qtw.QDialog):
         screen - io.mesh_restrict_mask's own `lines_only` flag is what
         makes that (i, 0) entry mean "every cell_i == i pixel" instead of
         just that one cell. Reads/mutates/reassigns _mesh_cells (a property
-        backed by the current segment - see its own docstring) rather than
+        backed by the active mesh - see its own docstring) rather than
         mutating it in place, since each read returns a fresh set."""
+        if self._active_mesh is None:
+            return
         cell_i, cell_j = io.mesh_cell_ids(self.mask_stack.shape[1:], self.spinbox_meshAngle.value(),
                                           self.spinbox_meshCellSize.value(), self._mesh_origin())
         row, col = int(round(event.ydata)), int(round(event.xdata))
@@ -1652,11 +2250,15 @@ class MaskEditDialog(qtw.QDialog):
         unlike get_edge_settings()). Each entry's 'start'/'end' (inclusive
         frame indices) is what the caller resolves per-frame via
         io.segment_for_frame at extraction time (see
-        tab_tracking_cv2.py/tab_sam2.py's own apply_edge_mask). 'lines_only'
-        - see io.mesh_restrict_mask - is what the caller must pass that same
+        tab_tracking_cv2.py/tab_sam2.py's own apply_edge_mask). Each
+        segment's 'meshes' (item 2) is a LIST of independent mesh dicts, not
+        one flat mesh - combined by intersection wherever more than one is
+        enabled (see _redraw_mesh_overlay/apply_edge_mask). 'lines_only' -
+        see io.mesh_restrict_mask - is what the caller must pass that same
         function alongside 'cells' for this to mean what it looked like in
         this dialog's own preview."""
-        return {'segments': [{'start': s['start'], 'end': s['end'], **s['mesh']} for s in self._segments]}
+        return {'segments': [{'start': s['start'], 'end': s['end'], 'meshes': s['meshes']}
+                             for s in self._segments]}
 
     #%% tilt axis
     def _find_tilt_axis(self):
@@ -1794,6 +2396,7 @@ class MaskEditDialog(qtw.QDialog):
         overlay on top."""
         if self.bg_stack is not None:
             self.img_bg.set_data(self._bg_frame(self.frame))
+        self.img_initial_mask.set_data(self._initial_mask_rgba(self._original_stack[self.frame]))
         self._redraw_mask()
 
     def _bg_frame(self, frame):
@@ -1803,14 +2406,51 @@ class MaskEditDialog(qtw.QDialog):
         place every background-image read in this dialog goes through."""
         return self.box_denoise.apply(self.bg_stack[frame])
 
+    def _denoised_bg_stack(self):
+        """The WHOLE bg_stack run through box_denoise's current method/
+        parameter, cached (see _on_denoise_changed) - what
+        _recompute_threshold_stack hands recompute_thresh_fn so the
+        Threshold box's rebuild actually reflects the Denoise box's choice
+        instead of always re-thresholding the raw, undenoised images (a
+        past inconsistency - Denoise only ever affected what was DISPLAYED,
+        never what got thresholded). None if this dialog has no bg_stack at
+        all. Cached (not recomputed on every Threshold slider tick, unlike
+        _bg_frame's own single-frame, always-fresh read) because denoising
+        the FULL-RESOLUTION stack for every frame at once - unlike the
+        Threshold box's own cheap, ROI-cropped "ROI Blur" - can be
+        genuinely slow for a slower method (e.g. non-local means)."""
+        if self.bg_stack is None:
+            return None
+        if self._denoised_threshold_stack is None:
+            self._denoised_threshold_stack = np.stack(
+                [self.box_denoise.apply(img) for img in self.bg_stack])
+        return self._denoised_threshold_stack
+
     def _on_denoise_changed(self):
         """box_denoise's method/parameter changed: refresh just the
         current frame's displayed background (cheap - same reasoning as
-        the main tab's own live Denoise preview)."""
+        the main tab's own live Denoise preview), and drop the cached
+        whole-stack denoise _denoised_bg_stack used for Threshold rebuilds -
+        it's now stale, recomputed fresh (once) the next time a Threshold
+        control changes.
+
+        For a threshold-derived mask (recompute_thresh_fn given), also
+        re-runs that Threshold rebuild right now (_threshold_live_update) -
+        otherwise the DISPLAYED background updates immediately but the
+        actual mask silently keeps reflecting whatever Denoise setting was
+        active the last time a Threshold control itself was touched, until
+        the user happens to nudge one - Denoise not visibly affecting the
+        mask at all until then reads as "the threshold isn't using the
+        denoised image", even though the very next Threshold tweak would
+        have picked it up automatically."""
+        self._denoised_threshold_stack = None
         if self.bg_stack is None:
             return
         self.img_bg.set_data(self._bg_frame(self.frame))
-        self._blit_mask_display()
+        if self.recompute_thresh_fn is not None:
+            self._threshold_live_update()
+        else:
+            self._blit_mask_display()
 
     def _show_denoise_check_methods(self):
         """box_denoise's "Check Methods..." button: compare every method on
@@ -1882,8 +2522,12 @@ class MaskEditDialog(qtw.QDialog):
 
     def _grow_shrink(self, angle, grow):
         self._push_undo(self.frame)
-        self.mask_stack[self.frame] = io.shift_mask_edge(
-            self.mask_stack[self.frame], angle, grow=grow)
+        old = self.mask_stack[self.frame]
+        new = io.shift_mask_edge(old, angle, grow=grow)
+        # Item 1: every pixel this actually changed counts as a manual edit
+        # too, same as paint/rect paint - see checkbox_protectManualEdits.
+        self._manual_mask_stack[self.frame] |= (old != new)
+        self.mask_stack[self.frame] = new
         self._redraw_mask()
 
     def _reset_to_tracking(self):
@@ -1906,18 +2550,25 @@ class MaskEditDialog(qtw.QDialog):
         self._push_undo(None)
         source = self._default_stack if self._default_stack is not None else self._original_stack
         self.mask_stack = source.copy()
+        self._manual_mask_stack[:] = False
         self._reset_segments_to_single_default()
         self._redraw_mask()
 
     def _recompute_threshold_stack(self):
         """Full (N, H, W) mask stack from the Threshold box's current
         method/blur/deviation, via the caller's recompute_thresh_fn - or
-        None if that raised (caller decides how loudly to report it)."""
+        None if that raised (caller decides how loudly to report it).
+        Passes the Denoise box's own current whole-stack output too (see
+        _denoised_bg_stack) - a threshold-derived caller (ROI Tracker) uses
+        it instead of its own raw images when re-thresholding, so the
+        Denoise box's choice actually affects the binarized mask, not just
+        what's displayed."""
         method = self.combo_threshMethod.currentText()
         blur = self.spinbox_threshBlur.value()
         offset = self.slider_threshDev.value() / 100
         try:
-            return np.asarray(self.recompute_thresh_fn(method, offset, blur)).astype(bool)
+            return np.asarray(self.recompute_thresh_fn(
+                method, offset, blur, denoised_imgs=self._denoised_bg_stack())).astype(bool)
         except Exception:
             if self.logger:
                 self.logger.exception('Failed to recompute threshold mask.')
@@ -1949,6 +2600,8 @@ class MaskEditDialog(qtw.QDialog):
             self._push_undo(self.frame)
             self._threshold_undo_frame = self.frame
         self.mask_stack[self.frame] = full[self.frame]
+        # A fresh re-threshold discards whatever was painted here before it.
+        self._manual_mask_stack[self.frame] = False
         self._redraw_mask()
 
     def _apply_threshold_all(self):
@@ -1963,10 +2616,23 @@ class MaskEditDialog(qtw.QDialog):
             return
         self._push_undo(None)
         self.mask_stack = full
+        self._manual_mask_stack[:] = False
         self._redraw_mask()
 
     def get_mask_stack(self):
         return self.mask_stack
+
+    def get_manual_edit_settings(self):
+        """Item 1: which pixels were set by a manual tool (see
+        self._manual_mask_stack) and whether the Exclude Manual Edits from
+        Effects checkbox is on - the caller round-trips this into its own
+        per-object column (like get_mesh_settings() etc.) and passes it back
+        in as `manual_edit_settings` next time this dialog opens for the
+        same object, AND threads it through its own apply_edge_mask so
+        Dilate/Erode/Edge Detection keep excluding these pixels at real
+        extraction time too, not just in this dialog's own live preview."""
+        return {'protect': self.checkbox_protectManualEdits.isChecked(),
+                'mask': self._manual_mask_stack}
 
     def get_edited_frame_indices(self):
         """Frame indices whose mask actually differs from `_original_stack`
@@ -2036,6 +2702,7 @@ class MaskEditDialog(qtw.QDialog):
         h, w = self.mask_stack.shape[1:]
         if 0 <= row < h and 0 <= col < w:
             self.mask_stack[self.frame, row, col] = self._pixel_paint_value
+            self._manual_mask_stack[self.frame, row, col] = True
             self._redraw_mask()
 
     #%% ribbon
@@ -2101,13 +2768,32 @@ class MaskEditDialog(qtw.QDialog):
         docstring in __init__)."""
         if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
             return
+        # Item 3: "Center Grid (Click)" armed - this click sets the active
+        # mesh's fixed origin instead of anything else below (paint/rect/
+        # mesh-cell-toggle), then disarms itself regardless of what was
+        # clicked on.
+        if self._picking_mesh_center:
+            self._isolate_if_single_frame_scope()
+            mesh = self._active_mesh
+            if mesh is not None:
+                mesh['origin'] = [float(event.xdata), float(event.ydata)]
+                mesh['fixed'] = True
+                self.checkbox_meshFixed.blockSignals(True)
+                self.checkbox_meshFixed.setChecked(True)
+                self.checkbox_meshFixed.blockSignals(False)
+                self._update_segment_ui()
+                self._redraw_mask()
+            self._picking_mesh_center = False
+            self.button_meshCenterClick.setChecked(False)
+            self._apply_ribbon_cursor()
+            return
         mods = event.modifiers
         tool = self.ribbon.active_tool
         if tool in ('pan', 'zoom'):
             return
         plain_left = event.button == 1 and not mods
 
-        if plain_left and tool is None and self.checkbox_meshEnabled.isChecked():
+        if plain_left and tool is None and self._active_mesh is not None:
             self._toggle_mesh_cell(event)
             return
 
@@ -2188,4 +2874,5 @@ class MaskEditDialog(qtw.QDialog):
                 if row1 > row0 and col1 > col0:
                     self._push_undo(self.frame)
                     self.mask_stack[self.frame, row0:row1, col0:col1] = value
+                    self._manual_mask_stack[self.frame, row0:row1, col0:col1] = True
         self._redraw_mask()

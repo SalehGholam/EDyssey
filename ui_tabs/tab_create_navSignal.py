@@ -30,7 +30,7 @@ from matplotlib.figure import Figure
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
                        HDF5_EVENTEM_LABEL)
-from .display_settings import DisplaySettings
+from .display_settings import DisplaySettings, _reversed_colormap_name
 from .analysis_backend_settings import AnalysisBackendSettings
 from .clipping_thresholds import ClippingThresholdsWidget
 from .worker_thread import WorkerThread_General, ProcessStderrBuffer
@@ -949,8 +949,13 @@ class Tab_Create_NavSignal(TabBase):
         is this tab's "Summed DP" preview, despite the name."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
-        self.img_display.set_cmap(settings.nav_colormap)
-        self.img_display_mask.set_cmap(settings.dp_colormap)
+        # Also re-applies clip_nav's own clim - a harmless no-op here since
+        # only the colormap actually changed, but _update_nav_display_clim
+        # is the one place that already knows how to combine a colormap with
+        # the Revert toggle (see its own docstring) - no separate copy of
+        # that logic needed here.
+        self._update_nav_display_clim(redraw=False)
+        self.img_display_mask.set_cmap(settings.colormap_for('navigator_dp'))
         self.canvas.draw_idle()
 
     def show_dialog(self, f):
@@ -2834,7 +2839,14 @@ class Tab_Create_NavSignal(TabBase):
         cosmetic, never touching the underlying data/calculations."""
         vmin, vmax = self.clip_nav.values()
         self.img_display.set_clim(vmin, vmax)
-        self.img_display.set_cmap('viridis_r' if self.checkbox_revertContrast.isChecked() else 'viridis')
+        # Whichever colormap is actually in effect for this plot right now
+        # (nav_colormap, or a per-plot override - see DisplaySettings.
+        # colormap_for) - NOT hardcoded 'viridis' as this used to be, which
+        # silently overrode any other Navigation Image colormap setting back
+        # to plain viridis the moment contrast was adjusted/reverted here.
+        base_cmap = DisplaySettings.instance().colormap_for('navigator_nav')
+        self.img_display.set_cmap(
+            _reversed_colormap_name(base_cmap) if self.checkbox_revertContrast.isChecked() else base_cmap)
         if redraw:
             # A real contrast/cmap change (not the per-frame call from
             # update_canvas, which passes redraw=False since vmin/vmax/cmap

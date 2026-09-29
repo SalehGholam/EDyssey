@@ -61,36 +61,95 @@ class _TransposedColumnItem:
             self._table.setItem(row, col, item)
         return item
 
+    def _cell_new(self, row):
+        """Like _cell(row) (always creating), but also reports whether this
+        call is what just created it - used by every setter below to
+        suppress the table's own itemChanged signal while a cell is still
+        being initialized to its STARTING value, not actually changed by
+        the user. Without this, inserting a brand new QTableWidgetItem via
+        setItem() fires itemChanged once for the insertion itself, and each
+        subsequent setFlags()/setCheckState()/setText()/setData() call on
+        that same fresh item fires it again - e.g. add_item_tree()'s single
+        `setCheckState(cols['blob'], Qt.Unchecked)` on a new ROI's row
+        actually emitted itemChanged 3 TIMES (setItem, setFlags,
+        setCheckState), each one separately reaching on_item_check_changed
+        and re-running (and re-logging) "Blob Selection disabled" for that
+        one setup call - never an issue for an EXISTING cell, whose value
+        setters replace an already-meaningful value with a new one (exactly
+        the "user/code actually changed this" case itemChanged exists for)."""
+        col = self.col
+        item = self._table.item(row, col)
+        if item is not None:
+            return item, False
+        item = qtw.QTableWidgetItem()
+        blocked = self._table.blockSignals(True)
+        try:
+            self._table.setItem(row, col, item)
+        finally:
+            self._table.blockSignals(blocked)
+        return item, True
+
     def text(self, row):
         item = self._cell(row, create=False)
         return item.text() if item is not None else ''
 
     def setText(self, row, value):
         text = str(value)
-        item = self._cell(row)
-        item.setText(text)
-        # Cells are a fixed narrow width (see addTopLevelItem) so long
-        # values (e.g. a wide frame range) get elided - the tooltip is the
-        # only way to read the full value without widening every column.
-        item.setToolTip(text)
+        item, is_new = self._cell_new(row)
+        blocked = self._table.blockSignals(True) if is_new else None
+        try:
+            item.setText(text)
+            # Cells are a fixed narrow width (see addTopLevelItem) so long
+            # values (e.g. a wide frame range) get elided - the tooltip is
+            # the only way to read the full value without widening every
+            # column.
+            item.setToolTip(text)
+        finally:
+            if is_new:
+                self._table.blockSignals(blocked)
 
     def checkState(self, row):
         item = self._cell(row, create=False)
         return item.checkState() if item is not None else Qt.Unchecked
 
     def setCheckState(self, row, state):
-        item = self._cell(row)
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(state)
+        item, is_new = self._cell_new(row)
+        blocked = self._table.blockSignals(True) if is_new else None
+        try:
+            # setFlags() fires itemChanged EVERY time it's called, even
+            # when the flags it's setting are already set (verified: a
+            # completely redundant setFlags() call on an already-checkable
+            # item still emits) - only actually call it the first time this
+            # item is made checkable, so a REAL, later checkbox toggle by
+            # the user fires itemChanged exactly once (this line's own
+            # setCheckState below), not twice.
+            if not (item.flags() & Qt.ItemIsUserCheckable):
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(state)
+        finally:
+            if is_new:
+                self._table.blockSignals(blocked)
 
     def setIcon(self, row, icon):
-        self._cell(row).setIcon(icon)
+        item, is_new = self._cell_new(row)
+        blocked = self._table.blockSignals(True) if is_new else None
+        try:
+            item.setIcon(icon)
+        finally:
+            if is_new:
+                self._table.blockSignals(blocked)
 
     def setToolTip(self, row, tip):
         self._cell(row).setToolTip(tip)
 
     def setData(self, row, role, value):
-        self._cell(row).setData(role, value)
+        item, is_new = self._cell_new(row)
+        blocked = self._table.blockSignals(True) if is_new else None
+        try:
+            item.setData(role, value)
+        finally:
+            if is_new:
+                self._table.blockSignals(blocked)
 
     def data(self, row, role):
         item = self._cell(row, create=False)
@@ -211,7 +270,16 @@ class TransposedObjectTable(qtw.QTableWidget):
         self.insertColumn(col)
         self.setColumnWidth(col, width)
         anchor = qtw.QTableWidgetItem()
-        self.setItem(0, col, anchor)
+        # Placing a brand new item fires itemChanged for its own insertion
+        # (see _TransposedColumnItem._cell_new's docstring) - this anchor
+        # isn't a real value change (nothing meaningful has been set on
+        # this column yet), so it shouldn't reach on_item_check_changed at
+        # all, same reasoning as every other first-touch cell below.
+        blocked = self.blockSignals(True)
+        try:
+            self.setItem(0, col, anchor)
+        finally:
+            self.blockSignals(blocked)
         return _TransposedColumnItem(self, anchor)
 
     def takeTopLevelItem(self, col):

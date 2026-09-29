@@ -724,7 +724,12 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_sigm
             Contrast" Denoise box's own Gaussian Blur method). 0 means no blur.
 
     Returns:
-        Boolean numpy.ndarray of shape (N, H, W).
+        Boolean numpy.ndarray of shape (N, H, W). A frame whose `roi` is
+        empty (zero width/height - e.g. one outside this object's tracked
+        range, where get_tracking_results() leaves out_rois at its own
+        all-zero (0, 0, 0, 0) placeholder) is left all-False rather than
+        thresholded - there is no crop to threshold there, and
+        skimage.filters.threshold_* raises on a zero-size array.
     """
     threshold_methods = {
     'otsu': threshold_otsu,
@@ -736,13 +741,15 @@ def create_masks(navImgs, rois, thresh_method='otsu', thresh_offset=0, blur_sigm
     masks = np.zeros(navImgs.shape, dtype=navImgs.dtype)
     for i, img in enumerate(navImgs):
         y,x,h,w = rois[i]
+        if h <= 0 or w <= 0:
+            continue
         if blur_sigma > 0:
             img = io.convert_img_to_8bit(img)
             img = gaussian_filter(img, sigma=blur_sigma)
         masks[i][x:x+w, y:y+h] = img[x:x+w, y:y+h]
         th = io.threshold_ignore_zero(threshold_func, img[x:x+w, y:y+h])
         th *= thresh_offset
-        
+
         masks[i] = masks[i] >= th
     masks = masks.astype('bool')
     return masks
