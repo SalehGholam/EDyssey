@@ -379,7 +379,7 @@ class Tab_Create_NavSignal(TabBase):
             'Sum DPs over the drawn ROI (Ctrl+drag on the nav./test image)')
         layout_sum_dp.addStretch(1)
         layout_scanSize.addLayout(layout_sum_dp)
-        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'Sum DP', stretch=True)
+        self._ribbon_group_end(layout_ribbon, layout_scanSize, 'DP Computation', stretch=True)
 
         #%% Virtual Imaging (ribbon column, third/last - renamed from
         # "Virtual Detector Mask" to match Tab_ROI_on_4D; Test File/

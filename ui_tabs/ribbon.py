@@ -183,6 +183,17 @@ def _drawn_icon(kind, size):
         painter.setPen(pen)
         d = size * 0.12
         painter.drawLine(QPointF(cx - d, cy), QPointF(cx + d, cy))
+    elif kind == 'pick_blob':
+        # Two overlapping blob-like circles, one filled (the blob about to
+        # be picked) and one hollow (another candidate blob nearby) - reads
+        # as "choose one of several blobs" (mask_edit_dialog's own Blob
+        # Selection "Pick Blob" tool).
+        r = size * 0.24
+        cx1, cy1 = size * 0.36, size * 0.58
+        cx2, cy2 = size * 0.66, size * 0.38
+        painter.drawEllipse(QPointF(cx2, cy2), r, r)
+        painter.setBrush(_icon_color())
+        painter.drawEllipse(QPointF(cx1, cy1), r, r)
     elif kind == 'help':
         # A plain "?" in a circle - opens this tab's Shortcuts/Controls
         # dialog (see TabBase.show_shortcuts_dialog), which is where the
@@ -207,7 +218,7 @@ def _drawn_icon(kind, size):
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
                       'center_recip', 'center_mask', 'hide_mask', 'help',
                       'paint_in', 'paint_out', 'rect_in', 'rect_out',
-                      'undo', 'redo'}
+                      'undo', 'redo', 'pick_blob'}
 
 
 def build_icon(key, size=_ICON_SIZE):

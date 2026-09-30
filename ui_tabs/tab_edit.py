@@ -104,21 +104,19 @@ class EditSettingsDialog(qtw.QDialog):
         # Masks - opacity of the translucent tracked-object/segmentation
         # mask overlays on ROI Tracker's, SAM2 Tracker's, and ROI on 4D's
         # own main canvases (not the separate Fine-Tune Mask dialog, which
-        # has its own independent opacity spinboxes). Same immediate-apply
-        # convention as Colormaps/Theme above.
+        # has its own independent opacity spinboxes). Same slider+spinbox
+        # shape as every row in Ribbon/Plots below, but immediate-apply
+        # (like Theme/Colormaps above) rather than needing "Apply".
         mask_box = qtw.QGroupBox('Masks')
-        mask_layout = qtw.QHBoxLayout(mask_box)
-        mask_layout.addWidget(qtw.QLabel('Mask Transparency'))
-        self.spinbox_maskAlpha = qtw.QSpinBox()
-        self.spinbox_maskAlpha.setRange(0, 100)
-        self.spinbox_maskAlpha.setSuffix(' %')
-        self.spinbox_maskAlpha.setValue(round(settings.mask_alpha * 100))
-        self.spinbox_maskAlpha.setToolTip(
-            'Opacity of the tracked-object/segmentation mask overlays shown on the '
-            'ROI Tracker, SAM2 Tracker, and ROI on 4D tabs')
-        self.spinbox_maskAlpha.valueChanged.connect(self._on_mask_alpha_changed)
-        mask_layout.addWidget(self.spinbox_maskAlpha)
-        mask_layout.addStretch(1)
+        mask_form = qtw.QFormLayout(mask_box)
+        mask_form.setLabelAlignment(Qt.AlignRight)
+        self.slider_maskAlpha, self.spinbox_maskAlpha = self._add_percent_row(
+            mask_form, 'Mask Transparency', 0, 100, round(settings.mask_alpha * 100))
+        for widget in (self.slider_maskAlpha, self.spinbox_maskAlpha):
+            widget.setToolTip(
+                'Opacity of the tracked-object/segmentation mask overlays shown on the '
+                'ROI Tracker, SAM2 Tracker, and ROI on 4D tabs')
+            widget.valueChanged.connect(self._on_mask_alpha_changed)
         self.layout.addWidget(mask_box)
 
         form_box = qtw.QGroupBox('Ribbon')
@@ -288,9 +286,8 @@ class EditSettingsDialog(qtw.QDialog):
             combo.blockSignals(True)
             combo.setCurrentText(settings.colormap_for(key))
             combo.blockSignals(False)
-        self.spinbox_maskAlpha.blockSignals(True)
-        self.spinbox_maskAlpha.setValue(round(settings.mask_alpha * 100))
-        self.spinbox_maskAlpha.blockSignals(False)
+        self._sync(self.slider_maskAlpha, self.spinbox_maskAlpha,
+                  round(settings.mask_alpha * 100))
         self._sync(self.slider_ribbonText, self.spinbox_ribbonText,
                   round(settings.ribbon_text_scale * 100))
         self._sync(self.slider_ribbonIcon, self.spinbox_ribbonIcon, settings.ribbon_icon_size)

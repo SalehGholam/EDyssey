@@ -36,7 +36,7 @@ from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
-                       HDF5_EVENTEM_LABEL)
+                       HDF5_EVENTEM_LABEL, detect_4d_file_type)
 from .display_settings import DisplaySettings
 from .analysis_backend_settings import AnalysisBackendSettings
 from .clipping_thresholds import ClippingThresholdsWidget
@@ -96,6 +96,15 @@ class Tab_SAM2(TabBase):
         # doesn't itself touch) and the couple of other full-figure redraws
         # outside it (on_scroll's zoom, add_scalebar).
         self._denoise_bg = None
+
+        # Fine-Tune Mask's own Blob Selection segments, per object - session-
+        # only memory (never saved/loaded, no df_obj column - unlike ROI
+        # Tracker, SAM2 has no per-object Blob Selection settings dialog/
+        # checkbox column of its own; see open_fine_tune_mask_dialog) so a
+        # blob choice at least survives reopening Fine-Tune Mask again for
+        # the same object later in this session, without the dataframe-
+        # schema risk a persisted column would add.
+        self._blob_dialog_segments = {}
 
         self._stderr_buffer = ProcessStderrBuffer()
         logical_processors = os.cpu_count()
@@ -167,8 +176,8 @@ class Tab_SAM2(TabBase):
 
         self.combo_dtype_4d = qtw.QComboBox()
         self.combo_dtype_4d.setMaximumWidth(110)
-        self.combo_dtype_4d.addItems(['.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy', '.zspy',
-                                      '.mib', '.blo', 'All Files'])
+        self.combo_dtype_4d.addItems(['Auto', '.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy',
+                                      '.zspy', '.mib', '.blo'])
         self.combo_dtype_4d.setToolTip(
             'Data type of the 4D signal files - filters out stray non-signal files '
             '(comment.txt, pattern files, logs), AND (for a .hdf5 file specifically) '
@@ -176,8 +185,10 @@ class Tab_SAM2(TabBase):
             'own raw export layout) or plain ".hdf5" (a conventional/third-party '
             'HDF5 file, not natively readable via HyperSpy - its one 4D dataset is '
             'found directly and loaded via dask instead - both commonly share the '
-            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
-            'navigator\'s own recorded file list applies to this folder.')
+            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
+            '"Auto" detects the type from the files actually present in the folder '
+            '(logged when used). Ignored if the navigator\'s own recorded file list '
+            'applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
         # save dir
@@ -464,7 +475,7 @@ class Tab_SAM2(TabBase):
         layout_box_tracking.addLayout(layout_sam_buttons_2)
 
         # image
-        self.button_runSeg_img = qtw.QPushButton('Seg Image', self)
+        self.button_runSeg_img = qtw.QPushButton('Segment Image', self)
         # self.button_runSeg_img.setFixedSize(button_w, button_h_lrg)
         layout_sam_buttons_1.addWidget(self.button_runSeg_img)
         # self.button_runSeg_img.clicked.connect(self.SAM2_image_predictor)
@@ -616,7 +627,7 @@ class Tab_SAM2(TabBase):
         # disable_3ded_widgets(True) is called further down instead, right
         # after button_fineTuneMask exists (see there) - it explicitly
         # toggles that button too, which isn't built yet at this point.
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract')
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Extract DP')
         layout_ribbon.addStretch(1)
 
         #%% Adjust Contrast (top) + Feature Handling (below it) - moved out
@@ -724,11 +735,15 @@ class Tab_SAM2(TabBase):
         # own mask to every active ("Use" checked) object's mask
         # composited at once, each in its own color with its index label
         # at its centroid (see _draw_all_object_masks).
+        box_plottingPrefs = qtw.QGroupBox('Plotting Preferences')
+        layout_plottingPrefs = qtw.QVBoxLayout(box_plottingPrefs)
+        layout_featurePanel.addWidget(box_plottingPrefs)
+
         row_maskMode = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(row_maskMode)
-        self.radio_maskSelected = qtw.QRadioButton('Selected Object')
+        layout_plottingPrefs.addLayout(row_maskMode)
+        self.radio_maskSelected = qtw.QRadioButton('Selected')
         self.radio_maskSelected.setChecked(True)
-        self.radio_maskAll = qtw.QRadioButton('All Active Objects')
+        self.radio_maskAll = qtw.QRadioButton('All Active')
         self._group_maskMode = qtw.QButtonGroup(self)
         self._group_maskMode.addButton(self.radio_maskSelected)
         self._group_maskMode.addButton(self.radio_maskAll)
@@ -1117,6 +1132,9 @@ class Tab_SAM2(TabBase):
                 # too, and load_metadata(silent=True) already no-ops
                 # quietly when comment.txt is missing or unparsable.
                 self.load_metadata(silent=True)
+                detected = detect_4d_file_type(path, self.logger)
+                if detected is not None:
+                    self.combo_dtype_4d.setCurrentText(detected)
 
         elif sender == self.button_dir_save:
             path = get_existing_directory(self, "Select Destination Folder", self.lineEdit_dir_save.text())
@@ -1153,7 +1171,7 @@ class Tab_SAM2(TabBase):
         would mean fully parsing the file - eventem has no cheaper
         metadata-only query - just to learn its shape; "Auto" here keeps
         the previous default of 512x512)."""
-        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText(), logger=self.logger)
         if dtype == '.tpx3':
             if self.checkbox_detectorSizeAuto.isChecked():
                 return 512, 512
@@ -2329,12 +2347,24 @@ class Tab_SAM2(TabBase):
         # as self.imgs_8bit (which already has that denoise baked in)
         # without double-applying it - see MaskEditDialog's class docstring.
         bg_stack_contrast_only = io.convert_to_8bit(self.s_navSignal, **self.box_contrast.get_kwargs()).data
+        # Blob Selection's raw candidates are the SAM2 mask itself
+        # (default_mask_stack - the pristine, un-edited network output),
+        # not the possibly-hand-edited `mask_stack` - always offered when
+        # available (no per-object "enabled" checkbox/column the way ROI
+        # Tracker has; a mask with only one connected region just means
+        # there's nothing to pick between). Always plain connected-
+        # components (io.DEFAULT_BLOB_METHOD) - SAM2 has no equivalent of
+        # ROI Tracker's Blob Settings dialog to configure a fancier method.
         dialog = MaskEditDialog(self, mask_stack, bg_stack=bg_stack_contrast_only,
                                 start_frame=self.slider_imgNo.value(), logger=self.logger,
                                 default_mask_stack=default_mask_stack, edge_settings=edge_settings,
                                 mesh_settings=mesh_settings, dilate_erode_settings=dilate_erode_settings,
                                 denoise_state=self.box_contrast.box_denoise.get_state(),
-                                manual_edit_settings=manual_edit_settings)
+                                manual_edit_settings=manual_edit_settings,
+                                blob_raw_mask_stack=default_mask_stack,
+                                blob_settings=self._blob_dialog_segments.get(obj_id),
+                                blob_method_params=((io.DEFAULT_BLOB_METHOD, {})
+                                                    if default_mask_stack is not None else None))
         if dialog.exec_() == qtw.QDialog.Accepted:
             self.df_obj.at[obj_id, 'mask'] = dialog.get_mask_stack()
             # Mesh/Dilate-Erode/Edge Detection are all per-object (no
@@ -2347,6 +2377,9 @@ class Tab_SAM2(TabBase):
             self.df_obj.at[obj_id, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_obj.at[obj_id, 'edge'] = dialog.get_edge_settings()
             self.df_obj.at[obj_id, 'manual_edits'] = dialog.get_manual_edit_settings()
+            updated_blob = dialog.get_blob_settings()
+            if updated_blob is not None:
+                self._blob_dialog_segments[obj_id] = updated_blob
             edited_frames = dialog.get_edited_frame_indices()
             self.logger.info(
                 'Fine-tuned mask saved for object %d - %d/%d frame(s) changed: %s.',
@@ -3446,13 +3479,18 @@ class Tab_SAM2(TabBase):
         glob(path_4d, '*'), which picked up any stray non-signal file
         (comment.txt, pattern .txt files, logs, ...) alongside the real 4D
         signals and produced a false frame-count mismatch (or, for the
-        single-frame preview, silently extracted the wrong file)."""
+        single-frame preview, silently extracted the wrong file). 'Auto'
+        detects the actual extension present in path_4d instead of
+        matching everything."""
         if (self._nav_4d_files is not None and self._nav_4d_directory is not None
                 and os.path.normcase(os.path.normpath(self._nav_4d_directory))
                     == os.path.normcase(os.path.normpath(path_4d))):
             return [os.path.join(path_4d, fn) for fn in self._nav_4d_files]
         ext = self.combo_dtype_4d.currentText()
-        pattern = '*' if ext == 'All Files' else '*' + glob_ext_for_dtype(ext)
+        if ext == 'Auto':
+            detected = detect_4d_file_type(path_4d, self.logger)
+            ext = detected if detected is not None else '*'
+        pattern = '*' if ext == '*' else '*' + glob_ext_for_dtype(ext)
         return sorted(glob(os.path.join(path_4d, pattern)))
 
     def extract_3ded(self):
@@ -3490,7 +3528,7 @@ class Tab_SAM2(TabBase):
             self.logger.error('3DED extraction cancelled: no files found in %s', path_4d)
             qtw.QMessageBox.critical(self, 'Wrong Path', 'No files was found in the path for 4D signals!')
             return
-        dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText(), logger=self.logger)
 
         if len(self.imgs) != len(fns_4d):
             self.logger.warning(
@@ -3628,7 +3666,7 @@ class Tab_SAM2(TabBase):
                     'The current frame has no matching 4D signal file in the folder.')
                 return
             fn = fns_4d[imgNo]
-        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText(), logger=self.logger)
 
         scanSize = self.get_scan_size()
         if scanSize is None:  # "Auto": fall back to the loaded nav signal's own shape

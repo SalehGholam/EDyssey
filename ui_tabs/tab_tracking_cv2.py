@@ -38,7 +38,7 @@ from .worker_launch import worker_command
 from .contrast_scaling import ContrastScalingBox
 from .logging_utils import LogConsole
 from .base_tab import (TabBase, get_existing_directory, resolve_hdf5_dtype, glob_ext_for_dtype,
-                       HDF5_EVENTEM_LABEL)
+                       HDF5_EVENTEM_LABEL, detect_4d_file_type)
 from .display_settings import DisplaySettings
 from .analysis_backend_settings import AnalysisBackendSettings
 from .clipping_thresholds import ClippingThresholdsWidget
@@ -161,8 +161,8 @@ class Tab_Tracking_CV2(TabBase):
 
         self.combo_dtype_4d = qtw.QComboBox()
         self.combo_dtype_4d.setMaximumWidth(110)
-        self.combo_dtype_4d.addItems(['.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy', '.zspy',
-                                      '.mib', '.blo', 'All Files'])
+        self.combo_dtype_4d.addItems(['Auto', '.tpx3', HDF5_EVENTEM_LABEL, '.hdf5', '.hspy',
+                                      '.zspy', '.mib', '.blo'])
         self.combo_dtype_4d.setToolTip(
             'Data type of the 4D signal files - filters out stray non-signal files '
             '(comment.txt, pattern files, logs), AND (for a .hdf5 file specifically) '
@@ -170,8 +170,10 @@ class Tab_Tracking_CV2(TabBase):
             'own raw export layout) or plain ".hdf5" (a conventional/third-party '
             'HDF5 file, not natively readable via HyperSpy - its one 4D dataset is '
             'found directly and loaded via dask instead - both commonly share the '
-            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). Ignored if the '
-            'navigator\'s own recorded file list applies to this folder.')
+            'same on-disk .hdf5 extension, so this choice is otherwise ambiguous). '
+            '"Auto" detects the type from the files actually present in the folder '
+            '(logged when used). Ignored if the navigator\'s own recorded file list '
+            'applies to this folder.')
         layout_dir_4dSignals.addWidget(self.combo_dtype_4d)
 
         # save dir
@@ -488,7 +490,7 @@ class Tab_Tracking_CV2(TabBase):
         self.button_thresh = qtw.QPushButton('Reset')
         layout_deviation.addWidget(self.button_thresh)
         self.button_thresh.clicked.connect(self.reset_thresh)
-        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Threshold', stretch=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_3ded, 'Mask Threshold', stretch=False)
 
         # Edge Detection used to live here as a tab-wide control - it's now
         # per-ROI, set only from the Fine-Tune Mask dialog's Segments
@@ -640,7 +642,7 @@ class Tab_Tracking_CV2(TabBase):
         self.button_cancel.clicked.connect(self.cancel_running_work)
         layout_extract_2.addWidget(self.button_cancel)
 
-        self._ribbon_group_end(layout_ribbon, layout_box_extract, 'Extract', separator=False)
+        self._ribbon_group_end(layout_ribbon, layout_box_extract, 'Extract DP', separator=False)
         layout_ribbon.addStretch(1)
         #%% Adjust Contrast (top) + Feature Handling
         widget_featurePanel = qtw.QWidget()
@@ -747,12 +749,16 @@ class Tab_Tracking_CV2(TabBase):
         # its own row) - a "Mask Panel:" label on this row and "Nav.
         # Entries:" on that one is the only thing keeping two otherwise
         # identically-worded pairs from being confused for one control.
+        box_plottingPrefs = qtw.QGroupBox('Plotting Preferences')
+        layout_plottingPrefs = qtw.QVBoxLayout(box_plottingPrefs)
+        layout_featurePanel.addWidget(box_plottingPrefs)
+
         row_maskMode = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(row_maskMode)
+        layout_plottingPrefs.addLayout(row_maskMode)
         row_maskMode.addWidget(qtw.QLabel('Mask Panel:'))
-        self.radio_maskSelected = qtw.QRadioButton('Selected Object')
+        self.radio_maskSelected = qtw.QRadioButton('Selected')
         self.radio_maskSelected.setChecked(True)
-        self.radio_maskAll = qtw.QRadioButton('All Active Objects')
+        self.radio_maskAll = qtw.QRadioButton('All Active')
         self._group_maskMode = qtw.QButtonGroup(self)
         self._group_maskMode.addButton(self.radio_maskSelected)
         self._group_maskMode.addButton(self.radio_maskAll)
@@ -771,10 +777,10 @@ class Tab_Tracking_CV2(TabBase):
         # (or none, drawn, if nothing is). Own QButtonGroup - toggling this
         # never affects the Mask Panel pair above, or vice versa.
         row_entryMode = qtw.QHBoxLayout()
-        layout_featurePanel.addLayout(row_entryMode)
+        layout_plottingPrefs.addLayout(row_entryMode)
         row_entryMode.addWidget(qtw.QLabel('Nav. Entries:'))
-        self.radio_entrySelected = qtw.QRadioButton('Selected Object')
-        self.radio_entryAll = qtw.QRadioButton('All Active Objects')
+        self.radio_entrySelected = qtw.QRadioButton('Selected')
+        self.radio_entryAll = qtw.QRadioButton('All Active')
         self.radio_entryAll.setChecked(True)
         self._group_entryMode = qtw.QButtonGroup(self)
         self._group_entryMode.addButton(self.radio_entrySelected)
@@ -1210,6 +1216,9 @@ class Tab_Tracking_CV2(TabBase):
                 # too, and load_metadata(silent=True) already no-ops
                 # quietly when comment.txt is missing or unparsable.
                 self.load_metadata(silent=True)
+                detected = detect_4d_file_type(path, self.logger)
+                if detected is not None:
+                    self.combo_dtype_4d.setCurrentText(detected)
 
         elif sender == self.button_dir_save:
             path = get_existing_directory(self, "Select Destination Folder", self.lineEdit_dir_save.text())
@@ -1246,7 +1255,7 @@ class Tab_Tracking_CV2(TabBase):
         would mean fully parsing the file - eventem has no cheaper
         metadata-only query - just to learn its shape; "Auto" here keeps
         the previous default of 512x512)."""
-        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText(), logger=self.logger)
         if dtype == '.tpx3':
             if self.checkbox_detectorSizeAuto.isChecked():
                 return 512, 512
@@ -2036,10 +2045,29 @@ class Tab_Tracking_CV2(TabBase):
             self._draw_all_object_masks(img, imgNo)
         elif idx is not None and not np.all(pd.isna(self.df_rois.loc[idx, 'out_rois'])) \
                 and self.df_rois.loc[idx, 'out_rois'][imgNo].any():
-            img_mask, img_roi = self.threshold_img(
-                img, self.df_rois.loc[idx, 'out_rois'][imgNo],
-                self.combo_thresh_method.currentText(),
-                self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
+            roi = self.df_rois.loc[idx, 'out_rois'][imgNo]
+            saved_mask = self.df_rois.at[idx, 'mask']
+            if (isinstance(saved_mask, np.ndarray) and not np.all(pd.isna(saved_mask))
+                    and imgNo < len(saved_mask)):
+                # This ROI's actual saved/fine-tuned mask (Dilate/Erode/Edge
+                # Detection/Manual Edits/Mesh/Blob Selection all re-applied
+                # fresh from their own settings via apply_edge_mask - same
+                # as "All Active Objects" mode already does via
+                # _draw_all_object_masks) instead of a from-scratch
+                # re-threshold, which would silently discard any Fine-Tune
+                # Mask edit (manual paint, D-pad grow/shrink, Pick Blob)
+                # that isn't representable as one of those settings -
+                # exactly what made a just-accepted Fine-Tune Mask edit
+                # invisible back on this same tab's own live canvas.
+                y, x, h, w = roi
+                img_mask_full = np.asarray(
+                    self.apply_edge_mask(saved_mask[imgNo], idx, imgNo), dtype=bool)
+                img_mask = img_mask_full[x:x+w, y:y+h]
+                img_roi = img[x:x+w, y:y+h]
+            else:
+                img_mask, img_roi = self.threshold_img(
+                    img, roi, self.combo_thresh_method.currentText(),
+                    self.slider_thresh.value(), idx=idx, frame_idx=imgNo) #TODO add thresholding mode to the GUI and function here
             self.update_ax_mask(img_roi, img_mask)
             self._draw_blob_overlay(idx, imgNo)
         else:
@@ -3985,31 +4013,65 @@ class Tab_Tracking_CV2(TabBase):
         mask_stack = self.df_rois.at[idx, 'mask']
         if np.all(pd.isna(mask_stack)):
             mask_stack = default_mask_stack
-        if self._blob_enabled_for(idx):
-            # Blob Selection, like Dilate/Erode/Edge Detection/Mesh, is
-            # never baked into the stored mask - it's applied fresh at
-            # display/extraction time everywhere else (update_canvas,
-            # extract_dp_current_frame, _draw_all_object_masks, all via
-            # apply_edge_mask), and Fine-Tune Mask needs the same
-            # treatment so it opens on just the selected blob rather than
-            # the raw, possibly-multi-blob threshold result (previously
-            # the whole ROI). _resolve_blob_mask is apply_edge_mask's own
-            # blob-only first step - not the full apply_edge_mask, since
-            # this dialog re-applies its own Dilate/Erode/Edge Detection/
-            # Mesh live from the settings seeded below; applying the whole
-            # pipeline here would double them. Order matters (auto-follow's
-            # own per-frame centroid cache - see _resolve_blob_mask), so
-            # both stacks are walked frame-by-frame in order - each with
-            # its OWN private cache (not self._blob_centroid_cache), since
-            # mask_stack (this ROI's saved/edited mask) and
-            # default_mask_stack (a fresh, un-edited re-threshold) can
-            # genuinely disagree on a frame's blob shapes/positions;
-            # sharing one cache between the two passes let one's picks
-            # bleed into the other's auto-follow chain (wrong blob picked,
-            # or the picked blob drifting partway through the clip), and
-            # both would leave the main UI's own live-scrubbing cache
-            # overwritten with default_mask_stack's choices instead of
-            # whatever it had actually been showing.
+        # Fine-Tune Mask's own "Pick Blob" is ALWAYS offered, regardless of
+        # whether this ROI already has the main tab's own (separate, pre-
+        # existing) "Blob" checkbox enabled - requiring that first would
+        # make the new in-dialog picker unreachable for a ROI whose
+        # threshold mask obviously has more than one blob but was never
+        # flagged there. Picking a blob there is always baked directly into
+        # the returned mask_stack (see this method's own Accept branch,
+        # df_rois['mask']); it only ALSO turns the main tab's separate,
+        # every-frame Blob Selection restriction on (df_rois['blob'],
+        # _resolve_blob_mask/apply_edge_mask) when that was ALREADY active
+        # before this dialog opened (see blob_was_enabled below) - otherwise
+        # it stays a local mask correction, not a new standing restriction
+        # this tab starts applying to every OTHER frame too.
+        #
+        # No raw mask stack/intensity crop built here at all - MaskEditDialog
+        # derives Blob Selection's own raw candidates itself, LIVE, from its
+        # own Denoise+Threshold boxes (see MaskEditDialog._blob_source_stack)
+        # via the same recompute_thresh_fn passed below, so a Denoise/
+        # Threshold change made INSIDE the dialog actually changes which
+        # blobs are on offer - not whatever this tab's own nav_imgs/
+        # threshold happened to be when Fine-Tune Mask was opened.
+        seen_cache = self._blob_centroid_cache.get(idx, {})
+        blob_settings = self._blob_settings_for(idx)
+        blob_seed_cache = dict(seen_cache)
+        # Whether this ROI's Blob Selection was ALREADY an active, main-tab-
+        # wide feature (its own separate "Blob" checkbox - see
+        # _resolve_blob_mask/apply_edge_mask) before Fine-Tune Mask ever
+        # offered its own "Pick Blob" - see this method's own Accept branch
+        # below for why this matters: it decides whether a dialog-only pick
+        # should also turn that persistent, every-frame restriction on, or
+        # stay a local correction to just the mask itself.
+        blob_was_enabled = self._blob_enabled_for(idx)
+        if blob_was_enabled:
+            # This ROI's Blob Selection was already enabled on the main tab
+            # (its own separate "Blob" checkbox/live-preview machinery -
+            # _resolve_blob_mask, apply_edge_mask, etc.) BEFORE Fine-Tune
+            # Mask ever offered its own "Pick Blob" - mask_stack/
+            # default_mask_stack, the editable base this dialog's Dilate/
+            # Erode/Edge Detection/Mesh/manual paint all build on, need the
+            # same one-blob-per-frame narrowing every other view already
+            # applies (update_canvas, extract_dp_current_frame,
+            # _draw_all_object_masks), or this dialog would instead show
+            # (and let the user edit) the raw, still-multi-blob result.
+            # _resolve_blob_mask is apply_edge_mask's own blob-only first
+            # step - not the full apply_edge_mask, since this dialog
+            # re-applies its own Dilate/Erode/Edge Detection/Mesh live from
+            # the settings seeded below; applying the whole pipeline here
+            # would double them. Order matters (auto-follow's own per-frame
+            # centroid cache - see _resolve_blob_mask), so both stacks are
+            # walked frame-by-frame in order - each with its OWN private
+            # cache (not self._blob_centroid_cache), since mask_stack (this
+            # ROI's saved/edited mask) and default_mask_stack (a fresh,
+            # un-edited re-threshold) can genuinely disagree on a frame's
+            # blob shapes/positions; sharing one cache between the two
+            # passes let one's picks bleed into the other's auto-follow
+            # chain (wrong blob picked, or the picked blob drifting partway
+            # through the clip), and both would leave the main UI's own
+            # live-scrubbing cache overwritten with default_mask_stack's
+            # choices instead of whatever it had actually been showing.
             #
             # Each pass's own cache starts as a COPY (never the live dict
             # itself, so nothing computed here ever writes back into
@@ -4026,7 +4088,6 @@ class Tab_Tracking_CV2(TabBase):
             # resolves to the exact same blob the user is currently seeing,
             # with the walk below only needing to newly resolve frames the
             # main UI genuinely never visited.
-            seen_cache = self._blob_centroid_cache.get(idx, {})
             mask_stack = mask_stack.copy()
             default_mask_stack = default_mask_stack.copy()
             mask_cache, default_cache = dict(seen_cache), dict(seen_cache)
@@ -4054,6 +4115,9 @@ class Tab_Tracking_CV2(TabBase):
                                 dilate_erode_settings=dilate_erode_settings,
                                 denoise_state=self.box_contrast.box_denoise.get_state(),
                                 manual_edit_settings=manual_edit_settings,
+                                blob_settings=blob_settings,
+                                blob_method_params=self._blob_method_params(idx),
+                                blob_seed_cache=blob_seed_cache,
                                 recompute_thresh_fn=lambda method, offset, blur, denoised_imgs=None:
                                     tr.create_masks(denoised_imgs if denoised_imgs is not None else self.nav_imgs,
                                                     out_rois, method, offset, blur))
@@ -4067,6 +4131,29 @@ class Tab_Tracking_CV2(TabBase):
             self.df_rois.at[idx, 'dilate_erode'] = dialog.get_dilate_erode_settings()
             self.df_rois.at[idx, 'edge'] = dialog.get_edge_settings()
             self.df_rois.at[idx, 'manual_edits'] = dialog.get_manual_edit_settings()
+            # Only write Blob Selection's segments back to this ROI's own
+            # df_rois['blob'] column - the main tab's separate, persistent,
+            # every-frame restriction (_resolve_blob_mask/apply_edge_mask,
+            # used by update_canvas/extraction everywhere, not just here) -
+            # if that was ALREADY an active feature for this ROI before
+            # Fine-Tune Mask even opened (blob_was_enabled). Otherwise, "Pick
+            # Blob" here is purely a local correction already baked directly
+            # into the returned mask_stack (df_rois['mask'] above) - writing
+            # its segments back too would silently turn that persistent
+            # main-tab restriction on for every OTHER frame as well
+            # (including ones never touched in this dialog session, each
+            # falling back to "largest blob" or a stale seed - readily just
+            # noise on a mask with several small spurious regions), which
+            # is not what picking a blob for one frame/segment here was
+            # ever meant to do.
+            if blob_was_enabled:
+                updated_blob = dialog.get_blob_settings()
+                if updated_blob is not None:
+                    self.df_rois.at[idx, 'blob'] = updated_blob
+                    # A fresh in-dialog seed invalidates the main UI's own
+                    # live-scrubbing auto-follow trail - same reasoning as
+                    # _split_blob_segment's own cache-drop.
+                    self._blob_centroid_cache.pop(idx, None)
             self._apply_dialog_settings_to_ui(dialog)
             edited_frames = dialog.get_edited_frame_indices()
             self.logger.info(
@@ -4076,17 +4163,23 @@ class Tab_Tracking_CV2(TabBase):
             self.update_canvas()
 
     def _apply_dialog_settings_to_ui(self, dialog):
-        """Sync MaskEditDialog's Threshold box values back into this tab's
-        own main controls on Save && Close, so whatever was left set there
-        is what "Extract!"/the live preview use next, instead of silently
-        reverting to whatever was set before the dialog was opened. Edge
-        Detection/Dilate-Erode/Mesh have no main-tab equivalent anymore (all
-        three are per-ROI, set only via the dialog's own Segments feature -
-        see open_fine_tune_mask_dialog, which round-trips them directly)."""
+        """Sync MaskEditDialog's Threshold controls' values back into this
+        tab's own main controls on Save && Close, so whatever was left set
+        there is what "Extract!"/the live preview use next, instead of
+        silently reverting to whatever was set before the dialog was
+        opened. Edge Detection/Dilate-Erode/Mesh have no main-tab equivalent
+        anymore (all three are per-ROI, set only via the dialog's own
+        Segments feature - see open_fine_tune_mask_dialog, which round-trips
+        them directly). No 'blur'/self.spinbox_blur sync any more - the
+        dialog's own former "ROI Blur" is gone (folded into its Denoise
+        box's own method/parameter, plus its "Apply denoising to:" choice -
+        see MaskEditDialog's own Threshold-merge comment), which has no
+        equivalent on this tab's own Threshold row to sync back into; this
+        tab's own separate ROI Blur spinbox (self.spinbox_blur) is untouched
+        by anything that happens inside the dialog now."""
         thresh = dialog.get_thresh_settings()
         if thresh is not None:
             self.combo_thresh_method.setCurrentText(thresh['method'])
-            self.spinbox_blur.setValue(thresh['blur'])
             self.slider_thresh.setValue(thresh['offset_raw'])
 
     def resolve_4d_files(self, path_4d):
@@ -4100,13 +4193,18 @@ class Tab_Tracking_CV2(TabBase):
         glob(path_4d, '*'), which picked up any stray non-signal file
         (comment.txt, pattern .txt files, logs, ...) alongside the real 4D
         signals and produced a false frame-count mismatch (or, for the
-        single-frame preview, silently extracted the wrong file)."""
+        single-frame preview, silently extracted the wrong file). 'Auto'
+        detects the actual extension present in path_4d instead of
+        matching everything."""
         if (self._nav_4d_files is not None and self._nav_4d_directory is not None
                 and os.path.normcase(os.path.normpath(self._nav_4d_directory))
                     == os.path.normcase(os.path.normpath(path_4d))):
             return [os.path.join(path_4d, fn) for fn in self._nav_4d_files]
         ext = self.combo_dtype_4d.currentText()
-        pattern = '*' if ext == 'All Files' else '*' + glob_ext_for_dtype(ext)
+        if ext == 'Auto':
+            detected = detect_4d_file_type(path_4d, self.logger)
+            ext = detected if detected is not None else '*'
+        pattern = '*' if ext == '*' else '*' + glob_ext_for_dtype(ext)
         return sorted(glob(os.path.join(path_4d, pattern)))
 
     def extract_3ded(self):
@@ -4162,7 +4260,7 @@ class Tab_Tracking_CV2(TabBase):
                 self.logger.info('3DED extraction cancelled by user (frame-count mismatch).')
                 return
 
-        dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fns_4d[0], self.combo_dtype_4d.currentText(), logger=self.logger)
         blur_sigma = self.spinbox_blur.value()
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
@@ -4488,7 +4586,7 @@ class Tab_Tracking_CV2(TabBase):
                     'The current frame has no matching 4D signal file in the folder.')
                 return
             fn = fns_4d[i_fr]
-        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText())
+        dtype = resolve_hdf5_dtype(fn, self.combo_dtype_4d.currentText(), logger=self.logger)
 
         scanSize = self.get_scan_size()
         if scanSize is None:  # "Auto": fall back to the loaded nav signal's own shape

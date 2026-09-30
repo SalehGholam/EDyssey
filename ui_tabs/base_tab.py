@@ -91,7 +91,7 @@ def build_left_panel(splitter, width_userInput):
 HDF5_EVENTEM_LABEL = '.hdf5 (eventem)'
 
 
-def resolve_hdf5_dtype(fn, combo_selection=None):
+def resolve_hdf5_dtype(fn, combo_selection=None, logger=None):
     """Return the dtype string to actually load `fn` with - its own file
     extension, except for an ambiguous '.hdf5' file.
 
@@ -103,11 +103,12 @@ def resolve_hdf5_dtype(fn, combo_selection=None):
     so a '.hdf5' file can only be resolved by asking the user:
     `combo_selection` is the tab's own "Data Type" combo's currently
     selected text - if it explicitly reads HDF5_EVENTEM_LABEL or '.hdf5',
-    that selection wins. Any other selection (e.g. 'All files'/'All
-    Files', or a mismatched one) falls back to eventem, matching this
-    app's original (pre-standard-hdf5-support) behaviour so existing
-    eventem exports keep loading unchanged unless the user deliberately
-    picks '.hdf5' (standard) instead.
+    that selection wins. 'Auto' peeks inside `fn` itself (see
+    detect_hdf5_label) instead of guessing blind. Any other/mismatched
+    selection falls back to eventem, matching this app's original
+    (pre-standard-hdf5-support) behaviour so existing eventem exports keep
+    loading unchanged unless the user deliberately picks '.hdf5'
+    (standard) or 'Auto' instead.
 
     Every other extension (.tpx3/.hspy/.zspy/.mib/.blo/...) is returned
     as-is - no ambiguity, so `combo_selection` is irrelevant.
@@ -117,6 +118,11 @@ def resolve_hdf5_dtype(fn, combo_selection=None):
         return ext
     if combo_selection == '.hdf5':
         return '.hdf5'
+    if combo_selection == 'Auto':
+        label = detect_hdf5_label(fn)
+        if logger is not None:
+            logger.info('Auto-detected 4D signal file type %r for %s', label, fn)
+        return '.hdf5' if label == '.hdf5' else '.hdf5_eventem'
     return '.hdf5_eventem'
 
 
@@ -128,6 +134,66 @@ def glob_ext_for_dtype(dtype):
     conventional/third-party one, so both combo entries must glob the
     same '*.hdf5' pattern."""
     return '.hdf5' if dtype == HDF5_EVENTEM_LABEL else dtype
+
+
+# Real (non-ambiguous) extensions this app can load as a 4D signal -
+# what detect_4d_file_type() scans a folder for, and what a plain-.hdf5
+# match is then further disambiguated with via detect_hdf5_label().
+KNOWN_4D_EXTENSIONS = ['.tpx3', '.hdf5', '.hspy', '.zspy', '.mib', '.blo']
+
+
+def detect_hdf5_label(fn):
+    """Distinguish eventem's own raw-`4D`-dataset HDF5 export layout from a
+    conventional/third-party HDF5 4D-STEM file by peeking at its top-level
+    keys (see resolve_hdf5_dtype's own docstring for why the plain
+    extension alone can't tell them apart). Returns HDF5_EVENTEM_LABEL or
+    '.hdf5'; defaults to HDF5_EVENTEM_LABEL (this app's original,
+    pre-standard-hdf5-support assumption) if the file can't be opened/
+    peeked at all."""
+    try:
+        import h5py
+        with h5py.File(fn, 'r') as f:
+            if '4D' in f.keys():
+                return HDF5_EVENTEM_LABEL
+    except Exception:
+        pass
+    return '.hdf5'
+
+
+def detect_4d_file_type(folder, logger=None):
+    """Best-effort auto-detection of which 4D-signal file type a folder
+    actually holds, by counting top-level files per known extension
+    (KNOWN_4D_EXTENSIONS) and returning the most common one as a "Data
+    Type" combo-compatible label (HDF5_EVENTEM_LABEL/'.hdf5' disambiguated
+    via detect_hdf5_label). Returns None if the folder has nothing
+    recognizable - callers should leave the combo/glob pattern unchanged
+    in that case rather than force a guess.
+
+    Used both to pre-select the combo right after a 4D-signal folder is
+    picked, and to resolve the 'Auto' combo entry itself when it's left
+    selected (see resolve_4d_files in tab_sam2.py/tab_tracking_cv2.py)."""
+    if not folder or not os.path.isdir(folder):
+        return None
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return None
+    counts = {}
+    for entry in entries:
+        ext = os.path.splitext(entry)[-1].lower()
+        if ext in KNOWN_4D_EXTENSIONS:
+            counts[ext] = counts.get(ext, 0) + 1
+    if not counts:
+        return None
+    best_ext = max(counts, key=counts.get)
+    if best_ext == '.hdf5':
+        sample = next(e for e in entries if os.path.splitext(e)[-1].lower() == '.hdf5')
+        label = detect_hdf5_label(os.path.join(folder, sample))
+    else:
+        label = best_ext
+    if logger is not None:
+        logger.info('Auto-detected 4D signal file type %r in %s', label, folder)
+    return label
 
 
 def get_existing_directory(parent, caption, start_dir=''):

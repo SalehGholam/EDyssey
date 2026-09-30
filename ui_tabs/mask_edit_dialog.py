@@ -6,9 +6,11 @@ Edge Detection post-processing the main tab uses - live, without baking it
 into the stored mask. Shared by Tab_SAM2 and Tab_Tracking_CV2 (see their own
 open_fine_tune_mask_dialog())."""
 import copy
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import PyQt5.QtWidgets as qtw
-from PyQt5.QtCore import Qt, QTimer, QRectF, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QRectF, QThreadPool, pyqtSignal
 from PyQt5.QtGui import QPainter, QPen, QColor, QIntValidator, QKeySequence
 from PyQt5.QtWidgets import QShortcut
 import matplotlib.patches as patches
@@ -19,7 +21,8 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.backend_bases import _Mode
 import EDyssey.io_utils as io
 from .ribbon import RibbonPanel, RibbonTool
-from .denoise_widget import DenoiseBox
+from .denoise_widget import DenoiseBox, apply_denoise_to_array
+from .worker_thread import WorkerThread_General
 
 _DEFAULT_MASK_ALPHA = 0.28  # starting value for both spinbox_initialMaskAlpha/spinbox_tunedMaskAlpha
 # tab:brown - the same hue as the Mesh box's own selected-cell highlight
@@ -50,16 +53,20 @@ _HELP_TEXT = (
     'key needed. Click the same button again, or another tool, to '
     'disarm/switch it. Same effect as the Ctrl/Shift shortcuts below, '
     'just without needing to hold a key.\n'
+    '  Pick Blob (only shown when this ROI has Blob Selection enabled - '
+    'see Blob Selection below)  ->  arm, then click a blob on the canvas to '
+    'restrict the frame/segment on screen to it - the only way to change a '
+    'blob choice; a bare click never does this on its own.\n'
     '  Undo / Redo  ->  step back/forward through mask edits (paint/rect '
-    'paint, D-pad grow/shrink, Reset Frame, Threshold changes, Reset to '
-    'Tracking\'s mask) - same as Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) below. '
-    'Jumps to whichever frame the undone/redone edit was on if it isn\'t '
-    'already on screen. Does NOT cover Dilate/Erode, Edge Detection, Mesh, '
-    'Blob Selection (live previews only, never touch the saved mask, so '
-    'reversing them is just changing the control back), or any segment '
-    'boundary/setting Reset Frame/Reset Segment/Reset to Tracking change - '
-    'those need a manual Split/Merge/re-tweak, or (for a full wipe) '
-    'confirming Reset to Tracking again is the only way back.\n'
+    'paint, D-pad grow/shrink, Reset Frame, Threshold changes, Pick Blob, '
+    'Reset to Tracking\'s mask) - same as Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) '
+    'below. Jumps to whichever frame the undone/redone edit was on if it '
+    'isn\'t already on screen. Does NOT cover Dilate/Erode, Edge Detection, '
+    'or Mesh (live previews only, never touch the saved mask, so reversing '
+    'them is just changing the control back), or any segment boundary/'
+    'setting Reset Frame/Reset Segment/Reset to Tracking change - those '
+    'need a manual Split/Merge/re-tweak, or (for a full wipe) confirming '
+    'Reset to Tracking again is the only way back.\n'
     '  Pan / Zoom (rectangle) / Home  ->  matplotlib\'s own pan/zoom-box/'
     'reset-view, same as the toolbar under the main tabs\' own canvases.\n'
     '  "?"  ->  this reference.\n'
@@ -79,10 +86,16 @@ _HELP_TEXT = (
     'side of the mask (arrow pointing away from center = grow, toward '
     'center = shrink).\n'
     '\n'
-    'Threshold (only shown when this mask is threshold-derived):\n'
-    '  Method/ROI Blur/Deviation rebuild the mask from the ROI live, for '
-    'just the frame on screen - "Apply to All Frames" propagates that to '
-    'every frame at once.\n'
+    'Denoise + Threshold (Threshold rows only shown when this mask is '
+    'threshold-derived):\n'
+    '  Folded into one box since they\'re really the same step - "Apply '
+    'denoising to:" picks whether the Denoise method feeds the DISPLAYED '
+    'image or THRESHOLDING (the default) - the mask below is thresholded '
+    'from whichever one it feeds, live, for just the frame on screen; '
+    '"Apply to All Frames" propagates that to every frame at once. "Apply '
+    'to Segment" pre-denoises the whole segment currently on screen in the '
+    'background (progress bar shown) instead of one frame at a time as you '
+    'scrub to it; "Reset" discards that pre-denoised cache.\n'
     '\n'
     'Frame Navigation & Segments:\n'
     '  ◀ / ▶ step one frame at a time; "Go to:" jumps straight to a typed '
@@ -109,7 +122,11 @@ _HELP_TEXT = (
     'only that frame. Either way, '
     'the result is an ordinary segment - scrubbing back to an already '
     'frame-isolated frame later shows its own settings regardless of '
-    'which mode is currently selected.\n'
+    'which mode is currently selected. Pick Blob (see Blob Selection below) '
+    'follows this same choice, against its own independent segment '
+    'timeline - "Segment" reseeds every frame in the range currently '
+    'covering the clicked frame (auto-following outward from the click in '
+    'both directions), "Single Frame" only that one frame.\n'
     '  Three reset actions cover every scope, narrowest to widest: '
     '"Reset Frame" discards this frame\'s painted mask AND (isolating it '
     'first if needed) its Dilate/Erode/Edge Detection/Mesh settings, '
@@ -127,6 +144,21 @@ _HELP_TEXT = (
     'those effects reprocessing them along with the rest of the mask. '
     'Uncheck to go back to effects applying uniformly everywhere, manual '
     'edits included.\n'
+    '\n'
+    'Blob Selection (only shown when this ROI has it enabled on the main '
+    'tab):\n'
+    '  This ROI\'s threshold mask can contain more than one separate '
+    'connected region (e.g. two nearby particles) - "Pick Blob" (ribbon, '
+    'under the canvas) restricts the frame/segment on screen to just one of '
+    'them, the one nearest wherever you click. Unlike Dilate/Erode/Edge '
+    'Detection/Mesh, this DOES change the returned mask directly (undo-able, '
+    'Ctrl+Z) rather than being a live preview - it\'s a correction to the '
+    'base mask itself. Scoped by Edit Scope (see above) against its own '
+    'independent segment timeline, so different frame ranges can each keep '
+    'their own blob choice, same as Dilate/Erode/Edge Detection/Mesh do '
+    'against theirs. "Show Blobs" outlines every detected blob on the '
+    'current frame in cyan, with whichever one is currently kept '
+    'highlighted in green, so you can see the candidates before clicking.\n'
     '\n'
     'Dilate / Erode Mask:\n'
     '  Live preview only - never changes the returned mask. Grows or '
@@ -417,7 +449,9 @@ class MaskEditDialog(qtw.QDialog):
     def __init__(self, parent, mask_stack, bg_stack=None, start_frame=0, logger=None,
                  default_mask_stack=None, edge_settings=None,
                  thresh_settings=None, recompute_thresh_fn=None, mesh_settings=None,
-                 dilate_erode_settings=None, denoise_state=None, manual_edit_settings=None):
+                 dilate_erode_settings=None, denoise_state=None, manual_edit_settings=None,
+                 blob_raw_mask_stack=None, blob_settings=None, blob_method_params=None,
+                 blob_seed_cache=None):
         super().__init__(parent)
         self.setWindowTitle('Fine-Tune Mask')
         # Maximize button too (off by default on a QDialog) - the image
@@ -478,6 +512,72 @@ class MaskEditDialog(qtw.QDialog):
         self.bg_stack = bg_stack
         # Cache for _denoised_bg_stack() - see its own docstring.
         self._denoised_threshold_stack = None
+        # frame_idx -> already-denoised background, populated in parallel by
+        # "Apply to Segment" (see _apply_denoise_to_segment) - consulted by
+        # both _bg_frame (live display) and _denoised_bg_stack (Threshold/
+        # Blob Selection's own whole-stack recompute) before falling back to
+        # denoising that one frame on the spot, so a segment that's already
+        # been "Applied" doesn't get redenoised one frame at a time.
+        # Cleared by _reset_denoise_segment_cache and any Denoise method/
+        # parameter change (_on_denoise_changed) - it's now stale.
+        self._denoise_segment_cache = {}
+        # Runs "Apply to Segment"'s background job - the parent tab's own
+        # QThreadPool if it has one (every TabBase subclass does), else a
+        # small dedicated pool of this dialog's own so it still works
+        # standalone (e.g. under test).
+        self._threadpool = getattr(parent, 'threadpool', None) or QThreadPool(self)
+        # Blob Selection: built whenever there's SOME raw (possibly multi-
+        # blob) candidate source to pick from - either this dialog's own
+        # live Denoise+Threshold recompute (recompute_thresh_fn given - see
+        # _blob_source_stack/_recompute_threshold_stack, ROI Tracker's own
+        # case: "denoised, thresholded, within the ROI" per the requested
+        # pipeline order) or, for a caller with no threshold step at all
+        # (SAM2 - its masks come from the segmentation network, not a
+        # threshold), a fixed array passed in directly (`blob_raw_mask_stack`
+        # - SAM2's own mask_default). Never both at once in practice, but
+        # _blob_source_stack() checks recompute_thresh_fn first regardless.
+        # None from _blob_source_stack() (no recompute_thresh_fn AND no
+        # fixed array given) means no Blob Selection box at all, exactly
+        # like recompute_thresh_fn=None on its own skips the Threshold box.
+        #
+        # Unlike Dilate/Erode/Edge Detection/Mesh (pure live previews,
+        # mask_stack itself never changes), picking a different blob DOES
+        # mutate mask_stack directly (via _push_undo) - it's a correction to
+        # the base mask itself, not a preview layer.
+        self._blob_raw_stack_fixed = (np.asarray(blob_raw_mask_stack).astype(bool)
+                                      if blob_raw_mask_stack is not None else None)
+        # Cache for _blob_source_stack()'s live-recompute branch - see its
+        # own docstring; invalidated (like _denoised_threshold_stack above)
+        # by _on_denoise_changed, and additionally by _threshold_live_update/
+        # _apply_threshold_all, since the Threshold box changing obviously
+        # changes the raw blob candidates too.
+        self._blob_threshold_cache = None
+        # Whether Blob Selection exists at all for this dialog - computed
+        # ONCE, here, rather than via _blob_source_stack() itself, because
+        # that recomputes from Threshold-box widgets (combo_threshMethod
+        # etc.) that don't exist yet this early in __init__ (the ribbon,
+        # built before any of the left-panel option boxes, needs this same
+        # flag to decide whether to include the "Pick Blob" tool).
+        self._blob_enabled_flag = recompute_thresh_fn is not None or self._blob_raw_stack_fixed is not None
+        self._blob_method, self._blob_params = blob_method_params or (io.DEFAULT_BLOB_METHOD, {})
+        # Own private copy - segment boundaries/seeds picked in here never
+        # write back to the caller's own settings until get_blob_settings()
+        # is read on Accept (same convention as mesh/dilate_erode/edge).
+        self._blob_segments = copy.deepcopy((blob_settings or {}).get('segments')) or []
+        # Own private auto-follow history, seeded from the caller's live
+        # one (the main UI's current per-frame choices) so a frame already
+        # visited there resolves to the exact same blob here too - see
+        # Tab_Tracking_CV2._resolve_blob_mask's own docstring for why this
+        # needs to be a COPY, never the live dict itself.
+        self._blob_centroid_cache = dict(blob_seed_cache or {})
+        self._blob_overlay_artists = []
+        # True while the ribbon's "Pick Blob" tool is armed, waiting for the
+        # next canvas click to restrict the current frame/segment to
+        # whichever blob is nearest it - see _on_ribbon_tool_changed/
+        # _pick_blob_at. Always defined (even when self._blob_enabled_flag
+        # is False, no Blob Selection box at all) so _apply_ribbon_cursor/
+        # _on_press can check it unconditionally.
+        self._picking_blob = False
         # Live per-session opacity for each mask layer - see spinbox_
         # initialMaskAlpha/spinbox_tunedMaskAlpha and _mask_rgba/
         # _initial_mask_rgba. Set here (before the widgets exist) so
@@ -765,7 +865,7 @@ class MaskEditDialog(qtw.QDialog):
         # main tabs. Deliberately doesn't duplicate the D-pad/Threshold/Edge
         # Detection/Mesh controls below - those already have their own
         # always-visible buttons, unlike these canvas-gesture actions.
-        self.ribbon = RibbonPanel([
+        ribbon_tools = [
             RibbonTool('paint_in', 'paint_in', 'Paint pixels IN (add to mask) - '
                       'click/drag on the canvas (same as Ctrl+Left-Click)', 'tool'),
             RibbonTool('paint_out', 'paint_out', 'Paint pixels OUT (remove from mask) - '
@@ -774,6 +874,20 @@ class MaskEditDialog(qtw.QDialog):
                       'drag on the canvas (same as Shift+Left-drag)', 'tool'),
             RibbonTool('rect_out', 'rect_out', 'Paint a rectangular region OUT - '
                       'drag on the canvas (same as Shift+Right-drag)', 'tool'),
+        ]
+        if self._blob_enabled_flag:
+            # Only for a ROI that actually has Blob Selection enabled (see
+            # __init__'s own comment on self._blob_enabled_flag) - grouped
+            # with the other canvas click tools above, ahead of Undo/Redo.
+            ribbon_tools.append(RibbonTool(
+                'pick_blob', 'pick_blob',
+                'Armed: click a blob on the canvas to restrict THIS FRAME to it (this '
+                "ROI's threshold mask can contain more than one separate connected "
+                'region, e.g. two nearby particles) - same effect as clicking the main '
+                'tab\'s own "ROI with Threshold" panel while Blob Selection is enabled '
+                'there. Only changes the frame on screen (undo-able, Ctrl+Z) - it does '
+                "not re-derive any other frame's already-resolved mask.", 'tool'))
+        ribbon_tools += [
             RibbonTool('undo', 'undo', 'Undo the last mask edit (Ctrl+Z)',
                       'action', self._do_undo),
             RibbonTool('redo', 'redo', 'Redo the last undone mask edit (Ctrl+Y)',
@@ -797,7 +911,8 @@ class MaskEditDialog(qtw.QDialog):
             RibbonTool('sep2', kind='separator'),
             RibbonTool('help', 'help', 'Show mouse/keyboard controls for this dialog',
                       'action', self._show_help_dialog),
-        ], parent=self, orientation='horizontal')
+        ]
+        self.ribbon = RibbonPanel(ribbon_tools, parent=self, orientation='horizontal')
         self.ribbon.toolChanged.connect(self._on_ribbon_tool_changed)
         QShortcut(QKeySequence('Ctrl+Z'), self, self._do_undo)
         QShortcut(QKeySequence('Ctrl+Y'), self, self._do_redo)
@@ -871,6 +986,44 @@ class MaskEditDialog(qtw.QDialog):
         self.box_denoise.set_state(denoise_state)
         self.box_denoise.settingsChanged.connect(self._on_denoise_changed)
         self.box_denoise.checkMethodsRequested.connect(self._show_denoise_check_methods)
+        # "Apply to Segment": pre-denoises every frame in the segment
+        # currently on screen, in parallel (ThreadPoolExecutor - same
+        # approach as the main tab's own multi-frame denoise, see
+        # ContrastScalingBox.rescale_async), instead of the default lazy
+        # one-frame-at-a-time behavior - a slow method (e.g. Non-Local
+        # Means) on a long segment can otherwise make scrubbing, or the
+        # first Blob Selection/Threshold "Apply to All Frames" that touches
+        # these frames, noticeably sluggish. Deliberately segment-scoped,
+        # not whole-stack, matching every other option's own segment-first
+        # philosophy in this dialog - added into box_denoise's own layout
+        # (not a separate box) so it reads as part of the same Denoise
+        # control, right beside "Test Methods".
+        if self.bg_stack is not None:
+            row_denoiseApply = qtw.QHBoxLayout()
+            self.button_denoiseApplySegment = qtw.QPushButton('Apply to Segment')
+            self.button_denoiseApplySegment.setToolTip(
+                'Run the current Denoise method on every frame in the segment '
+                'currently on screen (not the whole stack), in the background '
+                "across multiple threads - speeds up scrubbing and any "
+                "subsequent Threshold/Blob Selection recompute within this "
+                'segment, instead of denoising each frame on the spot as you '
+                'reach it.')
+            self.button_denoiseApplySegment.clicked.connect(self._apply_denoise_to_segment)
+            row_denoiseApply.addWidget(self.button_denoiseApplySegment)
+            self.button_denoiseReset = qtw.QPushButton('Reset')
+            self.button_denoiseReset.setToolTip(
+                'Discard the pre-denoised cache from "Apply to Segment", going '
+                'back to denoising each frame live on demand as you scrub to it')
+            self.button_denoiseReset.clicked.connect(self._reset_denoise_segment_cache)
+            row_denoiseApply.addWidget(self.button_denoiseReset)
+            self.box_denoise.layout().addLayout(row_denoiseApply)
+            self.progressbar_denoise = qtw.QProgressBar()
+            self.progressbar_denoise.setVisible(False)
+            self.box_denoise.layout().addWidget(self.progressbar_denoise)
+        else:
+            self.button_denoiseApplySegment = None
+            self.button_denoiseReset = None
+            self.progressbar_denoise = None
         # img_bg was already created above (before this box existed) from
         # the plain, undenoised bg0 - refresh it now that denoise_state has
         # actually been applied to box_denoise, so the seeded state shows
@@ -978,9 +1131,12 @@ class MaskEditDialog(qtw.QDialog):
 
         #%% D-pad grow/shrink buttons - arranged spatially (top/left/right/
         # bottom of a 3x3 grid) instead of a plain list, arrows pointing away
-        # from center = grow, toward center = shrink.
+        # from center = grow, toward center = shrink. Not added to
+        # grid_boxes here - see the requested pipeline order (Denoise ->
+        # Threshold -> Blob Selection -> Grow/Shrink -> Dilate/Erode -> Edge
+        # Detection -> Mesh) further down, where box_directional's own
+        # addWidget call actually happens, right after Blob Selection's.
         box_directional = qtw.QGroupBox('Grow / Shrink Mask (1 px per click)')
-        grid_boxes.addWidget(box_directional)
         grid = qtw.QGridLayout()
         box_directional.setLayout(grid)
 
@@ -1015,46 +1171,62 @@ class MaskEditDialog(qtw.QDialog):
         label_center.setAlignment(Qt.AlignCenter)
         grid.addWidget(label_center, 1, 1)
 
-        #%% threshold - rebuilds the base mask itself from the ROI. Changing
-        # method/blur/deviation applies live to just the current frame (like
-        # Edge Detection below, minus the "never baked in" part - a fresh
-        # re-threshold from raw ROI data is idempotent w.r.t. its own
-        # parameters, so overwriting mask_stack[frame] outright each change
-        # doesn't compound); only propagating that to every frame is a
-        # deliberate, explicit "Apply to All Frames" action. Mirrors the main
-        # tab's own Threshold/ROI Blur/Deviation controls, only shown when
-        # the caller's masks are actually threshold-derived
-        # (recompute_thresh_fn given - see class docstring). Grid-placed
-        # below alongside Dilate/Erode (row 1) - box_thresh stays None (see
-        # else branch) when this tab has no Threshold box at all, so that
-        # row just starts with Dilate/Erode instead of leaving a gap.
+        #%% threshold - folded into the Denoise box itself (not a separate
+        # groupbox any more): denoising and thresholding are really the same
+        # underlying step (turn the raw image into something a threshold can
+        # binarize cleanly) - the old separate "ROI Blur" spinbox here was
+        # just a second, always-Gaussian blur stacked on top of whatever the
+        # Denoise box already did, applied only to what got thresholded, not
+        # what was ever shown. Removed entirely - the SAME Denoise method/
+        # parameter now does that job, and "Apply denoising to:" below picks
+        # which of the two (the displayed image, or the image used to
+        # recompute the mask) it actually feeds, instead of silently doing
+        # both like the old, separate "preview only" Denoise plus its own
+        # implicit threshold-blur used to. Rebuilding the mask from the ROI
+        # this way still applies live to just the current frame on any
+        # change (like Edge Detection below, minus the "never baked in"
+        # part - a fresh re-threshold from raw ROI data is idempotent w.r.t.
+        # its own parameters, so overwriting mask_stack[frame] outright each
+        # change doesn't compound); only propagating that to every frame is
+        # a deliberate, explicit "Apply to All Frames" action. Only present
+        # when the caller's masks are actually threshold-derived
+        # (recompute_thresh_fn given - see class docstring) - SAM2's own
+        # Denoise stays exactly as before, display-only, no radio/threshold
+        # controls at all.
         if self.recompute_thresh_fn is not None:
             thresh_settings = thresh_settings or {}
-            box_thresh = qtw.QGroupBox('Threshold (rebuild mask from ROI)')
-            layout_thresh = qtw.QVBoxLayout()
-            box_thresh.setLayout(layout_thresh)
+            denoise_layout = self.box_denoise.layout()
+
+            row_denoiseTarget = qtw.QHBoxLayout()
+            row_denoiseTarget.addWidget(qtw.QLabel('Apply denoising to:'))
+            self.radio_denoiseDisplay = qtw.QRadioButton('Displayed Image')
+            self.radio_denoiseDisplay.setToolTip(
+                "Denoise the image you SEE on the canvas; the mask below is "
+                'thresholded from the RAW (undenoised) image instead.')
+            self.radio_denoiseThreshold = qtw.QRadioButton('Thresholding (behind the scenes)')
+            self.radio_denoiseThreshold.setChecked(True)
+            self.radio_denoiseThreshold.setToolTip(
+                'Denoise the image the mask below is thresholded from; the canvas '
+                'itself keeps showing the RAW (undenoised) image, so you can still '
+                'judge true noise/contrast by eye while getting a cleaner mask.')
+            self._denoise_target_group = qtw.QButtonGroup(self)
+            self._denoise_target_group.addButton(self.radio_denoiseDisplay)
+            self._denoise_target_group.addButton(self.radio_denoiseThreshold)
+            for radio in (self.radio_denoiseDisplay, self.radio_denoiseThreshold):
+                radio.toggled.connect(self._on_denoise_target_changed)
+                row_denoiseTarget.addWidget(radio)
+            denoise_layout.addLayout(row_denoiseTarget)
 
             row_t1 = qtw.QHBoxLayout()
-            layout_thresh.addLayout(row_t1)
             row_t1.addWidget(qtw.QLabel('Threshold'))
             self.combo_threshMethod = qtw.QComboBox()
             self.combo_threshMethod.addItems(['li', 'otsu', 'yen', 'mean'])
             self.combo_threshMethod.setCurrentText(thresh_settings.get('method', 'li'))
             row_t1.addWidget(self.combo_threshMethod)
-            row_t1.addWidget(qtw.QLabel('ROI Blur'))
-            self.spinbox_threshBlur = qtw.QDoubleSpinBox()
-            self.spinbox_threshBlur.setFixedWidth(60)
-            # Same Gaussian-blur-sigma convention as the "Adjust Contrast"
-            # box's own Denoise control - 0 means no blur.
-            self.spinbox_threshBlur.setRange(0.0, 20.0)
-            self.spinbox_threshBlur.setSingleStep(0.1)
-            self.spinbox_threshBlur.setDecimals(1)
-            self.spinbox_threshBlur.setValue(thresh_settings.get('blur', 0))
-            row_t1.addWidget(self.spinbox_threshBlur)
             row_t1.addStretch(1)
+            denoise_layout.addLayout(row_t1)
 
             row_t2 = qtw.QHBoxLayout()
-            layout_thresh.addLayout(row_t2)
             row_t2.addWidget(qtw.QLabel('Deviation'))
             self.slider_threshDev = qtw.QSlider(Qt.Horizontal)
             self.slider_threshDev.setRange(0, 200)
@@ -1063,24 +1235,31 @@ class MaskEditDialog(qtw.QDialog):
             self.button_threshReset = qtw.QPushButton('Reset')
             self.button_threshReset.clicked.connect(lambda: self.slider_threshDev.setValue(100))
             row_t2.addWidget(self.button_threshReset)
+            denoise_layout.addLayout(row_t2)
 
             for signal in (self.combo_threshMethod.currentIndexChanged,
-                          self.spinbox_threshBlur.valueChanged,
                           self.slider_threshDev.valueChanged):
                 signal.connect(self._threshold_live_update)
 
             row_t3 = qtw.QHBoxLayout()
-            layout_thresh.addLayout(row_t3)
             row_t3.addStretch(1)
             self.button_applyThreshAll = qtw.QPushButton('Apply to All Frames')
             self.button_applyThreshAll.setToolTip(
                 'Recompute every frame\'s mask from the threshold settings above')
             self.button_applyThreshAll.clicked.connect(self._apply_threshold_all)
             row_t3.addWidget(self.button_applyThreshAll)
+            denoise_layout.addLayout(row_t3)
+            # img_bg's very first paint (right after self.box_denoise was
+            # built, well before radio_denoiseDisplay/radio_denoiseThreshold
+            # existed - see _bg_frame's own getattr guard) always denoised,
+            # same as a caller with no radio at all - correct it now that
+            # the radio's real default ("Thresholding") actually exists.
+            if self.bg_stack is not None:
+                self.img_bg.set_data(self._bg_frame(self.frame))
         else:
-            box_thresh = None
+            self.radio_denoiseDisplay = None
+            self.radio_denoiseThreshold = None
             self.combo_threshMethod = None
-            self.spinbox_threshBlur = None
             self.slider_threshDev = None
 
         #%% edge detection - live preview only (see class docstring). Not
@@ -1213,15 +1392,124 @@ class MaskEditDialog(qtw.QDialog):
                        self.checkbox_dilateDirectional.stateChanged, self.spinbox_dilateDirection.valueChanged):
             signal.connect(lambda *_: self._on_segment_widgets_changed())
 
-        # Threshold, if this tab has one.
-        if box_thresh is not None:
-            grid_boxes.addWidget(box_thresh)
+        #%% Blob Selection, if this ROI has it enabled (see class
+        # docstring/__init__'s own comment on self._blob_enabled_flag). Picking
+        # a different blob only ever happens via the ribbon's "Pick Blob"
+        # icon under the canvas (see _on_ribbon_tool_changed/_on_press) -
+        # deliberately NOT a free click/modifier shortcut like paint/rect
+        # (those encode add/remove via left/right-click; a bare click here
+        # would be too easy to trigger by accident while just looking at
+        # the mask). Like Dilate/Erode/Edge Detection/Mesh, different
+        # segments can have their own blob choice - Edit Scope (above the
+        # canvas) governs whether a pick applies to just this frame or the
+        # whole segment currently covering it, same as those three (see
+        # _pick_blob_at). Placed right above Edge Detection/Dilate-Erode
+        # since it's logically the first step of the pipeline (raw
+        # threshold -> blob -> Dilate/Erode -> Edge Detection -> Mesh),
+        # even though - unlike those three - it mutates mask_stack directly
+        # rather than being a live-preview layer.
+        if self._blob_enabled_flag:
+            box_blob = qtw.QGroupBox('Blob Selection')
+            layout_blob = qtw.QVBoxLayout(box_blob)
+            # Master on/off for the whole box - unlike Dilate/Erode/Edge
+            # Detection's own "Enable" (a live-preview toggle, mask_stack
+            # itself never changes either way), Blob Selection mutates
+            # mask_stack directly when used, so unchecking this doesn't
+            # undo pixels already picked into the mask - it just stops
+            # offering "Pick Blob" going forward AND (see get_blob_settings)
+            # turns off whatever persistent, every-frame restriction this
+            # ROI's segments would otherwise apply on the main tab once
+            # this dialog closes.
+            #
+            # Starts CHECKED whenever this ROI already has an active blob
+            # choice (inherited via blob_settings) - NOT always-unchecked:
+            # Tab_Tracking_CV2.open_fine_tune_mask_dialog only ever writes
+            # get_blob_settings() back to this ROI's persisted settings when
+            # Blob Selection was ALREADY active on the main tab before this
+            # dialog opened (blob_was_enabled) - that's the real safety net
+            # against silently turning the restriction ON for a ROI that
+            # never had it. Defaulting this checkbox to unchecked regardless
+            # would instead silently turn an ALREADY-active restriction OFF
+            # every time this dialog is merely opened and accepted, without
+            # the user ever touching Blob Selection at all - itself a worse
+            # bug than the one this checkbox exists to guard against.
+            self.checkbox_blobActive = qtw.QCheckBox('Active')
+            self.checkbox_blobActive.setChecked(
+                any(s.get('enabled') for s in self._blob_segments))
+            self.checkbox_blobActive.setToolTip(
+                'Whether Blob Selection applies at all. Unchecked: "Pick Blob" is '
+                "disabled here, Show Blobs stops drawing, and (once this dialog is "
+                "closed) any restriction this ROI's Blob Selection would otherwise "
+                'apply on the main tab is turned off too - already-picked pixels in '
+                'the mask itself are not undone, this just stops applying/offering '
+                'the restriction going forward.')
+            self.checkbox_blobActive.stateChanged.connect(self._on_blob_active_toggled)
+            layout_blob.addWidget(self.checkbox_blobActive)
+            self.label_blobHint = qtw.QLabel(
+                'Use the "Pick Blob" icon under the canvas to choose a different '
+                "blob for this frame/segment (see Edit Scope above).")
+            self.label_blobHint.setWordWrap(True)
+            layout_blob.addWidget(self.label_blobHint)
 
-        # Edge Detection directly above Dilate/Erode - both apply to the
+            # Segmentation method - same options/params as the main tab's
+            # own Blob Settings dialog (blob_segmentation_dialog.py), which
+            # only exists for ROI Tracker - inlined here instead so SAM2
+            # objects (which have no such dialog of their own) can also pick
+            # a splitting method for touching/overlapping blobs, not just
+            # 'Connected Components'. An intensity-based method (e.g.
+            # Watershed - Intensity) is skipped from the list entirely if
+            # there's no background image at all to key it off (see
+            # _blob_labels_for_frame's own img_cut, which is this dialog's
+            # live-denoised background - _denoised_bg_stack).
+            row_blobMethod = qtw.QHBoxLayout()
+            row_blobMethod.addWidget(qtw.QLabel('Method'))
+            self.combo_blobMethod = qtw.QComboBox()
+            for method_id, spec in io.BLOB_SEGMENTATION_METHODS.items():
+                if spec['needs_intensity'] and self.bg_stack is None:
+                    continue
+                self.combo_blobMethod.addItem(spec['label'], method_id)
+            found = self.combo_blobMethod.findData(self._blob_method)
+            self.combo_blobMethod.setCurrentIndex(found if found >= 0 else 0)
+            self._blob_method = self.combo_blobMethod.currentData()
+            self.combo_blobMethod.currentIndexChanged.connect(self._on_blob_method_changed)
+            row_blobMethod.addWidget(self.combo_blobMethod, 1)
+            layout_blob.addLayout(row_blobMethod)
+
+            self.form_blobParams = qtw.QFormLayout()
+            layout_blob.addLayout(self.form_blobParams)
+            self._blob_param_widgets = {}
+            self._rebuild_blob_param_form()
+
+            self.checkbox_showBlobs = qtw.QCheckBox('Show Blobs')
+            self.checkbox_showBlobs.setChecked(True)
+            self.checkbox_showBlobs.setToolTip(
+                "Outline every detected blob on the current frame's raw threshold "
+                'mask (cyan) and highlight the one currently kept (green), so you '
+                'can see the candidates before picking one')
+            self.checkbox_showBlobs.stateChanged.connect(lambda *_: self._redraw_mask())
+            layout_blob.addWidget(self.checkbox_showBlobs)
+            grid_boxes.addWidget(box_blob)
+            # Sync the ribbon/Show Blobs/Method widgets' enabled state to
+            # checkbox_blobActive's own starting value (see its own
+            # setChecked call above) - same widgets _on_blob_active_toggled
+            # itself later toggles on every change.
+            self._on_blob_active_toggled()
+        else:
+            self.label_blobHint = None
+            self.checkbox_showBlobs = None
+            self.combo_blobMethod = None
+            self.checkbox_blobActive = None
+
+        # Grow/Shrink Mask (box_directional, built earlier - see its own
+        # comment) goes here in the requested pipeline order: after Blob
+        # Selection, before Dilate/Erode.
+        grid_boxes.addWidget(box_directional)
+
+        # Dilate/Erode directly above Edge Detection - both apply to the
         # same mask, in that order (see _effective_mask), so reads more
         # naturally grouped together.
-        grid_boxes.addWidget(box_edge)
         grid_boxes.addWidget(box_dilate)
+        grid_boxes.addWidget(box_edge)
 
         #%% mesh - live preview only, like Edge Detection above, but the
         # selected cells (not just enabled/angle/cell size) are themselves
@@ -1571,7 +1859,37 @@ class MaskEditDialog(qtw.QDialog):
         self.img_mask.set_data(self._mask_rgba(self._effective_mask(self.frame)))
         self._redraw_mesh_overlay()
         self._redraw_tilt_axis_overlay()
+        self._redraw_blob_overlay()
         self._blit_mask_display()
+
+    def _redraw_blob_overlay(self):
+        """"Show Blobs" (Blob Selection box): outline every detected blob in
+        this frame's RAW (possibly multi-blob) threshold mask in cyan, plus
+        the one currently kept (mask_stack[frame]) in green on top, so the
+        candidates are visible before/while using "Pick Blob" - a no-op
+        (clears whatever was drawn before) when this ROI has no Blob
+        Selection box at all, or the checkbox is off. Contour, not
+        cv2.findContours, on a plain boolean field - matplotlib's own
+        contour already traces one closed loop per disjoint connected
+        region, which is all "outline the blobs" needs, without a separate
+        connected-components pass."""
+        for artist in self._blob_overlay_artists:
+            artist.remove()
+        self._blob_overlay_artists = []
+        if (not self._blob_enabled_flag or not self.checkbox_blobActive.isChecked()
+                or not self.checkbox_showBlobs.isChecked()):
+            return
+        source = self._blob_source_stack()
+        if source is None:
+            return
+        raw = source[self.frame]
+        if raw.any():
+            self._blob_overlay_artists.append(
+                self.ax.contour(raw.astype(float), levels=[0.5], colors='cyan', linewidths=0.8))
+        chosen = self.mask_stack[self.frame]
+        if chosen.any():
+            self._blob_overlay_artists.append(
+                self.ax.contour(chosen.astype(float), levels=[0.5], colors='lime', linewidths=1.2))
 
     def _blit_mask_display(self):
         """Blit the background image, mask overlay, and Mesh/tilt-axis
@@ -1586,7 +1904,8 @@ class MaskEditDialog(qtw.QDialog):
         overlay - a contour set can't just have its data updated), so
         they're read fresh here rather than cached, the same convention
         as the main tabs' own per-frame ROI-rectangle overlays."""
-        dynamic = [self.img_bg, self.img_initial_mask, self.img_mask] + self._mesh_grid_artists
+        dynamic = ([self.img_bg, self.img_initial_mask, self.img_mask]
+                  + self._mesh_grid_artists + self._blob_overlay_artists)
         if self._mesh_cell_artist is not None:
             dynamic.append(self._mesh_cell_artist)
         if self._tilt_axis_line_artist is not None:
@@ -2109,6 +2428,7 @@ class MaskEditDialog(qtw.QDialog):
             return
         self._picking_mesh_center = self.button_meshCenterClick.isChecked()
         if self._picking_mesh_center:
+            self.ribbon.clear_active_tool()  # only one click-driven mode at a time
             self.canvas.setCursor(Qt.CrossCursor)
         else:
             self._apply_ribbon_cursor()
@@ -2402,8 +2722,29 @@ class MaskEditDialog(qtw.QDialog):
     def _bg_frame(self, frame):
         """The displayed background image for `frame` - box_denoise's
         current method/parameter applied fresh on top of the caller's
-        contrast-only bg_stack (see class docstring/__init__). The single
-        place every background-image read in this dialog goes through."""
+        contrast-only bg_stack (class docstring/__init__), using this
+        segment's own pre-denoised cache (see _apply_denoise_to_segment) if
+        it's already there. For a threshold-derived caller (ROI Tracker),
+        only when "Apply denoising to:" (see the Denoise box's own
+        construction comment) is set to "Displayed Image" - set to
+        "Thresholding" instead (the default), the canvas shows the RAW,
+        undenoised frame while the Denoise method still feeds the mask
+        recompute (_denoised_bg_stack). Always denoises for a non-threshold
+        caller (SAM2 - no radio, no ambiguity, matches this box's original
+        pre-Threshold-merge behavior exactly). Also denoises before the
+        radio itself exists yet (getattr guard) - __init__ seeds img_bg's
+        very first frame from this before building the Threshold-merge
+        block further down; harmless either way, since the next real
+        redraw (once construction finishes) re-reads the radio correctly.
+        The single place every background-image read in this dialog goes
+        through."""
+        radio_display = getattr(self, 'radio_denoiseDisplay', None)
+        if self.recompute_thresh_fn is not None and radio_display is not None \
+                and not radio_display.isChecked():
+            return self.bg_stack[frame]
+        cached = self._denoise_segment_cache.get(frame)
+        if cached is not None:
+            return cached
         return self.box_denoise.apply(self.bg_stack[frame])
 
     def _denoised_bg_stack(self):
@@ -2418,12 +2759,16 @@ class MaskEditDialog(qtw.QDialog):
         _bg_frame's own single-frame, always-fresh read) because denoising
         the FULL-RESOLUTION stack for every frame at once - unlike the
         Threshold box's own cheap, ROI-cropped "ROI Blur" - can be
-        genuinely slow for a slower method (e.g. non-local means)."""
+        genuinely slow for a slower method (e.g. non-local means). Reuses
+        whichever frames "Apply to Segment" already pre-denoised
+        (self._denoise_segment_cache) instead of redoing them here."""
         if self.bg_stack is None:
             return None
         if self._denoised_threshold_stack is None:
-            self._denoised_threshold_stack = np.stack(
-                [self.box_denoise.apply(img) for img in self.bg_stack])
+            self._denoised_threshold_stack = np.stack([
+                self._denoise_segment_cache[i] if i in self._denoise_segment_cache
+                else self.box_denoise.apply(img)
+                for i, img in enumerate(self.bg_stack)])
         return self._denoised_threshold_stack
 
     def _on_denoise_changed(self):
@@ -2444,6 +2789,34 @@ class MaskEditDialog(qtw.QDialog):
         denoised image", even though the very next Threshold tweak would
         have picked it up automatically."""
         self._denoised_threshold_stack = None
+        # Every cached frame in here was denoised with the OLD method/
+        # parameter - stale the moment either changes.
+        self._denoise_segment_cache = {}
+        self._refresh_after_denoise_setting_change()
+
+    def _on_denoise_target_changed(self, checked):
+        """"Apply denoising to:" (Displayed Image / Thresholding) toggled -
+        same refresh as a Denoise method/parameter change (the previously-
+        cached denoise output itself is still valid, just no longer used
+        for the same purpose), so both the canvas and the mask immediately
+        reflect which one the Denoise method now feeds. `checked` is the
+        new state of whichever radio emitted this - ignored since either
+        radio toggling means the OTHER one just changed too (QButtonGroup
+        exclusivity), and the refresh is identical either way; connecting
+        both to the same slot would otherwise double-refresh once for the
+        newly-checked button and once for the newly-unchecked one."""
+        if not checked:
+            return
+        self._refresh_after_denoise_setting_change()
+
+    def _refresh_after_denoise_setting_change(self):
+        """Shared tail of _on_denoise_changed/_on_denoise_target_changed:
+        refresh the displayed background, and (for a threshold-derived
+        caller) re-run the Threshold rebuild right now - otherwise the
+        canvas updates immediately but the actual mask silently keeps
+        reflecting whatever Denoise setting/target was active the last time
+        a Threshold control itself was touched, until the user happens to
+        nudge one."""
         if self.bg_stack is None:
             return
         self.img_bg.set_data(self._bg_frame(self.frame))
@@ -2459,6 +2832,81 @@ class MaskEditDialog(qtw.QDialog):
             return
         self._check_methods_dlg = self.box_denoise.open_check_methods_dialog(
             self.bg_stack[self.frame], parent=self)
+
+    def _apply_denoise_to_segment(self):
+        """"Apply to Segment": pre-denoise every frame in the segment
+        currently on screen, in parallel (ThreadPoolExecutor - same
+        approach as the main tab's own multi-frame denoise, see
+        ContrastScalingBox.rescale_async in contrast_scaling.py), caching
+        the result (self._denoise_segment_cache) so both live display
+        (_bg_frame) and any whole-stack recompute that touches these frames
+        (_denoised_bg_stack - Threshold/Blob Selection) reuse it instead of
+        redenoising one frame at a time. Scoped to just this segment, not
+        the whole stack, so a slow method on a long clip doesn't make this
+        button itself as slow as denoising everything at once."""
+        if self.bg_stack is None:
+            return
+        seg = self._segment_for_frame(self.frame)
+        frames = list(range(seg['start'], seg['end'] + 1))
+        method, param = self.box_denoise.get_method(), self.box_denoise.get_param()
+        self.button_denoiseApplySegment.setEnabled(False)
+        self.button_denoiseApplySegment.setText('Applying...')
+        self.progressbar_denoise.setRange(0, len(frames))
+        self.progressbar_denoise.setValue(0)
+        self.progressbar_denoise.setVisible(True)
+
+        bg_stack = self.bg_stack
+
+        def _job():
+            results = {}
+            with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+                futures = {ex.submit(apply_denoise_to_array, bg_stack[f], method, param): f
+                          for f in frames}
+                done = 0
+                for fut in as_completed(futures):
+                    f = futures[fut]
+                    results[f] = fut.result()
+                    done += 1
+                    worker.signals.progress.emit(done, len(frames))
+            return results
+
+        worker = WorkerThread_General(_job)
+        worker.signals.progress.connect(self._on_denoise_segment_progress)
+        worker.signals.results.connect(self._on_denoise_segment_done)
+        worker.signals.error.connect(self._on_denoise_segment_error)
+        self._threadpool.start(worker)
+
+    def _on_denoise_segment_progress(self, done, total):
+        self.progressbar_denoise.setRange(0, total)
+        self.progressbar_denoise.setValue(done)
+
+    def _on_denoise_segment_done(self, result, _index):
+        self._denoise_segment_cache.update(result)
+        self._denoised_threshold_stack = None  # a fresh cache hit changes this
+        self._blob_threshold_cache = None
+        self.button_denoiseApplySegment.setEnabled(True)
+        self.button_denoiseApplySegment.setText('Apply to Segment')
+        self.progressbar_denoise.setVisible(False)
+        self._redraw_frame_content()
+        if self.logger and result:
+            self.logger.info('Denoise applied to segment frames %d-%d (%s).',
+                             min(result), max(result), self.box_denoise.get_method())
+
+    def _on_denoise_segment_error(self, tb, _index):
+        self.button_denoiseApplySegment.setEnabled(True)
+        self.button_denoiseApplySegment.setText('Apply to Segment')
+        self.progressbar_denoise.setVisible(False)
+        if self.logger:
+            self.logger.error('Denoise-to-segment failed:\n%s', tb)
+
+    def _reset_denoise_segment_cache(self):
+        """"Reset" (Denoise box): discard every pre-denoised frame from
+        "Apply to Segment", going back to denoising each frame live on
+        demand as it's reached."""
+        self._denoise_segment_cache = {}
+        self._denoised_threshold_stack = None
+        self._blob_threshold_cache = None
+        self._redraw_frame_content()
 
     #%% undo/redo - see the history init in __init__ for what this does and
     # does not cover.
@@ -2552,23 +3000,36 @@ class MaskEditDialog(qtw.QDialog):
         self.mask_stack = source.copy()
         self._manual_mask_stack[:] = False
         self._reset_segments_to_single_default()
+        # Blob Selection's own independent segment timeline isn't touched by
+        # _reset_segments_to_single_default (that's the shared Dilate/Erode/
+        # Edge Detection/Mesh one only) - reset it explicitly too, and
+        # uncheck Active, so "Reset to Tracking" really does discard every
+        # edit, not leave a stale blob pick primed to reapply on the next
+        # "Pick Blob" click or get_blob_settings() read.
+        if self._blob_enabled_flag:
+            self._blob_segments = []
+            self._blob_centroid_cache = {}
+            self.checkbox_blobActive.setChecked(False)
         self._redraw_mask()
 
     def _recompute_threshold_stack(self):
         """Full (N, H, W) mask stack from the Threshold box's current
-        method/blur/deviation, via the caller's recompute_thresh_fn - or
-        None if that raised (caller decides how loudly to report it).
-        Passes the Denoise box's own current whole-stack output too (see
-        _denoised_bg_stack) - a threshold-derived caller (ROI Tracker) uses
-        it instead of its own raw images when re-thresholding, so the
-        Denoise box's choice actually affects the binarized mask, not just
-        what's displayed."""
+        method/deviation, via the caller's recompute_thresh_fn - or None if
+        that raised (caller decides how loudly to report it). Passes the
+        Denoise box's own current whole-stack output too (see
+        _denoised_bg_stack) ONLY when "Apply denoising to:" is set to
+        "Thresholding" - the merged Denoise+Threshold box's own radio (see
+        its own construction comment) - otherwise thresholds the RAW,
+        undenoised images instead, matching whichever the radio says the
+        selected Denoise method should actually feed. No separate blur
+        parameter any more (the old "ROI Blur" spinbox) - blurring, if
+        wanted, is just picking Gaussian Blur as the Denoise method itself."""
         method = self.combo_threshMethod.currentText()
-        blur = self.spinbox_threshBlur.value()
         offset = self.slider_threshDev.value() / 100
+        denoised = self._denoised_bg_stack() if self.radio_denoiseThreshold.isChecked() else None
         try:
             return np.asarray(self.recompute_thresh_fn(
-                method, offset, blur, denoised_imgs=self._denoised_bg_stack())).astype(bool)
+                method, offset, 0, denoised_imgs=denoised)).astype(bool)
         except Exception:
             if self.logger:
                 self.logger.exception('Failed to recompute threshold mask.')
@@ -2593,6 +3054,7 @@ class MaskEditDialog(qtw.QDialog):
         the frame itself changed - see _on_frame_changed) pushes a fresh
         one, so one Ctrl+Z undoes the whole tweak, however many times the
         slider fired along the way."""
+        self._blob_threshold_cache = None  # stale - Blob Selection's own raw source
         full = self._recompute_threshold_stack()
         if full is None:
             return
@@ -2609,6 +3071,7 @@ class MaskEditDialog(qtw.QDialog):
         whole mask_stack - the one Threshold action that needs an explicit
         button, since (unlike the live per-frame update above) it discards
         every other frame's edits at once."""
+        self._blob_threshold_cache = None  # stale - Blob Selection's own raw source
         full = self._recompute_threshold_stack()
         if full is None:
             qtw.QMessageBox.critical(self, 'Threshold Failed',
@@ -2634,6 +3097,27 @@ class MaskEditDialog(qtw.QDialog):
         return {'protect': self.checkbox_protectManualEdits.isChecked(),
                 'mask': self._manual_mask_stack}
 
+    def get_blob_settings(self):
+        """This dialog's (possibly re-seeded via "Pick Blob" - see
+        _pick_blob_at/_set_blob_segment_range) Blob Selection segments, in
+        the exact `{'method', 'params', 'segments'}` shape Tab_Tracking_CV2's
+        own df_rois['blob'] column already uses - None if this ROI never had
+        Blob Selection enabled in the first place (no Blob Selection box was
+        ever built - see self._blob_enabled_flag). While checkbox_blobActive
+        is unchecked, every segment is reported disabled (never discarded -
+        their own seed_centroid history survives re-checking Active later)
+        so a caller writing this straight back to its own persisted 'blob'
+        settings (see Tab_Tracking_CV2.open_fine_tune_mask_dialog) actually
+        turns that persistent, every-frame restriction off too, not just
+        this dialog's own display."""
+        if not self._blob_enabled_flag:
+            return None
+        segments = self._blob_segments
+        if not self.checkbox_blobActive.isChecked():
+            segments = [{**s, 'enabled': False} for s in segments]
+        return {'method': self._blob_method, 'params': self._blob_params,
+                'segments': segments}
+
     def get_edited_frame_indices(self):
         """Frame indices whose mask actually differs from `_original_stack`
         (this session's opening state) - a direct before/after array
@@ -2652,15 +3136,17 @@ class MaskEditDialog(qtw.QDialog):
                              for s in self._segments]}
 
     def get_thresh_settings(self):
-        """Current Threshold box values, or None if this dialog was opened
-        without recompute_thresh_fn (no Threshold box built at all - see
-        class docstring)."""
+        """Current Threshold controls' values (now folded into the Denoise
+        box itself - see its own construction comment), or None if this
+        dialog was opened without recompute_thresh_fn (no Threshold
+        controls built at all - see class docstring). No 'blur' key any
+        more - that's now just the Denoise box's own method/parameter,
+        already round-tripped separately via get_state()/set_state()."""
         if self.recompute_thresh_fn is None:
             return None
         return {
             'method': self.combo_threshMethod.currentText(),
             'offset_raw': self.slider_threshDev.value(),
-            'blur': self.spinbox_threshBlur.value(),
         }
 
     def get_dilate_erode_settings(self):
@@ -2708,6 +3194,17 @@ class MaskEditDialog(qtw.QDialog):
     #%% ribbon
     def _on_ribbon_tool_changed(self, tool_id):
         self._sync_pan_zoom_mode(tool_id)
+        # The ribbon's own mutual exclusivity (RibbonPanel - at most one
+        # 'tool' armed at a time) already keeps 'pick_blob' from being
+        # active alongside paint/rect/pan/zoom, so this is just a plain
+        # mirror of the ribbon's own selection, not a separate toggle.
+        self._picking_blob = tool_id == 'pick_blob'
+        # A ribbon tool taking over disarms Mesh's own "Center Grid
+        # (Click)" too - only one click-driven mode at a time (see
+        # _arm_mesh_center_pick's own symmetric disarm of the ribbon).
+        if tool_id is not None and self._picking_mesh_center:
+            self._picking_mesh_center = False
+            self.button_meshCenterClick.setChecked(False)
         self._apply_ribbon_cursor()
 
     def _sync_pan_zoom_mode(self, tool_id):
@@ -2734,6 +3231,254 @@ class MaskEditDialog(qtw.QDialog):
         elif current == _Mode.ZOOM:
             self.toolbar.zoom()
 
+    #%% blob selection
+    def _on_pick_blob_toggled(self, checked):
+        """"Pick Blob" armed/disarmed - mutually exclusive with every
+        ribbon tool (paint/rect/pan/zoom, via _on_ribbon_tool_changed's own
+        symmetric disarm) and with Mesh's "Center Grid (Click)", so a click
+        on the canvas only ever does one thing at a time."""
+        self._picking_blob = checked
+        if checked:
+            self.ribbon.clear_active_tool()
+            if self._picking_mesh_center:
+                self._picking_mesh_center = False
+                self.button_meshCenterClick.setChecked(False)
+            self.label_blobHint.setText(
+                'Click a blob on the canvas to restrict this frame to it.')
+        else:
+            self.label_blobHint.setText('')
+        self._apply_ribbon_cursor()
+
+    def _on_blob_active_toggled(self, _state=None):
+        """checkbox_blobActive changed (or called once from __init__ to sync
+        the initial state) - disables "Pick Blob"/Show Blobs/Method/its
+        params while unchecked, and disarms "Pick Blob" first if it's
+        currently armed (same "only one click-driven mode, and never a
+        disabled one" reasoning as every other tool-disarm in this dialog).
+        Does NOT touch mask_stack - see checkbox_blobActive's own tooltip
+        for why unchecking this never undoes pixels already picked into the
+        mask; get_blob_settings() is what actually turns off whatever
+        persistent restriction this ROI's segments would otherwise apply on
+        the main tab once this dialog closes."""
+        active = self.checkbox_blobActive.isChecked()
+        if not active and self.ribbon.active_tool == 'pick_blob':
+            self.ribbon.clear_active_tool()
+        btn = self.ribbon.get_button('pick_blob')
+        if btn is not None:
+            btn.setEnabled(active)
+        self.checkbox_showBlobs.setEnabled(active)
+        self.combo_blobMethod.setEnabled(active)
+        for widget in self._blob_param_widgets.values():
+            widget.setEnabled(active)
+        self._redraw_mask()
+
+    def _on_blob_method_changed(self):
+        """Blob Selection's own Method combo changed - mirrors
+        BlobSegmentationDialog._on_method_changed exactly (fresh default
+        params for the newly-picked method, rebuild the param form), just
+        against this dialog's own state instead of a separate dialog's.
+        Doesn't retroactively reseed anything already picked (self.
+        _blob_segments' stored seed_centroids stay as they are - only
+        WHICH blob a given seed resolves to next redraw can change) - the
+        user's next Pick Blob click is what actually applies the new
+        method going forward."""
+        self._blob_method = self.combo_blobMethod.currentData()
+        self._blob_params = io.default_blob_params(self._blob_method)
+        self._rebuild_blob_param_form()
+        self._redraw_mask()
+
+    def _on_blob_param_changed(self):
+        for key, widget in self._blob_param_widgets.items():
+            self._blob_params[key] = widget.value()
+        self._redraw_mask()
+
+    def _rebuild_blob_param_form(self):
+        """(Re)build Blob Selection's own parameter spinboxes for the
+        currently-selected method - mirrors BlobSegmentationDialog._rebuild_
+        param_form exactly (see EDyssey/io_utils/blob_segmentation.py's
+        BLOB_SEGMENTATION_METHODS for the generic (key, label, low, high,
+        step, decimals, tooltip) param_specs schema this builds from)."""
+        while self.form_blobParams.rowCount():
+            self.form_blobParams.removeRow(0)
+        self._blob_param_widgets = {}
+        spec = io.BLOB_SEGMENTATION_METHODS[self._blob_method]
+        for key, label, low, high, step, decimals, tooltip in spec['param_specs']:
+            if decimals > 0:
+                widget = qtw.QDoubleSpinBox()
+                widget.setDecimals(decimals)
+            else:
+                widget = qtw.QSpinBox()
+            widget.setRange(low, high)
+            widget.setSingleStep(step)
+            widget.setValue(self._blob_params.get(key, spec['default_params'][key]))
+            widget.setToolTip(tooltip)
+            widget.valueChanged.connect(self._on_blob_param_changed)
+            self.form_blobParams.addRow(label + ':', widget)
+            self._blob_param_widgets[key] = widget
+
+    def _blob_source_stack(self):
+        """The RAW (possibly multi-blob) per-frame stack Blob Selection
+        picks candidates from - matching the requested pipeline order
+        (raw image -> denoised -> threshold within the ROI -> blob
+        selection -> ...): for a threshold-derived caller (ROI Tracker,
+        recompute_thresh_fn given) this is this dialog's OWN live
+        Denoise+Threshold recompute (_recompute_threshold_stack, which
+        itself runs the Threshold box's method/blur/deviation on
+        _denoised_bg_stack() - the Denoise box's current method/parameter,
+        not whatever the main tab happened to have when Fine-Tune Mask was
+        opened), cached here and invalidated by _on_denoise_changed/
+        _threshold_live_update/_apply_threshold_all so a live Denoise or
+        Threshold change actually changes which blobs are on offer. A
+        non-threshold caller (SAM2 - its masks come from the segmentation
+        network, not a threshold) instead gets the fixed array it passed in
+        directly (self._blob_raw_stack_fixed - SAM2's own mask_default).
+        None if neither applies (self._blob_enabled_flag is False - no Blob
+        Selection box exists at all)."""
+        if self.recompute_thresh_fn is not None:
+            if self._blob_threshold_cache is None:
+                self._blob_threshold_cache = self._recompute_threshold_stack()
+            return self._blob_threshold_cache
+        return self._blob_raw_stack_fixed
+
+    def _blob_labels_for_frame(self, frame):
+        """This frame's raw threshold mask split into individual blobs via
+        this ROI's own chosen Blob Selection method/params - mirrors
+        Tab_Tracking_CV2._label_blobs_for exactly (None, meaning plain
+        connected components, for the default 'connected' method or an
+        empty mask). The intensity crop an intensity-based method needs
+        (e.g. Watershed - Intensity) is this dialog's own live-denoised
+        background (_denoised_bg_stack) - the same "denoised" step Blob
+        Selection's mask itself is derived from, so both agree on which
+        Denoise setting is in effect."""
+        source = self._blob_source_stack()
+        if source is None:
+            return None
+        mask = source[frame]
+        if self._blob_method == io.DEFAULT_BLOB_METHOD or not mask.any():
+            return None
+        denoised = self._denoised_bg_stack()
+        img_cut = denoised[frame] if denoised is not None else None
+        return io.label_blobs(mask, img_cut, self._blob_method, self._blob_params)
+
+    def _pick_blob_at(self, event):
+        """"Pick Blob" click handler: the detected blob nearest the click
+        becomes the mask for either just this frame or the whole segment
+        currently covering it, depending on Edit Scope (radio_scopeFrame/
+        radio_scopeSegment above the canvas) - same "Single Frame"/
+        "Segment" choice Dilate/Erode, Edge Detection, and Mesh already use,
+        so different segments can each keep their own blob choice exactly
+        like those three. Written directly into mask_stack (undo-able as
+        ONE step, see _push_undo(None)) rather than resolved fresh on every
+        redraw, since mask_stack is always exactly one blob already, not
+        the raw multi-blob stack Blob Selection needs to pick from."""
+        if not self.checkbox_blobActive.isChecked():
+            # Defense in depth - the ribbon's own 'pick_blob' button is
+            # already disabled while inactive (see _on_blob_active_toggled),
+            # so _picking_blob should never be True here via a real click.
+            return
+        source = self._blob_source_stack()
+        if source is None:
+            if self.logger:
+                self.logger.warning('Blob Selection: no raw candidate mask available '
+                                    '(threshold recompute failed) - nothing to pick.')
+            return
+        raw0 = source[self.frame]
+        if not raw0.any():
+            if self.logger:
+                self.logger.info('Blob Selection: no blob on frame %d - nothing to pick.',
+                                 self.frame)
+            return
+        labels0 = self._blob_labels_for_frame(self.frame)
+        click = (event.xdata, event.ydata)
+        _, chosen_centroid = io.select_blob_by_centroid(raw0, click, labels=labels0)
+        if chosen_centroid is None:
+            if self.logger:
+                self.logger.info('Blob Selection: no blob under the click on frame %d.',
+                                 self.frame)
+            return
+        if self.radio_scopeFrame.isChecked():
+            start = end = self.frame
+        else:
+            seg = (io.segment_for_frame(self._blob_segments, self.frame)
+                  if self._blob_segments else None)
+            start, end = (seg['start'], seg['end']) if seg else (0, self.n_frames - 1)
+        self._push_undo(None)  # one whole-stack snapshot covers this entire scope
+        self._set_blob_segment_range(start, end, chosen_centroid)
+        self._apply_blob_seed_to_range(start, end, self.frame, chosen_centroid)
+        if self.logger:
+            self.logger.info(
+                'Blob Selection: frame(s) %d-%d restricted to the blob nearest '
+                '(%.1f, %.1f) clicked at frame %d.',
+                start, end, chosen_centroid[0], chosen_centroid[1], self.frame)
+        self._redraw_mask()
+
+    def _set_blob_segment_range(self, start, end, seed_centroid):
+        """Make Blob Selection's own segment list (self._blob_segments,
+        independent of the shared Dilate/Erode/Edge Detection/Mesh timeline
+        - Blob Selection has no Split/Merge UI of its own, just whatever
+        range Edit Scope picked for the click that got here) hold exactly
+        one segment over [start, end] seeded with `seed_centroid`, trimming
+        or dropping whichever existing segment(s) used to cover any part of
+        that range - mirrors Tab_Tracking_CV2._split_blob_segment's single-
+        frame version, generalized to a whole range so "Segment" scope can
+        reseed more than one frame at once."""
+        segments = self._blob_segments or [
+            {'start': 0, 'end': self.n_frames - 1, 'enabled': True, 'seed_centroid': None}]
+        new_segments = []
+        for seg in segments:
+            if seg['end'] < start or seg['start'] > end:
+                new_segments.append(seg)
+                continue
+            if seg['start'] < start:
+                new_segments.append({**seg, 'end': start - 1})
+            if seg['end'] > end:
+                new_segments.append({**seg, 'start': end + 1})
+        new_segments.append({'start': start, 'end': end, 'enabled': True,
+                             'seed_centroid': seed_centroid})
+        new_segments.sort(key=lambda s: s['start'])
+        self._blob_segments = new_segments
+        # A fresh seed invalidates any auto-follow trail computed from the
+        # old settings - simplest safe choice is to drop the whole cache,
+        # same as the main tab's own _split_blob_segment.
+        self._blob_centroid_cache.clear()
+
+    def _apply_blob_seed_to_range(self, start, end, click_frame, seed_centroid):
+        """Resolve and write mask_stack[start:end+1] from _blob_source_stack(),
+        auto-following outward in both directions from `click_frame` (seeded
+        with `seed_centroid` itself, then each further frame from its own
+        immediate neighbor's just-resolved centroid) - same bounded, walk-
+        from-a-known-point approximation Tab_Tracking_CV2._resolve_blob_mask
+        uses, just eagerly computed once here instead of lazily per redraw."""
+        source = self._blob_source_stack()
+
+        def resolve_and_write(f, seed):
+            raw = source[f]
+            if not raw.any():
+                return seed
+            labels = self._blob_labels_for_frame(f)
+            restricted, centroid = io.select_blob_by_centroid(raw, seed, labels=labels)
+            old = self.mask_stack[f]
+            manual = self._manual_mask_stack[f]
+            # Same "manually-painted pixels keep their value" convention
+            # _effective_mask applies to Dilate/Erode/Edge Detection, so
+            # "Exclude Manual Edits from Effects" has one consistent meaning
+            # throughout this dialog rather than a Blob-Selection-only
+            # exception.
+            if self.checkbox_protectManualEdits.isChecked() and manual.any():
+                self.mask_stack[f] = np.where(manual, old, restricted)
+            else:
+                self.mask_stack[f] = restricted
+            if centroid is not None:
+                self._blob_centroid_cache[f] = centroid
+            return centroid if centroid is not None else seed
+
+        seed = seed_centroid
+        for f in range(click_frame, end + 1):
+            seed = resolve_and_write(f, seed)
+        seed = seed_centroid
+        for f in range(click_frame - 1, start - 1, -1):
+            seed = resolve_and_write(f, seed)
+
     def _apply_ribbon_cursor(self):
         """Set the canvas cursor to match the ribbon's active tool - mirrors
         each main tab's identical _apply_ribbon_cursor exactly, including
@@ -2744,6 +3489,9 @@ class MaskEditDialog(qtw.QDialog):
         here - NavigationToolbar2 already sets its own cursor for those two
         modes (a hand/crosshair), which this would otherwise stomp on right
         back to a plain arrow."""
+        if self._picking_blob:
+            self.canvas.setCursor(Qt.CrossCursor)
+            return
         tool = self.ribbon.active_tool
         if tool in ('pan', 'zoom'):
             return
@@ -2786,6 +3534,13 @@ class MaskEditDialog(qtw.QDialog):
             self._picking_mesh_center = False
             self.button_meshCenterClick.setChecked(False)
             self._apply_ribbon_cursor()
+            return
+        # Pick Blob armed - restrict this frame to whichever detected blob
+        # is nearest the click, staying armed for the next frame too (see
+        # _pick_blob_at/button_pickBlob) - checked before the mesh-cell-
+        # toggle/paint/rect logic below, same priority as Center Grid above.
+        if self._picking_blob:
+            self._pick_blob_at(event)
             return
         mods = event.modifiers
         tool = self.ribbon.active_tool
