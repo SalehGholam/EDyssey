@@ -25,6 +25,13 @@ RIBBON_ICON_SIZE_DEFAULT = 26
 RIBBON_HEIGHT_SCALE_DEFAULT = 1.0
 PLOT_FONT_SCALE_DEFAULT = 1.0
 FIGURE_SIZE_SCALE_DEFAULT = 1.0
+# Opacity of the translucent tracked-object/segmentation mask overlays drawn
+# on ROI Tracker's, SAM2 Tracker's, and ROI on 4D's own main canvases (NOT
+# the separate Fine-Tune Mask dialog, which has its own independent,
+# per-session opacity spinboxes - see mask_edit_dialog.py). Replaces what
+# used to be several independent hardcoded alphas (0.3-0.85, one or two per
+# tab) with one shared, user-adjustable value.
+MASK_ALPHA_DEFAULT = 0.5
 
 # Curated, not matplotlib's full list - perceptually-uniform ones
 # (viridis/inferno/plasma/magma/cividis) plus a few classic/high-contrast
@@ -36,9 +43,6 @@ COLORMAP_OPTIONS = [
     'turbo', 'turbo_r', 'hot', 'hot_r', 'bone', 'bone_r',
     'copper', 'copper_r', 'twilight', 'twilight_r',
 ]
-NAV_COLORMAP_DEFAULT = 'viridis'
-DP_COLORMAP_DEFAULT = 'inferno'
-
 # Every individually-resizable plot: (key, tab_name, figure_attr, label).
 # `key` is the stable id used in figure_size_scales/JSON; `tab_name` is the
 # TabBase._tab_name each one belongs to (see TabBase._display_settings_figures,
@@ -55,30 +59,28 @@ PLOT_DEFINITIONS = [
 PLOT_KEYS = [key for key, *_ in PLOT_DEFINITIONS]
 
 # Every individually-recolorable image plot across all 4 tabs: (key, label,
-# role, fixed_default). `role` is 'nav'/'dp' for a plot that (with no
-# override set - see DisplaySettings.colormap_for) follows the shared
-# nav_colormap/dp_colormap setting above, same as it always has; None for a
-# plot that's deliberately hardcoded to its own `fixed_default` regardless
-# of the shared settings (a translucent color mask/segmentation overlay
-# drawn on top needs a plain, predictable background to stay legible - see
-# each tab's own apply_display_settings()). A per-plot override (see
-# plot_colormap_overrides) takes precedence over both.
+# default_colormap) - each plot's colormap is fully independent (no shared
+# "Navigation Image"/"Diffraction Pattern" setting to fall back to by
+# request - every plot gets its own combo in Display Preferences directly).
+# default_colormap is just this plot's own starting value/"Reset" target,
+# matching what it used to default to when nav-like/dp-like plots followed
+# a shared viridis/inferno setting and mask/segmentation-overlay backgrounds
+# were fixed to gray.
 PLOT_COLORMAP_DEFINITIONS = [
-    ('navigator_nav', 'Navigator - Navigation Image', 'nav', None),
-    ('navigator_dp', 'Navigator - Summed DP', 'dp', None),
-    ('roi4d_nav', 'ROI on 4D - Navigation Image', 'nav', None),
-    ('roi4d_dp', 'ROI on 4D - Diffraction Pattern', 'dp', None),
-    ('roi4d_nav_roi', 'ROI on 4D - Nav+ROI Overlay Background', None, 'gray'),
-    ('tracker_nav', 'ROI Tracker - Navigation Image', 'nav', None),
-    ('tracker_dp', 'ROI Tracker - Diffraction Pattern', 'dp', None),
-    ('tracker_mask', 'ROI Tracker - Segmented Object Background', None, 'gray'),
-    ('sam2_nav', 'SAM2 Tracker - Navigation Image Background', None, 'gray'),
-    ('sam2_seg', 'SAM2 Tracker - Segmented Object Background', None, 'gray'),
-    ('sam2_dp', 'SAM2 Tracker - Diffraction Pattern', 'dp', None),
+    ('navigator_nav', 'Navigator - Navigation Image', 'viridis'),
+    ('navigator_dp', 'Navigator - Summed DP', 'inferno'),
+    ('roi4d_nav', 'ROI on 4D - Navigation Image', 'viridis'),
+    ('roi4d_dp', 'ROI on 4D - Diffraction Pattern', 'inferno'),
+    ('roi4d_nav_roi', 'ROI on 4D - Nav+ROI Overlay Background', 'gray'),
+    ('tracker_nav', 'ROI Tracker - Navigation Image', 'viridis'),
+    ('tracker_dp', 'ROI Tracker - Diffraction Pattern', 'inferno'),
+    ('tracker_mask', 'ROI Tracker - Segmented Object Background', 'gray'),
+    ('sam2_nav', 'SAM2 Tracker - Navigation Image Background', 'gray'),
+    ('sam2_seg', 'SAM2 Tracker - Segmented Object Background', 'gray'),
+    ('sam2_dp', 'SAM2 Tracker - Diffraction Pattern', 'inferno'),
 ]
 PLOT_COLORMAP_KEYS = [key for key, *_ in PLOT_COLORMAP_DEFINITIONS]
-_PLOT_COLORMAP_META = {key: (role, fixed_default)
-                       for key, _label, role, fixed_default in PLOT_COLORMAP_DEFINITIONS}
+_PLOT_COLORMAP_DEFAULTS = {key: default for key, _label, default in PLOT_COLORMAP_DEFINITIONS}
 
 
 def _reversed_colormap_name(name):
@@ -104,9 +106,8 @@ def _default_state():
         'ribbon_height_scale': RIBBON_HEIGHT_SCALE_DEFAULT,
         'plot_font_scale': PLOT_FONT_SCALE_DEFAULT,
         'figure_size_scales': {key: FIGURE_SIZE_SCALE_DEFAULT for key in PLOT_KEYS},
-        'nav_colormap': NAV_COLORMAP_DEFAULT,
-        'dp_colormap': DP_COLORMAP_DEFAULT,
-        'plot_colormap_overrides': {key: None for key in PLOT_COLORMAP_KEYS},
+        'plot_colormaps': dict(_PLOT_COLORMAP_DEFAULTS),
+        'mask_alpha': MASK_ALPHA_DEFAULT,
     }
 
 
@@ -172,23 +173,28 @@ class DisplaySettings(QObject):
             key: saved_scales.get(key, defaults['figure_size_scales'][key])
             for key in PLOT_KEYS
         }
-        # A colormap saved by an older version (or hand-edited to something
-        # invalid) falls back to the default rather than being passed
-        # through to matplotlib, which would raise on an unknown name.
-        nav_cmap = state.get('nav_colormap', defaults['nav_colormap'])
-        self.nav_colormap = nav_cmap if nav_cmap in COLORMAP_OPTIONS else defaults['nav_colormap']
-        dp_cmap = state.get('dp_colormap', defaults['dp_colormap'])
-        self.dp_colormap = dp_cmap if dp_cmap in COLORMAP_OPTIONS else defaults['dp_colormap']
-        # Per-plot colormap overrides (None = no override, follow this
-        # plot's role/fixed default instead - see colormap_for()) - same
-        # merge-by-key/validate-each-value convention as figure_size_scales/
-        # nav_colormap above, so an old settings file (missing a plot added
-        # since, or with a hand-edited invalid name) never breaks loading.
-        saved_overrides = state.get('plot_colormap_overrides') or {}
-        self.plot_colormap_overrides = {
-            key: (saved_overrides.get(key) if saved_overrides.get(key) in COLORMAP_OPTIONS else None)
+        # Each plot's own independent colormap - same merge-by-key/validate-
+        # each-value convention as figure_size_scales above, so an old
+        # settings file (missing a plot added since, still using the old
+        # 'nav_colormap'/'dp_colormap'/'plot_colormap_overrides' shape from
+        # before every plot got its own fully independent setting, or with a
+        # hand-edited invalid name) never breaks loading - it just falls
+        # back to that one plot's own built-in default.
+        saved_cmaps = state.get('plot_colormaps') or {}
+        self.plot_colormaps = {
+            key: (saved_cmaps.get(key) if saved_cmaps.get(key) in COLORMAP_OPTIONS
+                 else _PLOT_COLORMAP_DEFAULTS[key])
             for key in PLOT_COLORMAP_KEYS
         }
+        # Clamped to [0, 1] - a hand-edited or out-of-range saved value would
+        # otherwise pass straight through to matplotlib's own RGBA alpha
+        # channel, which silently clips anyway but a slider/spinbox reading
+        # it back needs an in-range value to show.
+        mask_alpha = state.get('mask_alpha', defaults['mask_alpha'])
+        try:
+            self.mask_alpha = min(1.0, max(0.0, float(mask_alpha)))
+        except (TypeError, ValueError):
+            self.mask_alpha = defaults['mask_alpha']
 
     def _current_state(self):
         return {
@@ -197,9 +203,8 @@ class DisplaySettings(QObject):
             'ribbon_height_scale': self.ribbon_height_scale,
             'plot_font_scale': self.plot_font_scale,
             'figure_size_scales': dict(self.figure_size_scales),
-            'nav_colormap': self.nav_colormap,
-            'dp_colormap': self.dp_colormap,
-            'plot_colormap_overrides': dict(self.plot_colormap_overrides),
+            'plot_colormaps': dict(self.plot_colormaps),
+            'mask_alpha': self.mask_alpha,
         }
 
     def _persist(self):
@@ -216,26 +221,17 @@ class DisplaySettings(QObject):
 
     def set_values(self, ribbon_text_scale=None, ribbon_icon_size=None,
                    ribbon_height_scale=None, plot_font_scale=None, figure_size_scales=None,
-                   nav_colormap=None, dp_colormap=None, plot_colormap_overrides=None):
+                   plot_colormaps=None, mask_alpha=None):
         """Update whichever values are given (None = leave unchanged), then
         emit `changed` once for the whole batch and persist to disk - the
         Display Size dialog's "Apply" button calls this once with every
         control's current value, rather than each control pushing its own
         change live.
 
-        `figure_size_scales`, if given, is a dict of {plot_key: scale} -
-        only the keys present are updated, so the dialog can pass just the
-        1-5 plots the user actually touched (or all of them, e.g. via its
-        "Apply to All Plots" action).
-
-        `plot_colormap_overrides`, if given, is a dict of {plot_key:
-        colormap_name_or_None} - same partial-update convention as
-        figure_size_scales; a value of None for a given key explicitly
-        CLEARS that plot's override (falls back to following nav_colormap/
-        dp_colormap/its own fixed default again - see colormap_for()),
-        rather than being treated as "leave unchanged" the way the plain
-        `nav_colormap`/`dp_colormap` parameters above are - only a key's
-        ABSENCE from this dict means "leave that one plot's override alone".
+        `figure_size_scales`/`plot_colormaps`, if given, are dicts of
+        {plot_key: value} - only the keys present are updated, so a caller
+        can pass just the 1-11 plots the user actually touched (or all of
+        them, e.g. Reset).
         """
         if ribbon_text_scale is not None:
             self.ribbon_text_scale = ribbon_text_scale
@@ -248,33 +244,21 @@ class DisplaySettings(QObject):
         if figure_size_scales:
             self.figure_size_scales.update(
                 {k: v for k, v in figure_size_scales.items() if k in self.figure_size_scales})
-        if nav_colormap is not None:
-            self.nav_colormap = nav_colormap
-        if dp_colormap is not None:
-            self.dp_colormap = dp_colormap
-        if plot_colormap_overrides:
-            self.plot_colormap_overrides.update(
-                {k: v for k, v in plot_colormap_overrides.items() if k in self.plot_colormap_overrides})
+        if plot_colormaps:
+            self.plot_colormaps.update(
+                {k: v for k, v in plot_colormaps.items() if k in self.plot_colormaps})
+        if mask_alpha is not None:
+            self.mask_alpha = min(1.0, max(0.0, float(mask_alpha)))
         self._persist()
         self.changed.emit()
 
     def colormap_for(self, plot_key):
-        """The colormap actually in effect for plot `plot_key` right now -
-        its own override if one is set, else whichever of nav_colormap/
-        dp_colormap its role follows, else its fixed default (see
-        PLOT_COLORMAP_DEFINITIONS) - the single place every tab's own
-        apply_display_settings() should read a per-plot colormap from,
-        instead of nav_colormap/dp_colormap directly, so a per-plot
-        override actually takes effect."""
-        override = self.plot_colormap_overrides.get(plot_key)
-        if override:
-            return override
-        role, fixed_default = _PLOT_COLORMAP_META.get(plot_key, (None, 'gray'))
-        if role == 'nav':
-            return self.nav_colormap
-        if role == 'dp':
-            return self.dp_colormap
-        return fixed_default
+        """This plot's own current colormap - the single place every tab's
+        own apply_display_settings() should read a per-plot colormap from
+        (see PLOT_COLORMAP_DEFINITIONS - every plot is fully independent,
+        no shared "Navigation Image"/"Diffraction Pattern" setting to fall
+        back to)."""
+        return self.plot_colormaps.get(plot_key, _PLOT_COLORMAP_DEFAULTS.get(plot_key, 'gray'))
 
     def reset(self):
         """Reset every value to DEFAULTS_FILE's contents (falling back to

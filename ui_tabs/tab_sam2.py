@@ -1067,18 +1067,25 @@ class Tab_SAM2(TabBase):
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
         per-plot colormaps - see display_settings.py's DisplaySettings.
-        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
-        Colormaps..." expansion. 'nav' and 'seg' default to their own fixed
-        'gray' (see PLOT_COLORMAP_DEFINITIONS) unless overridden:
-        show_mask() draws colored (tab10) translucent mask overlays and the
-        positive/negative SAM2 point markers on top of 'nav', which need a
-        plain grayscale background to stay readable by default (a green
-        point prompt was invisible against viridis)."""
+        colormap_for() and the Edit menu's Display Preferences dialog's own
+        Colormaps list. 'nav' and 'seg' default to their own fixed 'gray'
+        (see PLOT_COLORMAP_DEFINITIONS) unless overridden: show_mask() draws
+        colored (tab10) translucent mask overlays and the positive/negative
+        SAM2 point markers on top of 'nav', which need a plain grayscale
+        background to stay readable by default (a green point prompt was
+        invisible against viridis). update_canvas() re-runs show_mask()/
+        _draw_all_object_masks() so a "Mask Transparency" change actually
+        shows immediately - its alpha is baked into the overlay's RGBA data
+        at draw time, not a mutable artist property draw_idle() alone would
+        pick back up - guarded the same way update_canvas() itself expects
+        (nothing loaded yet on a freshly-constructed/duplicated tab)."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
         self.img_display['nav'].set_cmap(settings.colormap_for('sam2_nav'))
         self.img_display['seg'].set_cmap(settings.colormap_for('sam2_seg'))
         self.img_display['dp'].set_cmap(settings.colormap_for('sam2_dp'))
+        if hasattr(self, 'imgs_8bit'):
+            self.update_canvas()
         self.canvas.draw_idle()
 
     def show_dialog(self, f):
@@ -1934,8 +1941,23 @@ class Tab_SAM2(TabBase):
             fn_rois = os.path.join(obj_dir, 'rois.npy')
             rois = np.load(fn_rois) if os.path.isfile(fn_rois) else None
 
-            fn_mask = os.path.join(obj_dir, f'segmentation masks_ obj ID {idx}.npy')
+            # item: "Load Saved Analysis" round-trip audit - the RAW mask
+            # (pre-Dilate/Erode/Edge Detection/Mesh) is what actually
+            # belongs back in df_obj['mask'] (see _save_results_impl's own
+            # comment on why) - falls back to the older, already-baked-in
+            # '...{idx}.npy' file for an analysis saved before this file
+            # existed, same as every other old-analysis-compat fallback
+            # here, rather than silently loading nothing for it.
+            fn_mask_raw = os.path.join(obj_dir, f'segmentation masks_ obj ID {idx}_raw.npy')
+            fn_mask_legacy = os.path.join(obj_dir, f'segmentation masks_ obj ID {idx}.npy')
+            fn_mask = fn_mask_raw if os.path.isfile(fn_mask_raw) else fn_mask_legacy
             mask = np.load(fn_mask) if os.path.isfile(fn_mask) else None
+
+            fn_mask_default = os.path.join(obj_dir, f'segmentation masks_ obj ID {idx}_default.npy')
+            mask_default = np.load(fn_mask_default) if os.path.isfile(fn_mask_default) else None
+
+            fn_manual_mask = os.path.join(obj_dir, 'manual_edit_mask.npy')
+            manual_mask = np.load(fn_manual_mask) if os.path.isfile(fn_manual_mask) else None
 
             dp = None
             fn_dp_hspy = os.path.join(obj_dir, '3DED.hspy')
@@ -1949,6 +1971,14 @@ class Tab_SAM2(TabBase):
                 'idx': idx, 'use': row['use'], 'frame_idx': row['frame_idx'],
                 'points': row['points'], 'labels': row['labels'], 'end': row['end'],
                 'rois': rois, 'mask': mask, 'dp': dp,
+                # Old saved analyses simply lack these keys - default to
+                # "no segments" (nothing configured), same convention as
+                # ROI Tracker's own identical fallback.
+                'mesh': row.get('mesh', {'segments': []}),
+                'dilate_erode': row.get('dilate_erode', {'segments': []}),
+                'edge': row.get('edge_detection', {'segments': []}),
+                'mask_default': mask_default,
+                'manual_edits': {'protect': row.get('manual_edits_protect', True), 'mask': manual_mask},
             })
         return s, imgs, objects, path, fn_nav
 
@@ -1967,12 +1997,17 @@ class Tab_SAM2(TabBase):
         for obj in objects:
             idx = obj['idx']
             # mask_default (the tracking-derived "Reset to Tracking" target -
-            # see MaskEditDialog) was never itself persisted to disk, so a
-            # restored object's just-loaded mask is the best available
-            # stand-in for it.
+            # see MaskEditDialog): restored from its own saved file when
+            # present; falls back to the loaded mask for an analysis saved
+            # before mask_default had its own file (the best available
+            # stand-in, same as before this fix - "Reset to Tracking" just
+            # won't recover anything better than the loaded mask itself for
+            # those older saves).
+            mask_default = obj['mask_default'] if obj['mask_default'] is not None else obj['mask']
             self.df_obj.loc[idx] = [obj['use'], idx, obj['frame_idx'], obj['points'],
                                      obj['labels'], obj['end'], None, obj['mask'],
-                                     obj['mask'], obj['rois'], obj['dp'], None, None, None, None]
+                                     mask_default, obj['rois'], obj['dp'],
+                                     obj['mesh'], obj['dilate_erode'], obj['edge'], obj['manual_edits']]
             self.add_item_tree(idx, obj['frame_idx'], obj['end'], obj['use'])
             row_index = self.df_obj.index.get_loc(idx)
             if obj['mask'] is not None:
@@ -2743,7 +2778,7 @@ class Tab_SAM2(TabBase):
             mask = np.asarray(mask, dtype=bool)
             if not mask.any():
                 continue
-            color = np.array([*cmap(obj_id2 % 10)[:3], 0.85])
+            color = np.array([*cmap(obj_id2 % 10)[:3], DisplaySettings.instance().mask_alpha])
             composite[mask] = color
             cx, cy = io.mask_centroid(mask)
             labels.append((obj_id2, cx, cy))
@@ -2769,7 +2804,7 @@ class Tab_SAM2(TabBase):
                     self.logger.debug('All-objects mask artist already removed.', exc_info=True)
             self._all_mask_artists = []
         cmap = plt.get_cmap("tab10")
-        color = np.array([*cmap(cmap_idx)[:3], 0.85])
+        color = np.array([*cmap(cmap_idx)[:3], DisplaySettings.instance().mask_alpha])
         h, w = mask.shape[-2:]
         # mask = mask.astype(np.uint8)
         mask_image =  mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
@@ -4017,6 +4052,12 @@ class Tab_SAM2(TabBase):
             df['edge_detection'] = self._edge_settings_for(idx) or {'segments': []}
             df['mesh'] = self._mesh_settings_for(idx) or {'segments': []}
             df['dilate_erode'] = self._dilate_erode_settings_for(idx) or {'segments': []}
+            # item: "Load Saved Analysis" round-trip audit - just the flag
+            # here; the (potentially large) manual mask array itself is its
+            # own .npy file below, like the raw/default mask files, not
+            # embedded in this JSON.
+            manual_edits = self._manual_edit_settings_for(idx) or {}
+            df['manual_edits_protect'] = manual_edits.get('protect', True)
             df.to_json(os.path.join(path_save_objID, f'roi No {idx}.json'), orient='index', indent=4)
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'rois']))):
                 np.save(os.path.join(path_save_objID, 'rois.npy'),
@@ -4026,6 +4067,26 @@ class Tab_SAM2(TabBase):
                 # applied) - see apply_edge_mask_stack().
                 np.save(os.path.join(path_save_objID, 'output_mask.npy'),
                         self.apply_edge_mask_stack(self.df_obj.loc[idx, 'mask'], idx))
+            # item: "Load Saved Analysis" round-trip audit - the RAW mask
+            # (before Dilate/Erode/Edge Detection/Mesh are baked in) and the
+            # pristine tracking-derived "Reset to Tracking" target, each as
+            # their own file, distinct from 'output_mask.npy'/
+            # 'segmentation masks_...npy' above (which are the effective,
+            # already-baked-in deliverable) - restoring mesh/dilate_erode/
+            # edge settings on top of an already-baked mask on load would
+            # apply them a second time, and without its own saved
+            # mask_default, "Reset to Tracking" after a reload could only
+            # ever fall back to whatever mask happened to be loaded (losing
+            # the true original SAM2 result the moment any Fine-Tune Mask
+            # edit was saved).
+            if not np.all(pd.isna(self.df_obj.loc[idx, 'mask'])):
+                np.save(os.path.join(path_save_objID, f'segmentation masks_ obj ID {idx}_raw.npy'),
+                        self.df_obj.loc[idx, 'mask'])
+            if not np.all(pd.isna(self.df_obj.loc[idx, 'mask_default'])):
+                np.save(os.path.join(path_save_objID, f'segmentation masks_ obj ID {idx}_default.npy'),
+                        self.df_obj.loc[idx, 'mask_default'])
+            if manual_edits.get('mask') is not None:
+                np.save(os.path.join(path_save_objID, 'manual_edit_mask.npy'), manual_edits['mask'])
 
             # write frames
             if not (np.all(pd.isna(self.df_obj.loc[idx, 'dp']))):

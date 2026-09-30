@@ -13,9 +13,8 @@ for how each of the other 4 tabs applies it.
 """
 import PyQt5.QtWidgets as qtw
 from PyQt5.QtCore import Qt
-from .display_settings import DisplaySettings, PLOT_DEFINITIONS, COLORMAP_OPTIONS
+from .display_settings import DisplaySettings, PLOT_DEFINITIONS, PLOT_COLORMAP_DEFINITIONS, COLORMAP_OPTIONS
 from .app_theme import AppTheme, PALETTES, THEME_LABELS
-from .plot_colormap_dialog import PlotColormapDialog
 
 
 class EditSettingsDialog(qtw.QDialog):
@@ -67,36 +66,60 @@ class EditSettingsDialog(qtw.QDialog):
 
         # Colormaps - same immediate-apply convention as Theme above (a
         # live, easily-reversible preference, not something worth batching
-        # behind the Apply button below). Applies to every tab's navigation
-        # image / diffraction pattern display (ROI on 4D, Navigator, ROI
-        # Tracker, SAM2 Tracker) - see each tab's own apply_display_settings
-        # override, wired to DisplaySettings.changed the same way as
-        # everything else in this dialog.
+        # behind the Apply button below). Every individual image plot across
+        # all 4 tabs gets its own independent combo here directly (no shared
+        # "Navigation Image"/"Diffraction Pattern" setting the way this used
+        # to work, and no separate "Per-Plot Colormaps..." dialog either -
+        # by request, everything lives in this one list) - see each tab's
+        # own apply_display_settings() override/DisplaySettings.colormap_for().
+        # A scroll area, not a bare QFormLayout, since 11 rows would
+        # otherwise make this whole dialog unreasonably tall - only this
+        # list itself scrolls.
         cmap_box = qtw.QGroupBox('Colormaps')
-        cmap_layout = qtw.QFormLayout(cmap_box)
-        cmap_layout.setLabelAlignment(Qt.AlignRight)
+        cmap_box_layout = qtw.QVBoxLayout(cmap_box)
         settings = DisplaySettings.instance()
-        self.combo_navCmap = qtw.QComboBox()
-        self.combo_navCmap.addItems(COLORMAP_OPTIONS)
-        self.combo_navCmap.setCurrentText(settings.nav_colormap)
-        self.combo_navCmap.currentTextChanged.connect(self._on_colormap_changed)
-        cmap_layout.addRow('Navigation Image', self.combo_navCmap)
-        self.combo_dpCmap = qtw.QComboBox()
-        self.combo_dpCmap.addItems(COLORMAP_OPTIONS)
-        self.combo_dpCmap.setCurrentText(settings.dp_colormap)
-        self.combo_dpCmap.currentTextChanged.connect(self._on_colormap_changed)
-        cmap_layout.addRow('Diffraction Pattern', self.combo_dpCmap)
-        # Expansion: every individual image plot across all 4 tabs (masks/
-        # segmentation-overlay backgrounds included, not just these two
-        # shared roles) gets its own colormap combo in a separate dialog -
-        # see plot_colormap_dialog.py/DisplaySettings.colormap_for().
-        self.button_plotColormaps = qtw.QPushButton('Per-Plot Colormaps...')
-        self.button_plotColormaps.setToolTip(
-            'Override the colormap of an individual plot, on any of the 4 tabs, '
-            'independent of the two shared settings above')
-        self.button_plotColormaps.clicked.connect(self._open_plot_colormap_dialog)
-        cmap_layout.addRow('', self.button_plotColormaps)
+        cmap_scroll = qtw.QScrollArea()
+        cmap_scroll.setWidgetResizable(True)
+        cmap_scroll.setFixedHeight(220)
+        cmap_list_widget = qtw.QWidget()
+        cmap_layout = qtw.QFormLayout(cmap_list_widget)
+        cmap_layout.setLabelAlignment(Qt.AlignRight)
+        self._colormap_combos = {}
+        for key, label, _default in PLOT_COLORMAP_DEFINITIONS:
+            combo = qtw.QComboBox()
+            combo.addItems(COLORMAP_OPTIONS)
+            combo.setCurrentText(settings.colormap_for(key))
+            combo.currentTextChanged.connect(lambda text, k=key: self._on_plot_colormap_changed(k, text))
+            cmap_layout.addRow(label, combo)
+            self._colormap_combos[key] = combo
+        cmap_scroll.setWidget(cmap_list_widget)
+        cmap_box_layout.addWidget(cmap_scroll)
+        self.button_resetColormaps = qtw.QPushButton('Reset All Colormaps')
+        self.button_resetColormaps.setToolTip(
+            "Put every plot's colormap above back to its own default")
+        self.button_resetColormaps.clicked.connect(self._reset_colormaps)
+        cmap_box_layout.addWidget(self.button_resetColormaps, alignment=Qt.AlignRight)
         self.layout.addWidget(cmap_box)
+
+        # Masks - opacity of the translucent tracked-object/segmentation
+        # mask overlays on ROI Tracker's, SAM2 Tracker's, and ROI on 4D's
+        # own main canvases (not the separate Fine-Tune Mask dialog, which
+        # has its own independent opacity spinboxes). Same immediate-apply
+        # convention as Colormaps/Theme above.
+        mask_box = qtw.QGroupBox('Masks')
+        mask_layout = qtw.QHBoxLayout(mask_box)
+        mask_layout.addWidget(qtw.QLabel('Mask Transparency'))
+        self.spinbox_maskAlpha = qtw.QSpinBox()
+        self.spinbox_maskAlpha.setRange(0, 100)
+        self.spinbox_maskAlpha.setSuffix(' %')
+        self.spinbox_maskAlpha.setValue(round(settings.mask_alpha * 100))
+        self.spinbox_maskAlpha.setToolTip(
+            'Opacity of the tracked-object/segmentation mask overlays shown on the '
+            'ROI Tracker, SAM2 Tracker, and ROI on 4D tabs')
+        self.spinbox_maskAlpha.valueChanged.connect(self._on_mask_alpha_changed)
+        mask_layout.addWidget(self.spinbox_maskAlpha)
+        mask_layout.addStretch(1)
+        self.layout.addWidget(mask_box)
 
         form_box = qtw.QGroupBox('Ribbon')
         form = qtw.QFormLayout(form_box)
@@ -219,24 +242,26 @@ class EditSettingsDialog(qtw.QDialog):
         docstring for exactly what re-colors and what doesn't)."""
         AppTheme.instance().set_theme(self.combo_theme.currentData())
 
-    def _open_plot_colormap_dialog(self):
-        """"Per-Plot Colormaps..." button: open the expansion dialog -
-        singleton, non-modal, same show()/raise_() convention as this
-        dialog's own opening from the main window's Edit menu (see
-        EDyssey_MainWindow.show_display_size_dialog)."""
-        if getattr(self, '_plot_colormap_dialog', None) is None:
-            self._plot_colormap_dialog = PlotColormapDialog(self)
-        self._plot_colormap_dialog.show()
-        self._plot_colormap_dialog.raise_()
-        self._plot_colormap_dialog.activateWindow()
+    def _on_plot_colormap_changed(self, key, text):
+        """One plot's own colormap combo changed: apply live, same as
+        Theme above."""
+        DisplaySettings.instance().set_values(plot_colormaps={key: text})
 
-    def _on_colormap_changed(self, _text):
-        """Either colormap combo changed: apply live, same as Theme above -
-        both combos funnel through here since only one of the two values
-        actually needs updating (set_values leaves the other unchanged)."""
-        DisplaySettings.instance().set_values(
-            nav_colormap=self.combo_navCmap.currentText(),
-            dp_colormap=self.combo_dpCmap.currentText())
+    def _reset_colormaps(self):
+        """"Reset All Colormaps": put every plot's colormap back to its own
+        built-in default (see PLOT_COLORMAP_DEFINITIONS) and re-sync every
+        combo to match."""
+        defaults = {key: default for key, _label, default in PLOT_COLORMAP_DEFINITIONS}
+        DisplaySettings.instance().set_values(plot_colormaps=defaults)
+        for key, combo in self._colormap_combos.items():
+            combo.blockSignals(True)
+            combo.setCurrentText(defaults[key])
+            combo.blockSignals(False)
+
+    def _on_mask_alpha_changed(self, value):
+        """Mask Transparency spinbox changed: apply live, same as Theme/
+        Colormaps above."""
+        DisplaySettings.instance().set_values(mask_alpha=value / 100)
 
     def apply_values(self):
         """Push every control's current value to DisplaySettings at once -
@@ -259,15 +284,13 @@ class EditSettingsDialog(qtw.QDialog):
         too, rather than the old customized values coming back next launch."""
         DisplaySettings.instance().reset()
         settings = DisplaySettings.instance()
-        self.combo_navCmap.blockSignals(True)
-        self.combo_navCmap.setCurrentText(settings.nav_colormap)
-        self.combo_navCmap.blockSignals(False)
-        self.combo_dpCmap.blockSignals(True)
-        self.combo_dpCmap.setCurrentText(settings.dp_colormap)
-        self.combo_dpCmap.blockSignals(False)
-        plot_cmap_dlg = getattr(self, '_plot_colormap_dialog', None)
-        if plot_cmap_dlg is not None:
-            plot_cmap_dlg.resync_combos()
+        for key, combo in self._colormap_combos.items():
+            combo.blockSignals(True)
+            combo.setCurrentText(settings.colormap_for(key))
+            combo.blockSignals(False)
+        self.spinbox_maskAlpha.blockSignals(True)
+        self.spinbox_maskAlpha.setValue(round(settings.mask_alpha * 100))
+        self.spinbox_maskAlpha.blockSignals(False)
         self._sync(self.slider_ribbonText, self.spinbox_ribbonText,
                   round(settings.ribbon_text_scale * 100))
         self._sync(self.slider_ribbonIcon, self.spinbox_ribbonIcon, settings.ribbon_icon_size)

@@ -942,16 +942,22 @@ class Tab_ROI_on_4D(TabBase):
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
         per-plot colormaps - see display_settings.py's DisplaySettings.
-        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
-        Colormaps..." expansion. 'nav_roi' defaults to its own fixed 'gray'
-        (see PLOT_COLORMAP_DEFINITIONS) unless overridden - show_seg_mask()
-        draws a translucent segmentation-mask overlay on it, which needs a
-        plain grayscale background to stay readable by default."""
+        colormap_for() and the Edit menu's Display Preferences dialog's own
+        Colormaps list. 'nav_roi' defaults to its own fixed 'gray' (see
+        PLOT_COLORMAP_DEFINITIONS) unless overridden - show_seg_mask() draws
+        a translucent segmentation-mask overlay on it, which needs a plain
+        grayscale background to stay readable by default. Re-running
+        show_seg_mask() on whatever it last drew (if anything) is what
+        actually applies a "Mask Transparency" change - its alpha is baked
+        into the overlay's RGBA data at draw time, not a mutable artist
+        property a bare draw_idle() would pick back up on its own."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
         self.img_display['nav'].set_cmap(settings.colormap_for('roi4d_nav'))
         self.img_display['dp'].set_cmap(settings.colormap_for('roi4d_dp'))
         self.img_display['nav_roi'].set_cmap(settings.colormap_for('roi4d_nav_roi'))
+        if getattr(self, '_last_seg_mask', None) is not None:
+            self.show_seg_mask(self._last_seg_mask, title=self._last_seg_title)
         self.canvas.draw_idle()
 
     def activate_lineEdit_scanSize(self):
@@ -2411,11 +2417,16 @@ class Tab_ROI_on_4D(TabBase):
 
         # tab:orange stands out clearly against the viridis nav-image colormap,
         # unlike tab10's default blue (index 0), which blends into it.
-        color = np.array([*mcolors.to_rgb('tab:orange'), 0.3])
+        color = np.array([*mcolors.to_rgb('tab:orange'), DisplaySettings.instance().mask_alpha])
         mask_image = mask.reshape(shape_y, shape_x, 1) * color.reshape(1, 1, -1)
         self.img_display['seg_mask'].set_data(mask_image)
         self.img_display['seg_mask'].set_extent([0, shape_x, shape_y, 0])
         self.canvas.draw_idle()
+        # Cached purely so apply_display_settings() can redraw this same
+        # mask if "Mask Transparency" changes - its alpha is baked into the
+        # RGBA data above at draw time, not a mutable artist property a bare
+        # draw_idle() would pick back up on its own.
+        self._last_seg_mask, self._last_seg_title = mask, title
 
     def _get_seg_temp_dir(self):
         """Return the temp directory used to exchange SAM2 inputs/outputs

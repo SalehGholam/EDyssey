@@ -944,9 +944,10 @@ class Tab_Create_NavSignal(TabBase):
     #%% functions
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
-        nav/DP colormap - see display_settings.py's nav_colormap/
-        dp_colormap and the Edit menu's Display Size dialog. img_display_mask
-        is this tab's "Summed DP" preview, despite the name."""
+        per-plot colormaps - see display_settings.py's DisplaySettings.
+        colormap_for() and the Edit menu's Display Preferences dialog's own
+        Colormaps list. img_display_mask is this tab's "Summed DP" preview,
+        despite the name."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
         # Also re-applies clip_nav's own clim - a harmless no-op here since
@@ -2840,10 +2841,10 @@ class Tab_Create_NavSignal(TabBase):
         vmin, vmax = self.clip_nav.values()
         self.img_display.set_clim(vmin, vmax)
         # Whichever colormap is actually in effect for this plot right now
-        # (nav_colormap, or a per-plot override - see DisplaySettings.
-        # colormap_for) - NOT hardcoded 'viridis' as this used to be, which
-        # silently overrode any other Navigation Image colormap setting back
-        # to plain viridis the moment contrast was adjusted/reverted here.
+        # (see DisplaySettings.colormap_for) - NOT hardcoded 'viridis' as
+        # this used to be, which silently overrode this plot's own colormap
+        # setting back to plain viridis the moment contrast was
+        # adjusted/reverted here.
         base_cmap = DisplaySettings.instance().colormap_for('navigator_nav')
         self.img_display.set_cmap(
             _reversed_colormap_name(base_cmap) if self.checkbox_revertContrast.isChecked() else base_cmap)

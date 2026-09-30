@@ -1159,18 +1159,25 @@ class Tab_Tracking_CV2(TabBase):
     def apply_display_settings(self):
         """TabBase's own ribbon/figure-size handling, plus this tab's own
         per-plot colormaps - see display_settings.py's DisplaySettings.
-        colormap_for() and the Edit menu's Display Size dialog's "Per-Plot
-        Colormaps..." expansion. img_mask (the mask-editing crop view)
-        defaults to its own fixed 'gray' (see PLOT_COLORMAP_DEFINITIONS)
-        unless overridden - a translucent color mask overlay reads better
-        against a plain grayscale background than a colored one by
-        default. 'mask' is a pure RGBA overlay artist (no colormap of its
-        own - see update_ax_mask), so it's not listed here at all."""
+        colormap_for() and the Edit menu's Display Preferences dialog's own
+        Colormaps list. img_mask (the mask-editing crop view) defaults to
+        its own fixed 'gray' (see PLOT_COLORMAP_DEFINITIONS) unless
+        overridden - a translucent color mask overlay reads better against
+        a plain grayscale background than a colored one by default. 'mask'
+        is a pure RGBA overlay artist (no colormap of its own - see
+        update_ax_mask), so it's not listed here at all - but its own
+        opacity (DisplaySettings.mask_alpha, the "Mask Transparency"
+        option) IS read by update_ax_mask/_draw_all_object_masks, which
+        update_canvas() below re-runs so a change actually shows immediately
+        (colormaps update live via set_cmap() on the existing artist, but a
+        mask overlay's alpha is baked into its RGBA data at draw time, so
+        merely calling draw_idle() would just repaint the same stale array)."""
         super().apply_display_settings()
         settings = DisplaySettings.instance()
         self.img_display['nav'].set_cmap(settings.colormap_for('tracker_nav'))
         self.img_display['dp'].set_cmap(settings.colormap_for('tracker_dp'))
         self.img_display['img_mask'].set_cmap(settings.colormap_for('tracker_mask'))
+        self.update_canvas()
         self.canvas.draw_idle()
 
     def show_dialog(self, f):
@@ -1825,6 +1832,12 @@ class Tab_Tracking_CV2(TabBase):
                 # mask array itself is its own .npy file (like output_mask.
                 # npy above), not embedded in this JSON.
                 'manual_edits': {'protect': row.get('manual_edits_protect', True), 'mask': manual_mask},
+                # item: "Load Saved Analysis" round-trip audit - tab-wide
+                # Threshold state (see _save_results_impl), saved once per
+                # ROI (all identical, since it's one shared setting, not
+                # truly per-ROI) but never read back until now; None for an
+                # analysis saved before this fix.
+                'thresh': row.get('thresh'),
             })
         return s, rois, path, fn_nav
 
@@ -1847,6 +1860,24 @@ class Tab_Tracking_CV2(TabBase):
                 self.toggle_tree_icon(row_index, 'trk', True)
             if roi['dp'] is not None:
                 self.toggle_tree_icon(row_index, 'ext', True)
+
+        # item: "Load Saved Analysis" round-trip audit - restore the
+        # tab-wide Threshold controls (method/ROI Blur/Deviation) from
+        # whichever ROI's own saved 'thresh' is present first (it's one
+        # shared setting, saved identically per ROI, not really per-ROI) -
+        # otherwise these stayed at whatever the UI happened to already
+        # have, not the settings that actually produced the just-reloaded
+        # out_rois/mask. A no-op (old saves lack 'thresh' entirely) rather
+        # than raising if the shape isn't exactly as expected.
+        thresh = next((roi['thresh'] for roi in rois if roi.get('thresh')), None)
+        if thresh:
+            try:
+                thresh_dict = dict(thresh)
+                self.spinbox_blur.setValue(thresh_dict['blur sigma'])
+                self.combo_thresh_method.setCurrentText(thresh_dict['thresh method'])
+                self.slider_thresh.setValue(thresh_dict['thresh offset'])
+            except (TypeError, ValueError, KeyError):
+                self.logger.warning('Could not restore saved Threshold settings from %s.', path)
 
         self.disable_3ded_widgets(False)
         # Select the first restored ROI, if any, so its tracking/mask/DP
@@ -2224,7 +2255,7 @@ class Tab_Tracking_CV2(TabBase):
         # the *whole* axis (mask=0 regions included, just a dim viridis(0)
         # purple), rather than only coloring where the mask is actually
         # True and leaving everything else fully see-through.
-        mask_color = np.array([*to_rgb('tab:orange'), 0.35])
+        mask_color = np.array([*to_rgb('tab:orange'), DisplaySettings.instance().mask_alpha])
         mask_rgba = img_mask.reshape(shape_x, shape_y, 1) * mask_color.reshape(1, 1, -1)
         self.img_display['mask'].set_data(mask_rgba)
         self.img_display['mask'].set_extent([0, shape_y, shape_x, 0])
@@ -2321,7 +2352,7 @@ class Tab_Tracking_CV2(TabBase):
             full_mask[x:x + w, y:y + h] = img_mask
             if not full_mask.any():
                 continue
-            color = np.array([*cmap(idx2 % 10)[:3], 0.48])
+            color = np.array([*cmap(idx2 % 10)[:3], DisplaySettings.instance().mask_alpha])
             composite[full_mask] = color
             cx, cy = io.mask_centroid(full_mask)
             labels.append((idx2, cx, cy))
