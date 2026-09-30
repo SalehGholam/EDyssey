@@ -2409,7 +2409,7 @@ class Tab_SAM2(TabBase):
                 idx += 1
             fr_idx = [imgNo]
             self.df_obj.loc[idx] = [1, idx, fr_idx, [p], [label], len(self.imgs),
-                                    None, None, None, None, None, None, None, None]
+                                    None, None, None, None, None, None, None, None, None]
             self.add_item_tree(idx, fr_idx)
         else:
             selected_items = self.tree_objects.selectedItems()
@@ -3233,7 +3233,7 @@ class Tab_SAM2(TabBase):
                 idx += 1
             fr_idx = [obj['frame_idx']] * len(obj['points'])
             self.df_obj.loc[idx] = [1, idx, fr_idx, obj['points'], obj['labels'],
-                                    len(self.imgs), None, None, None, None, None, None, None, None]
+                                    len(self.imgs), None, None, None, None, None, None, None, None, None]
             self.add_item_tree(idx, fr_idx)
         self.update_canvas()
         self.canvas.draw()
