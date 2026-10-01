@@ -1847,6 +1847,11 @@ class Tab_Tracking_CV2(TabBase):
                 # truly per-ROI) but never read back until now; None for an
                 # analysis saved before this fix.
                 'thresh': row.get('thresh'),
+                # Blob Selection auto-follow history (see _save_results_impl's
+                # own comment) - absent entirely for an analysis saved before
+                # this fix, same "no KeyError, just less to restore" fallback
+                # as every other key above.
+                'blob_centroid_cache': row.get('blob_centroid_cache', {}),
             })
         return s, rois, path, fn_nav
 
@@ -1855,6 +1860,24 @@ class Tab_Tracking_CV2(TabBase):
         the ROI tree from the loaded data, then enable the 3DED controls."""
         s, rois, path, fn_nav = result
         self.lineEdit_dir_navSignal.setText(fn_nav)
+        # path itself is the timestamped save folder _save_results_impl
+        # creates inside whatever the user had picked as lineEdit_dir_save -
+        # restore that parent, not the timestamped folder itself, so the
+        # NEXT save lands in a fresh timestamped subfolder of it exactly
+        # like it would have without a load in between.
+        self.lineEdit_dir_save.setText(os.path.dirname(path))
+        info = io.load_analysis_info(path)
+        fn_4d = info.get('fn_4d_source') if info else None
+        if fn_4d:
+            self.lineEdit_dir_4d.setText(fn_4d)
+        else:
+            # Saved before fn_4d_source existed (or analysis_info.json is
+            # missing entirely) - everything else still loads fine, just
+            # point the user at re-selecting the 4D folder themselves.
+            self.logger.warning(
+                "This saved analysis doesn't record where its 4D data folder was - "
+                "please re-select it manually if you need to extract diffraction "
+                "patterns again.")
         self.initiate_processing(s, index)
 
         for roi in rois:
@@ -1887,6 +1910,22 @@ class Tab_Tracking_CV2(TabBase):
                 self.slider_thresh.setValue(thresh_dict['thresh offset'])
             except (TypeError, ValueError, KeyError):
                 self.logger.warning('Could not restore saved Threshold settings from %s.', path)
+
+        # Restore Blob Selection's auto-follow history AFTER the Threshold
+        # restore above - setValue/setCurrentText on those controls fires
+        # _on_threshold_control_changed, which clears the WHOLE cache (any
+        # stale trail is invalid once the threshold that produced it
+        # changes), so doing this first would just wipe it straight back
+        # out. Without this, any ambiguous multi-blob frame this ROI relied
+        # on auto-follow (rather than an explicit "Pick Blob" seed) for
+        # would start fresh here and could resolve to a different blob the
+        # next time it's resolved (e.g. the next "Extract!"/Save Results),
+        # even though every other setting round-tripped correctly.
+        for roi in rois:
+            cache = roi.get('blob_centroid_cache')
+            if cache:
+                self._blob_centroid_cache[roi['idx']] = {
+                    int(frame_idx): tuple(centroid) for frame_idx, centroid in cache.items()}
 
         self.disable_3ded_widgets(False)
         # Select the first restored ROI, if any, so its tracking/mask/DP
@@ -4855,7 +4894,8 @@ class Tab_Tracking_CV2(TabBase):
         # Navigation signal: rather than re-copying the (potentially large)
         # signal into every saved-analysis folder, just record the path it
         # was loaded from - "Load Saved Analysis" reloads from there.
-        io.save_analysis_info(path_save, self.lineEdit_dir_navSignal.text(), analysis_type='cv2')
+        io.save_analysis_info(path_save, self.lineEdit_dir_navSignal.text(), analysis_type='cv2',
+                              fn_4d_source=self.lineEdit_dir_4d.text())
 
         # tracking results, rois, dp
         for idx in self.df_rois.index:
@@ -4878,6 +4918,20 @@ class Tab_Tracking_CV2(TabBase):
             df['mesh'] = self._mesh_settings_for(idx) or {'segments': []}
             df['dilate_erode'] = self._dilate_erode_settings_for(idx) or {'segments': []}
             df['blob'] = self._blob_settings_for(idx) or {'segments': []}
+            # item: "Load Saved Analysis" round-trip audit - Blob
+            # Selection's own auto-follow history (_resolve_blob_mask's own
+            # `cache`/self._blob_centroid_cache): which exact blob got
+            # chosen on every already-resolved frame, which can depend on
+            # the order frames were visited in this session (scrubbing vs.
+            # a sequential extraction walk - see _resolve_blob_mask's own
+            # docstring), not just this ROI's saved `seed_centroid`. Without
+            # this, "Load Saved Analysis" starts with an empty cache and a
+            # later re-extraction/resave can re-resolve an ambiguous
+            # multi-blob frame to a DIFFERENT blob than what was actually
+            # extracted - saving it here is what makes the final mask
+            # reproduce exactly instead of silently drifting.
+            df['blob_centroid_cache'] = {str(frame_idx): list(centroid) for frame_idx, centroid
+                                         in self._blob_centroid_cache.get(idx, {}).items()}
             manual_edits = self._manual_edit_settings_for(idx) or {}
             # item 1 - just the flag here; the (potentially large) manual
             # mask array itself is its own .npy file below, like output_

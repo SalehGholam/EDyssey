@@ -91,25 +91,31 @@ def default_analysis_save_dir(fn_nav):
         return grandparent
     return os.path.join(d, 'EDyssey Analysis')
 
-def save_analysis_info(path_save, fn_nav_source, analysis_type=None):
-    """Record the source path of the navigation signal used for a save (see
-    Tab_SAM2/Tab_Tracking_CV2's _save_results_impl) in a small
-    analysis_info.json at the top of `path_save`, instead of copying the
-    (potentially large) signal itself into every saved-analysis folder.
-    `load_analysis_info` reads this back so "Load Saved Analysis" can reload
-    the original file. No-op if `fn_nav_source` is falsy (nothing was ever
-    loaded this session).
+def save_analysis_info(path_save, fn_nav_source, analysis_type=None, fn_4d_source=None):
+    """Record the source paths used for a save (see Tab_SAM2/Tab_Tracking_
+    CV2's _save_results_impl) in a small analysis_info.json at the top of
+    `path_save`, instead of copying the (potentially large) signal/4D data
+    itself into every saved-analysis folder. `load_analysis_info` reads this
+    back so "Load Saved Analysis" can reload the original files/folder.
+    No-op if `fn_nav_source` is falsy (nothing was ever loaded this
+    session).
 
     `analysis_type` ('sam2' or 'cv2') tags which tab produced this save, so
     the other tab's "Load Saved Analysis" can detect a mismatch (its folder
     layout - roi No N.json columns, mask/rois file names - is tab-specific
     and doesn't load correctly in the other tab) and warn instead of failing
-    confusingly partway through."""
+    confusingly partway through.
+
+    `fn_4d_source` is the 4D-STEM data folder/file this analysis was run
+    against (lineEdit_dir_4d) - `path_save` itself (the results folder) is
+    always the folder this file is written into, so it needs no separate
+    key and is recovered from `path_save` at load time."""
     if not fn_nav_source:
         return
     fn_info = os.path.join(path_save, 'analysis_info.json')
     with open(fn_info, 'w') as f:
-        json.dump({'nav_signal_source': fn_nav_source, 'analysis_type': analysis_type},
+        json.dump({'nav_signal_source': fn_nav_source, 'analysis_type': analysis_type,
+                   'fn_4d_source': fn_4d_source},
                    f, indent=4)
 
 def load_analysis_info(path_save):

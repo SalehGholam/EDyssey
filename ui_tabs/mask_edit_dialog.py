@@ -1526,7 +1526,7 @@ class MaskEditDialog(qtw.QDialog):
             # checkbox_blobActive's own starting value (see its own
             # setChecked call above) - same widgets _on_blob_active_toggled
             # itself later toggles on every change.
-            self._on_blob_active_toggled()
+            self._on_blob_active_toggled(_redraw=False)
         else:
             self.label_blobHint = None
             self.checkbox_showBlobs = None
@@ -3298,7 +3298,7 @@ class MaskEditDialog(qtw.QDialog):
             self.label_blobHint.setText('')
         self._apply_ribbon_cursor()
 
-    def _on_blob_active_toggled(self, _state=None):
+    def _on_blob_active_toggled(self, _state=None, _redraw=True):
         """checkbox_blobActive changed (or called once from __init__ to sync
         the initial state) - disables "Pick Blob"/Show Blobs/Method/its
         params while unchecked, and disarms "Pick Blob" first if it's
@@ -3308,7 +3308,14 @@ class MaskEditDialog(qtw.QDialog):
         for why unchecking this never undoes pixels already picked into the
         mask; get_blob_settings() is what actually turns off whatever
         persistent restriction this ROI's segments would otherwise apply on
-        the main tab once this dialog closes."""
+        the main tab once this dialog closes.
+
+        _redraw=False for the __init__-time sync call: Mesh's own widgets
+        (spinbox_meshCellSize etc.) don't exist yet at that point, so
+        _redraw_mesh_overlay would crash if this segment already has an
+        active mesh (e.g. loaded from a saved analysis) - __init__'s own
+        final _redraw_mask() call, after every widget is built and
+        _load_segment_into_widgets() has run, covers it instead."""
         active = self.checkbox_blobActive.isChecked()
         if not active and self.ribbon.active_tool == 'pick_blob':
             self.ribbon.clear_active_tool()
@@ -3319,7 +3326,8 @@ class MaskEditDialog(qtw.QDialog):
         self.combo_blobMethod.setEnabled(active)
         for widget in self._blob_param_widgets.values():
             widget.setEnabled(active)
-        self._redraw_mask()
+        if _redraw:
+            self._redraw_mask()
 
     def _on_blob_method_changed(self):
         """Blob Selection's own Method combo changed - mirrors

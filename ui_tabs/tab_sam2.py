@@ -2006,6 +2006,25 @@ class Tab_SAM2(TabBase):
         s, imgs, objects, path, fn_nav = result
         self.spinner.stop()
         self.fn_navSignal = fn_nav
+        self.lineEdit_dir_navSignal.setText(fn_nav)
+        # path itself is the timestamped save folder _save_results_impl
+        # creates inside whatever the user had picked as lineEdit_dir_save -
+        # restore that parent, not the timestamped folder itself, so the
+        # NEXT save lands in a fresh timestamped subfolder of it exactly
+        # like it would have without a load in between.
+        self.lineEdit_dir_save.setText(os.path.dirname(path))
+        info = io.load_analysis_info(path)
+        fn_4d = info.get('fn_4d_source') if info else None
+        if fn_4d:
+            self.lineEdit_dir_4d.setText(fn_4d)
+        else:
+            # Saved before fn_4d_source existed (or analysis_info.json is
+            # missing entirely) - everything else still loads fine, just
+            # point the user at re-selecting the 4D folder themselves.
+            self.logger.warning(
+                "This saved analysis doesn't record where its 4D data folder was - "
+                "please re-select it manually if you need to extract diffraction "
+                "patterns again.")
         self.create_main_dataframe()
         # 8-bit conversion happens here (main thread) - see _on_navSignal_loaded.
         self.box_contrast.set_data_range(imgs.min(), imgs.max())
@@ -4072,7 +4091,8 @@ class Tab_SAM2(TabBase):
         # Navigation signal: rather than re-copying the (potentially large)
         # signal into every saved-analysis folder, just record the path it
         # was loaded from - "Load Saved Analysis" reloads from there.
-        io.save_analysis_info(path_save, getattr(self, 'fn_navSignal', None), analysis_type='sam2')
+        io.save_analysis_info(path_save, getattr(self, 'fn_navSignal', None), analysis_type='sam2',
+                              fn_4d_source=self.lineEdit_dir_4d.text())
 
         # tracking results, rois, dp
         for idx in self.df_obj.index:
