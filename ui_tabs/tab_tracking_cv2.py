@@ -2802,7 +2802,7 @@ class Tab_Tracking_CV2(TabBase):
                or mesh_active
                or _any_enabled(self._blob_settings_for(idx)))
 
-    def _resolve_blob_mask(self, idx, frame_idx, mask, cache=None):
+    def _resolve_blob_mask(self, idx, frame_idx, mask, cache=None, roi_offset=None):
         """If ROI `idx` has Blob Selection enabled for `frame_idx` (see the
         "Blob Selection" ribbon section/_on_blob_mask_clicked), restrict
         `mask` to just one connected component - the one nearest whatever
@@ -2836,7 +2836,28 @@ class Tab_Tracking_CV2(TabBase):
         correct history with default_mask_stack's - a fresh re-threshold
         that ignores this ROI's saved mask edits, so its blob shapes/
         positions (and thus which one is "nearest") can genuinely differ
-        from what the main UI had been tracking."""
+        from what the main UI had been tracking.
+
+        `roi_offset`: every centroid this function reads/writes (the cache,
+        and a segment's own fixed `seed_centroid`) is stored in ROI-LOCAL
+        pixel coordinates - relative to the ROI's own cropped box, not the
+        full navigation image - since that stays meaningful frame-to-frame
+        as a tracked ROI moves (the object's position WITHIN its own
+        tracked crop tends to stay similar; its ABSOLUTE position doesn't).
+        `mask` itself, though, is sometimes a crop matching that same
+        convention (the main UI's own live "ROI with Threshold" panel, via
+        threshold_img) and sometimes the FULL navigation-image-sized array
+        tr.create_masks() produces (extract_3ded, open_fine_tune_mask_dialog,
+        _draw_all_object_masks, update_canvas's own saved-mask branch) -
+        pass this frame's own `out_rois` offset, `(x, y)` from `y, x, h, w =
+        out_rois[frame_idx]` (matching _raw_threshold_crop's identical
+        unpacking/cropping convention), whenever `mask` is the latter, so a
+        LOCAL seed gets translated to `mask`'s own coordinate space before
+        the nearest-blob lookup, and the chosen centroid gets translated
+        back to LOCAL before being cached - otherwise a blob picked live
+        (always local/cropped) resolves to a different, essentially random
+        component once applied to the full-frame array, which is exactly
+        why a blob chosen in the main UI could change after "Extract!"."""
         segments = (self._blob_settings_for(idx) or {}).get('segments')
         seg = io.segment_for_frame(segments, frame_idx) if segments else None
         if not seg or not seg.get('enabled'):
@@ -2865,10 +2886,46 @@ class Tab_Tracking_CV2(TabBase):
             fixed_seed = seg.get('seed_centroid')
             seed = prev if (prev is not None and seg['start'] <= frame_idx - 1 <= seg['end']) \
                 else (tuple(fixed_seed) if fixed_seed is not None else None)
+        # seed/the cache are always ROI-local (see this method's own
+        # docstring) - translate to mask's own coordinate space (full-frame,
+        # offset by this frame's own out_rois box) only when the caller
+        # says mask isn't already a crop itself.
+        if seed is not None and roi_offset is not None:
+            row_off, col_off = roi_offset
+            seed = (seed[0] + col_off, seed[1] + row_off)
         restricted, chosen_centroid = io.select_blob_by_centroid(mask, seed, labels=labels)
         if chosen_centroid is not None:
-            cache[frame_idx] = chosen_centroid
+            stored_centroid = chosen_centroid
+            if roi_offset is not None:
+                row_off, col_off = roi_offset
+                stored_centroid = (chosen_centroid[0] - col_off, chosen_centroid[1] - row_off)
+            cache[frame_idx] = stored_centroid
         return restricted
+
+    def _roi_offset_if_full_frame(self, idx, frame_idx, mask):
+        """The `roi_offset` _resolve_blob_mask needs, or None - figured out
+        from `mask`'s own shape rather than threading an explicit flag
+        through every apply_edge_mask call site (threshold_img's own live
+        "ROI with Threshold" panel passes a crop; extract_3ded,
+        _draw_all_object_masks, and update_canvas's own saved-mask branch
+        all pass a FULL navigation-image-sized array - see
+        _resolve_blob_mask's own docstring for why that distinction
+        matters). A crop and a full frame are essentially never the same
+        shape in practice, so comparing against this frame's own raw image
+        shape is a reliable, low-cost discriminator without changing any
+        existing call site's signature."""
+        if idx is None or frame_idx is None:
+            return None
+        out_rois = self.df_rois.at[idx, 'out_rois']
+        if not isinstance(out_rois, np.ndarray) or frame_idx >= len(out_rois):
+            return None
+        roi = out_rois[frame_idx]
+        if not roi.any():
+            return None
+        if mask.shape != self.nav_imgs[frame_idx].shape:
+            return None  # already a crop - no translation needed
+        y, x, h, w = roi
+        return (x, y)
 
     def _selected_roi_idx(self):
         """The tree_objects row currently selected, as a df_rois index, or
@@ -3078,7 +3135,7 @@ class Tab_Tracking_CV2(TabBase):
         convention, which this mirrors) so a tracked ROI's motion across
         frames doesn't throw off which part of it the selection actually
         covers. A no-op otherwise."""
-        mask = self._resolve_blob_mask(idx, frame_idx, mask)
+        mask = self._resolve_blob_mask(idx, frame_idx, mask, roi_offset=self._roi_offset_if_full_frame(idx, frame_idx, mask))
         original = mask
 
         de_segments = (self._dilate_erode_settings_for(idx) or {}).get('segments')
@@ -4092,10 +4149,13 @@ class Tab_Tracking_CV2(TabBase):
             default_mask_stack = default_mask_stack.copy()
             mask_cache, default_cache = dict(seen_cache), dict(seen_cache)
             for f in range(mask_stack.shape[0]):
-                mask_stack[f] = self._resolve_blob_mask(idx, f, mask_stack[f], cache=mask_cache)
+                mask_stack[f] = self._resolve_blob_mask(
+                    idx, f, mask_stack[f], cache=mask_cache,
+                    roi_offset=self._roi_offset_if_full_frame(idx, f, mask_stack[f]))
             for f in range(default_mask_stack.shape[0]):
                 default_mask_stack[f] = self._resolve_blob_mask(
-                    idx, f, default_mask_stack[f], cache=default_cache)
+                    idx, f, default_mask_stack[f], cache=default_cache,
+                    roi_offset=self._roi_offset_if_full_frame(idx, f, default_mask_stack[f]))
         edge_settings = self._edge_settings_for(idx)
         thresh_settings = {
             'method': thresh_method, 'offset_raw': self.slider_thresh.value(), 'blur': blur_sigma}
@@ -4265,9 +4325,27 @@ class Tab_Tracking_CV2(TabBase):
         thresh_method = self.combo_thresh_method.currentText()
         thresh_offset = self.slider_thresh.value() / 100
         for ind in self.df_rois[self.df_rois.use == 1].index:
-            masks = tr.create_masks(
-                self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
-                thresh_method, thresh_offset, blur_sigma)
+            # Reuse this ROI's own already-saved mask (from an earlier
+            # "Extract!" run, or a Fine-Tune Mask session - manual paint/
+            # D-pad grow-shrink/Pick Blob edits are baked directly into this
+            # array, not a reapplied setting like Dilate/Erode/Edge
+            # Detection/Mesh/Blob below) instead of unconditionally
+            # rebuilding it from a fresh re-threshold every time - matches
+            # update_canvas's own identical "saved mask, once one exists"
+            # convention (see its own mask-panel comment) and
+            # open_fine_tune_mask_dialog's. Rebuilding from scratch here
+            # used to silently discard any such edit the moment "Extract!"
+            # ran, even though the main UI's own live view (after that same
+            # fix) was already showing the edited result - "what's plotted
+            # is what gets extracted" is the one expectation this is
+            # supposed to guarantee. A ROI that's never been tracked/
+            # extracted/fine-tuned at all still gets its first-ever mask
+            # built fresh here, same as before.
+            masks = self.df_rois.at[ind, 'mask']
+            if not isinstance(masks, np.ndarray) or np.all(pd.isna(masks)):
+                masks = tr.create_masks(
+                    self.nav_imgs, self.df_rois.loc[ind, 'out_rois'],
+                    thresh_method, thresh_offset, blur_sigma)
             if self._has_active_postprocessing(ind):
                 # Applied per-frame - erode_mask_edge/mesh_restrict_mask are
                 # single-2D-mask transforms, and this stack is (N frames, H, W).

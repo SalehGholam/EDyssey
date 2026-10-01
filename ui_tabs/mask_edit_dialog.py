@@ -666,11 +666,38 @@ class MaskEditDialog(qtw.QDialog):
         outer_layout = qtw.QVBoxLayout(self)
         main_row = qtw.QHBoxLayout()
         outer_layout.addLayout(main_row, 1)
+        # Wrapped in a vertical-only QScrollArea (mirrors base_tab.py's own
+        # build_left_panel) - with Blob Selection added and Threshold folded
+        # into Denoise, this column's own boxes (Tilt Axis, Denoise+
+        # Threshold, Blob Selection, Grow/Shrink, Dilate/Erode, Edge
+        # Detection, Mesh) can add up to more vertical space than a shorter
+        # screen has, clipping the bottom ones. An EARLIER version of this
+        # dialog had a scroll area here too, removed at the user's own
+        # request once there were fewer boxes - brought back now that
+        # there's enough of them again to need it; the width itself stays
+        # fixed (self._LEFT_PANEL_WIDTH), only height scrolls.
         left_panel = qtw.QWidget()
+        # Fixed on the INNER widget too, not just the scroll area wrapping
+        # it below - setWidgetResizable(True) only shrinks/grows left_panel
+        # to fit the viewport up to its own layout's minimum size hint; a
+        # widget added directly with no width constraint of its own (e.g.
+        # slider_threshDev) can otherwise demand more than
+        # self._LEFT_PANEL_WIDTH, which the scroll area (no horizontal
+        # scrollbar - vertical-only, by design) then let grow past it
+        # instead of wrapping/compressing within it, visually spilling into
+        # the canvas. This is the one line that actually enforces the fixed
+        # width every control inside has always been built for.
         left_panel.setFixedWidth(self._LEFT_PANEL_WIDTH)
+        left_scroll = qtw.QScrollArea()
+        left_scroll.setWidget(left_panel)
+        left_scroll.setWidgetResizable(True)
+        scrollbar_w = qtw.QApplication.style().pixelMetric(qtw.QStyle.PM_ScrollBarExtent)
+        left_scroll.setFixedWidth(self._LEFT_PANEL_WIDTH + scrollbar_w)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         left_layout = qtw.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        main_row.addWidget(left_panel, 0)
+        main_row.addWidget(left_scroll, 0)
         layout = qtw.QVBoxLayout()
         main_row.addLayout(layout, 1)
 
@@ -996,10 +1023,13 @@ class MaskEditDialog(qtw.QDialog):
         # these frames, noticeably sluggish. Deliberately segment-scoped,
         # not whole-stack, matching every other option's own segment-first
         # philosophy in this dialog - added into box_denoise's own layout
-        # (not a separate box) so it reads as part of the same Denoise
-        # control, right beside "Test Methods".
+        # (not a separate box), on the SAME row as "Test Methods" (moved
+        # here from its own row, which otherwise sat alone - every row
+        # saved matters in an already-tall left panel) rather than one of
+        # its own.
         if self.bg_stack is not None:
             row_denoiseApply = qtw.QHBoxLayout()
+            row_denoiseApply.addWidget(self.box_denoise.button_checkMethods)
             self.button_denoiseApplySegment = qtw.QPushButton('Apply to Segment')
             self.button_denoiseApplySegment.setToolTip(
                 'Run the current Denoise method on every frame in the segment '
@@ -1444,7 +1474,18 @@ class MaskEditDialog(qtw.QDialog):
                 'the mask itself are not undone, this just stops applying/offering '
                 'the restriction going forward.')
             self.checkbox_blobActive.stateChanged.connect(self._on_blob_active_toggled)
-            layout_blob.addWidget(self.checkbox_blobActive)
+            self.checkbox_showBlobs = qtw.QCheckBox('Show Blobs')
+            self.checkbox_showBlobs.setChecked(True)
+            self.checkbox_showBlobs.setToolTip(
+                "Outline every detected blob on the current frame's raw threshold "
+                'mask (cyan) and highlight the one currently kept (green), so you '
+                'can see the candidates before picking one')
+            self.checkbox_showBlobs.stateChanged.connect(lambda *_: self._redraw_mask())
+            row_blobActive = qtw.QHBoxLayout()
+            row_blobActive.addWidget(self.checkbox_blobActive)
+            row_blobActive.addWidget(self.checkbox_showBlobs)
+            row_blobActive.addStretch(1)
+            layout_blob.addLayout(row_blobActive)
             self.label_blobHint = qtw.QLabel(
                 'Use the "Pick Blob" icon under the canvas to choose a different '
                 "blob for this frame/segment (see Edit Scope above).")
@@ -1480,14 +1521,6 @@ class MaskEditDialog(qtw.QDialog):
             self._blob_param_widgets = {}
             self._rebuild_blob_param_form()
 
-            self.checkbox_showBlobs = qtw.QCheckBox('Show Blobs')
-            self.checkbox_showBlobs.setChecked(True)
-            self.checkbox_showBlobs.setToolTip(
-                "Outline every detected blob on the current frame's raw threshold "
-                'mask (cyan) and highlight the one currently kept (green), so you '
-                'can see the candidates before picking one')
-            self.checkbox_showBlobs.stateChanged.connect(lambda *_: self._redraw_mask())
-            layout_blob.addWidget(self.checkbox_showBlobs)
             grid_boxes.addWidget(box_blob)
             # Sync the ribbon/Show Blobs/Method widgets' enabled state to
             # checkbox_blobActive's own starting value (see its own
@@ -1868,10 +1901,19 @@ class MaskEditDialog(qtw.QDialog):
         the one currently kept (mask_stack[frame]) in green on top, so the
         candidates are visible before/while using "Pick Blob" - a no-op
         (clears whatever was drawn before) when this ROI has no Blob
-        Selection box at all, or the checkbox is off. Contour, not
-        cv2.findContours, on a plain boolean field - matplotlib's own
-        contour already traces one closed loop per disjoint connected
-        region, which is all "outline the blobs" needs, without a separate
+        Selection box at all, or the checkbox is off.
+
+        Outlined per detected blob LABEL (see _blob_labels_for_frame), not
+        one contour of the whole raw mask - for the default 'connected'
+        method (labels is None, meaning "just use plain connected
+        components"), a single whole-mask contour already traces one loop
+        per disjoint region, which is the same thing; but for a method that
+        actually SPLITS one still-contiguous region into separate blobs
+        (Watershed, K-Means, GMM), a single whole-mask contour would just
+        show one merged outline around all of them, making a Method change
+        look like it did nothing at all. Contour, not cv2.findContours, on
+        a plain boolean/labeled field - matplotlib's own contour already
+        traces one closed loop per disjoint region, without a separate
         connected-components pass."""
         for artist in self._blob_overlay_artists:
             artist.remove()
@@ -1884,8 +1926,15 @@ class MaskEditDialog(qtw.QDialog):
             return
         raw = source[self.frame]
         if raw.any():
-            self._blob_overlay_artists.append(
-                self.ax.contour(raw.astype(float), levels=[0.5], colors='cyan', linewidths=0.8))
+            labels = self._blob_labels_for_frame(self.frame)
+            if labels is None:
+                self._blob_overlay_artists.append(
+                    self.ax.contour(raw.astype(float), levels=[0.5], colors='cyan', linewidths=0.8))
+            else:
+                for lid in (lid for lid in np.unique(labels) if lid != 0):
+                    self._blob_overlay_artists.append(
+                        self.ax.contour((labels == lid).astype(float), levels=[0.5],
+                                        colors='cyan', linewidths=0.8))
         chosen = self.mask_stack[self.frame]
         if chosen.any():
             self._blob_overlay_artists.append(
