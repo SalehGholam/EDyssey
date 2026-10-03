@@ -272,6 +272,20 @@ def load_tpx3(fn, mask, scanSize, roi=None, dwellTime=1, fn_pattern=None, det_sh
         fn, scanSize, roi_rect=(x, y, w, h), dwell_time_ns=dwellTime * 1000, det_shape=det_shape,
         fn_pattern=fn_pattern, get_4d=True, backend=backend, decluster_cfg=decluster_cfg,
         n_threads=n_threads, logger_=logger, execution_strategy=execution_strategy or io.eb.EXEC_THREADS,
+        # Explicit, not left to default (unlike the masked-ROI path above,
+        # this one actually accumulates the full 4D cube, not just the 2D
+        # sum) - old/new eventem's own C++ Roi object silently defaults its
+        # per-voxel accumulator to 8-bit (uint8, wraps silently past 255
+        # hits) when never told otherwise (EvenTem/src/core/Roi.h's own
+        # `roi_bitdepth = 8`), while pyeventem's equivalent default is a
+        # safe 64-bit - an asymmetry that would otherwise make the exact
+        # same smart-scan extraction silently corrupt its result on
+        # old/new eventem only. 32 (not 64): old/new eventem's own
+        # set_bitdepth() only accepts 8/16/32 (EvenTem/src/core/Roi.cpp's
+        # own set_bitdepth - 64 raises std::invalid_argument there), and 32
+        # is already effectively always safe (~4.3 billion hits/voxel) for
+        # one small ROI's cube, not a whole-detector live accumulation.
+        bitdepth=32,
     )
     s = np.asarray(result.get_4D())
 

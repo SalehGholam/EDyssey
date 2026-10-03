@@ -144,7 +144,15 @@ def test_save_and_load_analysis_info_roundtrip(tmp_path):
     fn_source = str(tmp_path / 'somewhere' / 'nav.hspy')
     md.save_analysis_info(str(tmp_path), fn_source)
     result = md.load_analysis_info(str(tmp_path))
-    assert result == {'nav_signal_source': fn_source, 'analysis_type': None}
+    assert result == {'nav_signal_source': fn_source, 'analysis_type': None, 'fn_4d_source': None}
+
+
+def test_save_analysis_info_records_fn_4d_source(tmp_path):
+    fn_source = str(tmp_path / 'somewhere' / 'nav.hspy')
+    fn_4d = str(tmp_path / 'elsewhere' / '4d_data')
+    md.save_analysis_info(str(tmp_path), fn_source, fn_4d_source=fn_4d)
+    result = md.load_analysis_info(str(tmp_path))
+    assert result['fn_4d_source'] == fn_4d
 
 
 def test_save_analysis_info_records_analysis_type(tmp_path):

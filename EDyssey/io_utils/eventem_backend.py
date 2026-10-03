@@ -449,21 +449,36 @@ def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=
     clone()/merge(), required by both the plain and the declustering
     parallel path alike.
 
-    Both paths pass progress=True (a live hit-count/rate tqdm bar - see
-    pyeventem's own pipeline.py/decode/parallel.py) - old/new eventem's
-    console progress already goes through redirect_console_to_logger, and
-    pyeventem had no equivalent at all, which made a multi-minute
-    declustered run look hung."""
+    ``progress``: a live hit-count/rate tqdm bar (see pyeventem's own
+    pipeline.py/decode/parallel.py) - requested only when `logger_` is None
+    (a plain script/console caller with no Qt log console to report
+    through - redirect_console_to_logger is already a no-op in that case
+    too, so there's no fd redirect for it to conflict with either).
+    **Never** when a real `logger_` is given (every GUI call): tqdm's own
+    global write-lock/monitor-thread bookkeeping deadlocks against
+    redirect_console_to_logger's OS-level stdout/stderr fd redirection
+    below (needed for old/new eventem's compiled console output, which
+    bypasses Python's sys.stdout entirely) - confirmed directly from this
+    app's own hang_watchdog dumps (logs/hang_dump_Worker_CalculateDP_*.txt):
+    every one stuck at tqdm/std.py's lock acquire, inside exactly this
+    redirected-fd context, specifically on run_parallel's own threaded
+    progress reporter (the path declustering with more than one worker
+    always takes) - not a theoretical risk. Losing the live percentage
+    under the GUI costs nothing real: the plain "calculating the dp..."/
+    "...calculated successfully in Xs" log lines around this call are
+    already the only progress feedback old/new eventem's own sequential
+    path ever had."""
     from .progress import redirect_console_to_logger
+    progress = logger_ is None
     workers = _pyeventem_workers(n_threads)
     if workers > 1:
         with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            pe.run_parallel(source, [sink], n_workers=workers, declusterer=declusterer, progress=True)
+            pe.run_parallel(source, [sink], n_workers=workers, declusterer=declusterer, progress=progress)
     else:
         if decluster_on:
             source = pe.decluster_source(source, declusterer)
         with redirect_console_to_logger(logger_, 'Loading tpx3'):
-            pe.run(source, [sink], progress=True)
+            pe.run(source, [sink], progress=progress)
 
 
 # ---------------------------------------------------------------------------
