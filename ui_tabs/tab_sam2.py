@@ -978,6 +978,8 @@ class Tab_SAM2(TabBase):
             RibbonTool('home', 'home', 'Reset the view',
                       'action', self.toolbar.home),
             RibbonTool('sep2', kind='separator'),
+            RibbonTool('save_figure', 'save_figure', 'Save the figure to an image/PDF/SVG file',
+                      'action', self.save_figure),
             RibbonTool('help', 'help', 'Shortcuts & mouse controls for this tab',
                       'action', self.show_help_dialog),
         ], parent=self)

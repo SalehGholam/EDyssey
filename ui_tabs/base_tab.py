@@ -351,6 +351,32 @@ class TabBase(qtw.QWidget):
         dlg.resize(520, 520)
         dlg.exec_()
 
+    _last_save_dir = ''  # shared by every tab's save dialogs
+
+    def _ask_save_path(self, title, default_name, file_filter):
+        """Save-file dialog starting in the last-used folder; returns the chosen path or ''."""
+        start = os.path.join(TabBase._last_save_dir, default_name)
+        path, _ = qtw.QFileDialog.getSaveFileName(self, title, start, file_filter)
+        if path:
+            TabBase._last_save_dir = os.path.dirname(path)
+        return path
+
+    def save_figure(self):
+        """Ribbon "Save Figure": write this tab's whole figure to a user-chosen image/vector file."""
+        path = self._ask_save_path(
+            'Save Figure', f'{self._tab_name}_figure.png',
+            'PNG (*.png);;PDF (*.pdf);;SVG (*.svg);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg)')
+        if not path:
+            return
+        try:
+            self.figure.savefig(path, dpi=300, facecolor=self.figure.get_facecolor())
+        except Exception as exc:
+            self.logger.error('Failed to save figure: %s', exc)
+            qtw.QMessageBox.critical(self, 'Save Figure Failed', str(exc))
+            return
+        self.canvas.draw_idle()
+        self.logger.info('Figure saved to %s', path)
+
     def show_shortcuts_dialog(self, text):
         """Show `text` (this tab's mouse/keyboard interaction hints - Ctrl+
         drag/click modifiers, middle-click, etc.) in a read-only popup,

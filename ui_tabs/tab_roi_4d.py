@@ -862,6 +862,10 @@ class Tab_ROI_on_4D(TabBase):
             RibbonTool('home', 'home', 'Reset the view',
                       'action', self.toolbar.home),
             RibbonTool('sep3', kind='separator'),
+            RibbonTool('save_figure', 'save_figure', 'Save the figure to an image/PDF/SVG file',
+                      'action', self.save_figure),
+            RibbonTool('save_data', 'save_data', 'Save the raw ROI data (diffraction pattern, nav image, '
+                      'mask/ROI coordinates) to a .npz file', 'action', self.save_roi_data),
             RibbonTool('help', 'help', 'Shortcuts & mouse controls for this tab',
                       'action', self.show_help_dialog),
         ], parent=self)
@@ -1784,6 +1788,56 @@ class Tab_ROI_on_4D(TabBase):
             center=center, old_artists=getattr(self, '_dp_recip_circles', None))
 
         self.canvas.draw()
+
+    def save_roi_data(self):
+        """Ribbon "Save Data": write the plotted diffraction pattern together with
+        what produced it (ROI rectangle and/or mask, nav image, settings) to a .npz."""
+        if not hasattr(self, 'dp') or not hasattr(self, 'navImg'):
+            qtw.QMessageBox.information(self, 'No Data',
+                'Compute a diffraction pattern for an ROI or mask first.')
+            return
+        path = self._ask_save_path('Save ROI Data', 'roi_data.npz', 'NumPy archive (*.npz)')
+        if not path:
+            return
+
+        arrays = {'dp': np.asarray(self.dp), 'nav_image': np.asarray(self.navImg)}
+        if self.seg_mask is not None:
+            arrays['mask_raw'] = np.asarray(self.seg_mask, dtype=bool)
+            arrays['mask_used'] = np.asarray(self.apply_edge_mask(self.seg_mask), dtype=bool)
+        elif hasattr(self, 'navImg_cut'):
+            arrays['nav_image_roi_crop'] = np.asarray(self.navImg_cut)
+        if self.roi is not None:
+            arrays['roi_xywh'] = np.array(self.roi)
+        if getattr(self, 'seg_roi', None) is not None:
+            arrays['mask_bbox_xywh'] = np.array(self.seg_roi)
+        if self.seg_points:
+            arrays['seg_points_xy'] = np.array(self.seg_points, dtype=float)
+            arrays['seg_labels'] = np.array(self.seg_labels, dtype=int)
+        if self.dp_center is not None:
+            arrays['dp_center_xy'] = np.array(self.dp_center, dtype=float)
+
+        info = {
+            'file': getattr(self, 'fn', None),
+            'scan_size': getattr(self, 'scanSize', None),
+            'dwell_time': getattr(self, 'dwellTime', None),
+            'mask_source': self._mask_source,
+            'threshold_method': self._threshold_method,
+            'edge_only': self.checkbox_edgeOnly.isChecked(),
+            'dp_title': self.ax_dp.get_title(),
+            'roi_title': self.ax_nav_roi.get_title(),
+            'scale_real': self.lineEdit_scale_real.text(),
+            'scale_recip': self.lineEdit_scale_recip.text(),
+            'virtual_detectors': self._extra_detectors_vi,
+        }
+        arrays['info_json'] = np.array(json.dumps(
+            info, default=lambda o: o.item() if hasattr(o, 'item') else str(o)))
+        try:
+            np.savez_compressed(path, **arrays)
+        except Exception as exc:
+            self.logger.error('Failed to save ROI data: %s', exc)
+            qtw.QMessageBox.critical(self, 'Save Data Failed', str(exc))
+            return
+        self.logger.info('ROI data saved to %s (%s)', path, ', '.join(arrays))
 
     def show_help_dialog(self):
         """Ribbon "?" tool: shortcuts/mouse controls for this tab, moved

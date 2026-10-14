@@ -208,6 +208,25 @@ def _drawn_icon(kind, size):
         font.setPixelSize(round(size * 0.5))
         painter.setFont(font)
         painter.drawText(QRectF(0, 0, size, size), Qt.AlignCenter, '?')
+    elif kind == 'save_figure':
+        # Floppy disk: notched outline, label area on top, shutter below.
+        n = size * 0.22
+        outline = [QPointF(margin, margin), QPointF(size - margin - n, margin),
+                   QPointF(size - margin, margin + n), QPointF(size - margin, size - margin),
+                   QPointF(margin, size - margin)]
+        painter.drawPolygon(*outline)
+        painter.drawRect(QRectF(size * 0.32, margin, size * 0.30, size * 0.22))
+        painter.drawRect(QRectF(size * 0.28, size * 0.55, size * 0.44, size - margin - size * 0.55))
+    elif kind == 'save_data':
+        # Database cylinder: top ellipse, two lower arcs, vertical sides.
+        w = size - 2 * margin
+        eh = size * 0.22
+        top, bottom = margin, size - margin - eh
+        painter.drawEllipse(QRectF(margin, top, w, eh))
+        painter.drawLine(QPointF(margin, top + eh / 2), QPointF(margin, bottom + eh / 2))
+        painter.drawLine(QPointF(size - margin, top + eh / 2), QPointF(size - margin, bottom + eh / 2))
+        painter.drawArc(QRectF(margin, (top + bottom) / 2, w, eh), 180 * 16, 180 * 16)
+        painter.drawArc(QRectF(margin, bottom, w, eh), 180 * 16, 180 * 16)
     else:
         raise ValueError(f'Unknown drawn-icon kind {kind!r}')
 
@@ -218,7 +237,7 @@ def _drawn_icon(kind, size):
 _DRAWN_ICON_KINDS = {'select_roi', 'add_point', 'remove_point', 'clear_roi',
                       'center_recip', 'center_mask', 'hide_mask', 'help',
                       'paint_in', 'paint_out', 'rect_in', 'rect_out',
-                      'undo', 'redo', 'pick_blob'}
+                      'undo', 'redo', 'pick_blob', 'save_figure', 'save_data'}
 
 
 def build_icon(key, size=_ICON_SIZE):

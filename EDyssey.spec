@@ -342,6 +342,12 @@ a = Analysis(
     module_collection_mode=module_collection_mode,
 )
 
+# pyxem's dist-info gets bundled whenever it is installed in the build env, but its code is not,
+# so hyperspy's extension scan crashes at startup (find_spec('pyxem') is None).
+a.datas = [d for d in a.datas
+           if d[0].replace('\\', '/').split('/')[0] != 'pyxem'
+           and not d[0].replace('\\', '/').split('/')[0].startswith('pyxem-')]
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
