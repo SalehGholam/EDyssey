@@ -4160,7 +4160,7 @@ class Tab_SAM2(TabBase):
                 os.mkdir(path_pets)
                 fld_frames = os.path.join(path_pets, 'frames')
                 worker_frames = WorkerThread_General(io.create_frames, 0,
-                                 fld_frames, self.df_obj.loc[idx, 'dp'])
+                                 fld_frames, self.df_obj.loc[idx, 'dp'], logger=self.logger)
                 worker_frames.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_frames)
 

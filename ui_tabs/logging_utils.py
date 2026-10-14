@@ -311,3 +311,21 @@ def install_excepthook():
         app_logger.error('Uncaught exception in thread %r:\n%s', thread_name, text)
 
     threading.excepthook = _handle_thread
+    _enable_crash_dump(app_logger)
+
+
+_crash_dump_file = None  # kept open for the process lifetime so faulthandler can write to it
+
+
+def _enable_crash_dump(app_logger):
+    """Write every thread's Python stack to logs/native_crash.log if the process dies from a
+    native fault (access violation etc.), which no excepthook can catch."""
+    global _crash_dump_file
+    path = os.path.join(LOG_DIR, 'native_crash.log')
+    try:
+        mode = 'w' if os.path.isfile(path) and os.path.getsize(path) > 1_000_000 else 'a'
+        _crash_dump_file = open(path, mode, buffering=1)
+        _crash_dump_file.write(f'--- session {time.strftime("%Y-%m-%d %H:%M:%S")} ---\n')
+        faulthandler.enable(file=_crash_dump_file, all_threads=True)
+    except Exception as exc:
+        app_logger.warning('Could not enable the native crash dump (%s): %s', path, exc)

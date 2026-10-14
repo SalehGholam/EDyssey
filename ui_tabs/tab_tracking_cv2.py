@@ -4956,7 +4956,8 @@ class Tab_Tracking_CV2(TabBase):
                 path_pets = os.path.join(path_save_roi, 'pets')
                 os.mkdir(path_pets)
                 fld_frames = os.path.join(path_pets, 'frames')
-                worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp)
+                worker_frames = WorkerThread_General(io.create_frames, 0, fld_frames, dp,
+                                                  logger=self.logger)
                 worker_frames.signals.error.connect(self._on_background_export_failed)
                 self.threadpool.start(worker_frames)
                 scale_recip = self.lineEdit_scale_recip.text()

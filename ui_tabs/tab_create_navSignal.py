@@ -2693,7 +2693,7 @@ class Tab_Create_NavSignal(TabBase):
         s.save(os.path.join(path_save, f'{save_name}.hspy'), overwrite=True)
         path_imgs = os.path.join(path_save, 'navigation_images')
         os.mkdir(path_imgs)
-        worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s.data)
+        worker_frames = WorkerThread_General(io.create_frames, 0, path_imgs, s.data, logger=self.logger)
         worker_frames.signals.error.connect(self._on_background_export_failed)
         threadpool.start(worker_frames)
         fn_clip = os.path.join(path_save, 'navigation_images_clip')
