@@ -143,6 +143,7 @@ extra_datas = [
     ('workers/worker_extract_frame_batch.py', 'EDyssey/workers'),
     ('workers/worker_nav_img.py', 'EDyssey/workers'),
     ('workers/worker_nav_img_batch.py', 'EDyssey/workers'),
+    ('workers/worker_eventem_call.py', 'EDyssey/workers'),
     ('workers/worker_pool_utils.py', 'EDyssey/workers'),
     # worker_sam.py's _load_asset_fetch() loads these two directly by file
     # path (bypassing EDyssey.io_utils/EDyssey.tracking_utils's own

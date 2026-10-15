@@ -79,6 +79,13 @@ def _iter_meshes(seg):
     return [seg]
 
 
+def frames_to_extract(out_rois, beg, end, n_files):
+    """Frame indices "Extract!" processes for one ROI: those in [beg, end) - the End spinbox's
+    current value, which can be lowered after tracking - with a non-empty tracked box."""
+    stop = min(int(end), len(out_rois), n_files)
+    return [i for i in range(max(int(beg), 0), stop) if out_rois[i].any()]
+
+
 #%% wdiget
 class Tab_Tracking_CV2(TabBase):
     def __init__(self, parent=None):
@@ -4426,21 +4433,30 @@ class Tab_Tracking_CV2(TabBase):
             self.df_rois.at[idx, 'dp'] = np.zeros((len(self.nav_imgs), shape_d_x,
                                                    shape_d_y), dtype='uint32')
             out_rois = self.df_rois.loc[idx, 'out_rois']
+            beg = min(self.df_rois.loc[idx, 'init'])
+            end = self.df_rois.loc[idx, 'end']
             specs = []
-            for i_fr, fn in enumerate(fns_4d):
-                if out_rois[i_fr].any():
-                    fn_pattern = fns_pattern_4d[i_fr] if fns_pattern_4d is not None else None
-                    specs.append({
-                        'i_index': i_fr, 'fn': fn,
-                        'roi': [int(v) for v in out_rois[i_fr]],
-                        'dtype': dtype, 'scanSize': list(scanSize),
-                        'fn_pattern': fn_pattern, 'det_shape': [shape_d_x, shape_d_y],
-                        'backend': backend_settings.backend,
-                        'decluster_cfg': backend_settings.decluster_cfg(),
-                    })
+            for i_fr in frames_to_extract(out_rois, beg, end, len(fns_4d)):
+                fn_pattern = fns_pattern_4d[i_fr] if fns_pattern_4d is not None else None
+                specs.append({
+                    'i_index': i_fr, 'fn': fns_4d[i_fr],
+                    'roi': [int(v) for v in out_rois[i_fr]],
+                    'dtype': dtype, 'scanSize': list(scanSize),
+                    'fn_pattern': fn_pattern, 'det_shape': [shape_d_x, shape_d_y],
+                    'backend': backend_settings.backend,
+                    'decluster_cfg': backend_settings.decluster_cfg(),
+                })
             if specs:
                 self._obj_queue.append(idx)
                 self._obj_task_specs[idx] = specs
+
+        # The planned total above assumes every frame up to End was tracked; use what will really run.
+        n_tasks = sum(len(s) for s in self._obj_task_specs.values())
+        if n_tasks != self.tomo_counter_total:
+            self.logger.info('Extracting %d frame(s) (frames outside each ROI\'s Start-End range or '
+                             'without a tracked box are skipped).', n_tasks)
+            self.tomo_counter_total = n_tasks
+            self.update_progress_bar(0, n_tasks)
 
         self.n_workers = self.spinbox_threadNo.value()
         self._launch_next_object_batch()

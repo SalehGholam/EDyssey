@@ -6,7 +6,7 @@
 ; too) then `#include` this from one of those two files instead.
 
 #define AppName "EDyssey"
-#define AppVersion "2.1.20261014.2054"
+#define AppVersion "2.1.20261015.1059"
 #define AppPublisher "Saleh Gholam"
 #define AppURL "https://github.com/SalehGholam/EDyssey"
 ; Single-braced form for use everywhere except the [Setup] AppId= directive

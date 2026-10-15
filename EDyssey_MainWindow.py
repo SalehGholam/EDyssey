@@ -21,6 +21,10 @@ import sys
 from tqdm_safety import disable_monitor_thread
 disable_monitor_thread()
 
+# Before anything can import numba/pyeventem, including in --worker subprocesses - see runtime_env.py.
+from runtime_env import configure_numba_cache
+configure_numba_cache()
+
 file_path = os.path.abspath(__file__)
 # In a PyInstaller-frozen build, __file__ resolves next to the bootloader
 # exe, not the actual bundled package tree - sys._MEIPASS is where the
@@ -91,7 +95,7 @@ AppTheme.instance().apply_qapp()
 # process to compute it. A plain source constant (not computed at run
 # time) so it's visible directly in the repo on GitHub, not just at
 # runtime. Shown only in the About dialog (Help > About EDyssey).
-APP_VERSION = '2.1.20261014.2054'
+APP_VERSION = '2.1.20261015.1059'
 
 #%% window
 class MainWindow(qtw.QMainWindow):
@@ -417,7 +421,7 @@ class MainWindow(qtw.QMainWindow):
             f'Contact: <a href="mailto:saleh.gholam@uantwerpen.be" {link}>saleh.gholam@uantwerpen.be</a><br>'
             f'Software: <a href="https://github.com/SalehGholam/EDyssey" {link}>'
             'github.com/SalehGholam/EDyssey</a><br>'
-            f'Paper: <a href="https://arxiv.org/abs/2602.09768" {link}>arxiv.org/abs/2602.09768</a></p>'
+            f'Paper: <a href="https://doi.org/10.1002/smtd.71095" {link}>doi.org/10.1002/smtd.71095</a></p>'
             '<p>&copy; 2024&ndash;2026 Saleh Gholam. Released as open-source software - '
             'see the GitHub repository for license terms.</p>'
             '<p style="font-size: small; color: gray;">Built with NumPy, PyQt5, HyperSpy, '

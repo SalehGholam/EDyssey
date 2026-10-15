@@ -9,7 +9,7 @@ extracting per-object 3D electron diffraction (3DED) data.
 EDyssey implements the post-acquisition half of the 4D-STEM tomography
 workflow described in Gholam et al., *"A 4D-STEM Tomographic Framework
 Assisted by Object Tracking for Nanoparticle Structure Determination"*
-(arXiv:2602.09768): a tilt series of 4D-STEM scans → per-scan navigation images → object tracking/
+(*Small Methods*, [doi:10.1002/smtd.71095](https://doi.org/10.1002/smtd.71095)): a tilt series of 4D-STEM scans → per-scan navigation images → object tracking/
 segmentation of a ROI on those images (this app's ROI Tracker/SAM2 Tracker
 tabs) → per-object 3DED extraction, ready for data reduction/structure
 solution.
