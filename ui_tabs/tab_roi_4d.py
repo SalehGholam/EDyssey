@@ -542,6 +542,15 @@ class Tab_ROI_on_4D(TabBase):
         self.spinbox_vi_rOut.setValue(256)
         self.spinbox_vi_rOut.setSingleStep(10)
         grid_vi_geometry.addWidget(self.spinbox_vi_rOut, 1, 4)
+        self.checkbox_vi_rInNone = qtw.QCheckBox('No inner')
+        self.checkbox_vi_rInNone.setToolTip(
+            'No inner radius: include everything from the centre out (centre pixel included)')
+        grid_vi_geometry.addWidget(self.checkbox_vi_rInNone, 2, 1, 1, 2)
+        self.checkbox_vi_rOutNone = qtw.QCheckBox('No outer')
+        self.checkbox_vi_rOutNone.setToolTip('No outer radius: include everything out to the detector edge')
+        grid_vi_geometry.addWidget(self.checkbox_vi_rOutNone, 2, 3, 1, 2)
+        self.checkbox_vi_rInNone.toggled.connect(self._on_radius_none_toggled_vi)
+        self.checkbox_vi_rOutNone.toggled.connect(self._on_radius_none_toggled_vi)
 
         for sb in (self.spinbox_vi_centerX, self.spinbox_vi_centerY,
                    self.spinbox_vi_rIn, self.spinbox_vi_rOut):
@@ -558,10 +567,7 @@ class Tab_ROI_on_4D(TabBase):
         # spinboxes currently drive live (see _sync_active_detector_vi/
         # _load_selected_detector_vi) - "Add Detector" freezes the current
         # one and starts a new active entry instead of editing in place.
-        self._extra_detectors_vi = [{'center': (self.spinbox_vi_centerX.value(),
-                                                 self.spinbox_vi_centerY.value()),
-                                     'r_in': self.spinbox_vi_rIn.value(),
-                                     'r_out': self.spinbox_vi_rOut.value()}]
+        self._extra_detectors_vi = [self._current_detector_vi()]
         self._active_detector_row_vi = 0
         widget_vi_detectors = qtw.QWidget()
         layout_vi_detectors = qtw.QVBoxLayout(widget_vi_detectors)
@@ -1936,8 +1942,7 @@ class Tab_ROI_on_4D(TabBase):
         synced with the center/radii spinboxes as the user edits or drags
         them, so its displayed values are never stale - matches the
         Navigator tab's identical _sync_active_detector."""
-        detector = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
-                    'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+        detector = self._current_detector_vi()
         self._extra_detectors_vi[self._active_detector_row_vi] = detector
         item = self.list_detectors_vi.item(self._active_detector_row_vi)
         if item is not None:
@@ -1949,8 +1954,7 @@ class Tab_ROI_on_4D(TabBase):
         detector entry, on top of whichever one was already active - the
         previous entry stays frozen, and further spinbox edits/drags target
         the new (now-selected) one instead."""
-        detector = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
-                    'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+        detector = self._current_detector_vi()
         self._extra_detectors_vi.append(detector)
         self.list_detectors_vi.addItem(self._format_detector_vi(detector))
         self.list_detectors_vi.setCurrentRow(len(self._extra_detectors_vi) - 1)
@@ -1966,16 +1970,31 @@ class Tab_ROI_on_4D(TabBase):
         del self._extra_detectors_vi[row]
         self.list_detectors_vi.takeItem(row)
         if not self._extra_detectors_vi:
-            default = {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
-                      'r_in': self.spinbox_vi_rIn.value(), 'r_out': self.spinbox_vi_rOut.value()}
+            default = self._current_detector_vi()
             self._extra_detectors_vi.append(default)
             self.list_detectors_vi.addItem(self._format_detector_vi(default))
         self.list_detectors_vi.setCurrentRow(min(row, len(self._extra_detectors_vi) - 1))
         self.update_virtual_mask_overlay()
 
     def _format_detector_vi(self, detector):
-        cx, cy = detector['center']
-        return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
+        return io.format_detector(detector)
+
+    def _r_in_value_vi(self):
+        """Inner radius, or None when "No inner" is ticked."""
+        return None if self.checkbox_vi_rInNone.isChecked() else self.spinbox_vi_rIn.value()
+
+    def _r_out_value_vi(self):
+        """Outer radius, or None when "No outer" is ticked."""
+        return None if self.checkbox_vi_rOutNone.isChecked() else self.spinbox_vi_rOut.value()
+
+    def _current_detector_vi(self):
+        return {'center': (self.spinbox_vi_centerX.value(), self.spinbox_vi_centerY.value()),
+                'r_in': self._r_in_value_vi(), 'r_out': self._r_out_value_vi()}
+
+    def _on_radius_none_toggled_vi(self):
+        self.spinbox_vi_rIn.setDisabled(self.checkbox_vi_rInNone.isChecked())
+        self.spinbox_vi_rOut.setDisabled(self.checkbox_vi_rOutNone.isChecked())
+        self._sync_active_detector_vi()
 
     def _load_selected_detector_vi(self):
         """Load the selected list entry's values into the spinboxes and
@@ -1986,13 +2005,21 @@ class Tab_ROI_on_4D(TabBase):
             return
         self._active_detector_row_vi = row
         detector = self._extra_detectors_vi[row]
+        r_in, r_out = detector.get('r_in', 0), detector.get('r_out')
         for sb, val in ((self.spinbox_vi_centerX, detector['center'][0]),
                         (self.spinbox_vi_centerY, detector['center'][1]),
-                        (self.spinbox_vi_rIn, detector['r_in']),
-                        (self.spinbox_vi_rOut, detector['r_out'])):
+                        (self.spinbox_vi_rIn, r_in), (self.spinbox_vi_rOut, r_out)):
+            if val is None:
+                continue
             sb.blockSignals(True)
             sb.setValue(val)
             sb.blockSignals(False)
+        for cb, sb, val in ((self.checkbox_vi_rInNone, self.spinbox_vi_rIn, r_in),
+                            (self.checkbox_vi_rOutNone, self.spinbox_vi_rOut, r_out)):
+            cb.blockSignals(True)
+            cb.setChecked(val is None)
+            cb.blockSignals(False)
+            sb.setDisabled(val is None)
         self.update_virtual_mask_overlay()
 
     def get_active_virtual_detectors(self):
@@ -2033,15 +2060,16 @@ class Tab_ROI_on_4D(TabBase):
 
         cx = self.spinbox_vi_centerX.value()
         cy = self.spinbox_vi_centerY.value()
-        r_in = self.spinbox_vi_rIn.value()
-        r_out = self.spinbox_vi_rOut.value()
+        r_in = self._r_in_value_vi()
+        r_out = self._r_out_value_vi()
         # khaki inner circle (item 3) reads clearly against both lime/cyan
         # outer rings and the DP axis's inferno colormap.
-        self._vi_circle_out = patches.Circle((cx, cy), r_out, fill=False,
-                                             edgecolor='lime', linewidth=1.5)
-        self.ax_dp.add_patch(self._vi_circle_out)
-        self._vi_mask_artists.append(self._vi_circle_out)
-        if r_in > 0:
+        if r_out is not None:
+            self._vi_circle_out = patches.Circle((cx, cy), r_out, fill=False,
+                                                 edgecolor='lime', linewidth=1.5)
+            self.ax_dp.add_patch(self._vi_circle_out)
+            self._vi_mask_artists.append(self._vi_circle_out)
+        if r_in is not None and r_in > 0:
             self._vi_circle_in = patches.Circle((cx, cy), r_in, fill=False,
                                                 edgecolor='khaki', linewidth=1.5)
             self.ax_dp.add_patch(self._vi_circle_in)
@@ -2057,11 +2085,12 @@ class Tab_ROI_on_4D(TabBase):
             if i == self._active_detector_row_vi:
                 continue
             dcx, dcy = detector['center']
-            circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
-                                    edgecolor='lime', linewidth=1.2, linestyle='--')
-            self.ax_dp.add_patch(circle)
-            self._vi_mask_artists.append(circle)
-            if detector['r_in'] > 0:
+            if detector.get('r_out') is not None:
+                circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
+                                        edgecolor='lime', linewidth=1.2, linestyle='--')
+                self.ax_dp.add_patch(circle)
+                self._vi_mask_artists.append(circle)
+            if (detector.get('r_in') or 0) > 0:
                 circle_in2 = patches.Circle((dcx, dcy), detector['r_in'], fill=False,
                                             edgecolor='khaki', linewidth=1.2, linestyle='--')
                 self.ax_dp.add_patch(circle_in2)
@@ -2093,12 +2122,12 @@ class Tab_ROI_on_4D(TabBase):
         (the click should not fall through to recip-center logic), False
         otherwise (click missed every handle, or there's no mask to drag)."""
         self._vi_mask_drag_mode = None
-        if not self.checkbox_useVirtualMask.isChecked() or self._vi_circle_out is None:
+        if not self.checkbox_useVirtualMask.isChecked() or self._vi_center_marker is None:
             return False
         cx = self.spinbox_vi_centerX.value()
         cy = self.spinbox_vi_centerY.value()
-        r_in = self.spinbox_vi_rIn.value()
-        r_out = self.spinbox_vi_rOut.value()
+        r_in = self._r_in_value_vi()
+        r_out = self._r_out_value_vi()
 
         # Hit-test in pixel space so the threshold doesn't depend on zoom.
         p0 = self.ax_dp.transData.transform((0, 0))
@@ -2109,9 +2138,9 @@ class Tab_ROI_on_4D(TabBase):
         dist = np.hypot(event.xdata - cx, event.ydata - cy)
         if dist < threshold_data:
             self._vi_mask_drag_mode = 'center'
-        elif abs(dist - r_out) < threshold_data:
+        elif r_out is not None and abs(dist - r_out) < threshold_data:
             self._vi_mask_drag_mode = 'r_out'
-        elif r_in > 0 and abs(dist - r_in) < threshold_data:
+        elif r_in is not None and r_in > 0 and abs(dist - r_in) < threshold_data:
             self._vi_mask_drag_mode = 'r_in'
         if self._vi_mask_drag_mode is None:
             return False
@@ -2149,27 +2178,29 @@ class Tab_ROI_on_4D(TabBase):
             cy = self.spinbox_vi_centerY.value()
             r = int(round(np.hypot(event.xdata - cx, event.ydata - cy)))
             if self._vi_mask_drag_mode == 'r_out':
-                r = max(r, self.spinbox_vi_rIn.value() + 1)
+                r = max(r, (self._r_in_value_vi() or 0) + 1)
                 self.spinbox_vi_rOut.blockSignals(True)
                 self.spinbox_vi_rOut.setValue(r)
                 self.spinbox_vi_rOut.blockSignals(False)
             elif self._vi_mask_drag_mode == 'r_in':
-                r = min(r, self.spinbox_vi_rOut.value() - 1)
+                r = min(r, (self._r_out_value_vi() or r + 1) - 1)
                 self.spinbox_vi_rIn.blockSignals(True)
                 self.spinbox_vi_rIn.setValue(r)
                 self.spinbox_vi_rIn.blockSignals(False)
 
         cx = self.spinbox_vi_centerX.value()
         cy = self.spinbox_vi_centerY.value()
-        self._vi_circle_out.set_center((cx, cy))
-        self._vi_circle_out.set_radius(self.spinbox_vi_rOut.value())
+        if self._vi_circle_out is not None:
+            self._vi_circle_out.set_center((cx, cy))
+            self._vi_circle_out.set_radius(self.spinbox_vi_rOut.value())
         if self._vi_circle_in is not None:
             self._vi_circle_in.set_center((cx, cy))
             self._vi_circle_in.set_radius(self.spinbox_vi_rIn.value())
         self._vi_center_marker.set_offsets([[cx, cy]])
 
         self.canvas.restore_region(self._vi_mask_bg)
-        self.ax_dp.draw_artist(self._vi_circle_out)
+        if self._vi_circle_out is not None:
+            self.ax_dp.draw_artist(self._vi_circle_out)
         if self._vi_circle_in is not None:
             self.ax_dp.draw_artist(self._vi_circle_in)
         self.ax_dp.draw_artist(self._vi_center_marker)

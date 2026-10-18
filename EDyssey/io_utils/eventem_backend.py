@@ -417,6 +417,14 @@ def _pyeventem_workers(n_threads):
     return max(1, min(_PYEVENTEM_AUTO_WORKERS, os.cpu_count() or 1))
 
 
+def _cpp_threads(n_threads, backend, decluster_on):
+    """n_threads for a C++ sink. Its declusterer only uses extra cores when n_threads is set (measured:
+    140 s with 1 thread, 16 s with 16), so "Auto" resolves to a real worker count when declustering."""
+    if not n_threads and decluster_on and backend == BACKEND_NEW:
+        return _pyeventem_workers(None)
+    return n_threads
+
+
 def _pyeventem_run(pe, source, sink, n_threads, decluster_on=False, declusterer=None, logger_=None):
     """``source`` here is always the RAW Tpx3Raster/Tpx3Pixeltrig - never
     pre-wrapped with ``pe.decluster_source()`` (unlike this function's
@@ -509,12 +517,8 @@ def _pyeventem_sink_result(sink_kind, sink):
     """The plain numpy result(s) a finished sink holds - a bare ndarray for
     Pacbed/VSTEM/Var, or the (scan_image, diffraction_pattern, roi_4d) tuple
     run_roi/run_roi_masked's RoiResult wraps, for 'roi'."""
-    if sink_kind == 'pacbed':
-        return np.asarray(sink.image)
-    if sink_kind == 'vstem':
-        return np.asarray(sink.images[0])
-    if sink_kind == 'var':
-        return np.asarray(sink.image)
+    if sink_kind in ('pacbed', 'vstem', 'var'):
+        return np.asarray(sink.image)  # vstem: summed over detectors, like get_image()
     roi_4d = sink.roi_4d if getattr(sink, 'extract_4d', False) else None
     return np.asarray(sink.scan_image), np.asarray(sink.diffraction_pattern), roi_4d
 
@@ -699,8 +703,9 @@ def _run_pacbed_impl(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
 
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         dp = mod.Pacbed(repetitions=repetitions)
-        if n_threads is not None:
-            dp.n_threads = n_threads
+        _nt = _cpp_threads(n_threads, backend, decluster_on)
+        if _nt is not None:
+            dp.n_threads = _nt
         dp.set_file(fn)
         dp.nx = scan_size[0]
         dp.ny = scan_size[1]
@@ -735,6 +740,40 @@ def _run_pacbed_impl(fn, scan_size, dwell_time_ns=1000.0, det_shape=(512, 512),
 # vSTEM
 # ---------------------------------------------------------------------------
 
+#: "No outer bound" for the eventem C++ backends (they square the radius in an int32).
+_EVENTEM_FULL_RADIUS = 1 << 15
+#: Inert second detector (far outside any detector plane) that forces old eventem's
+#: inclusive multi-detector vSTEM path.
+_OLD_VSTEM_DUMMY_RADII = (5000, 5001)
+
+
+def _vstem_radii_for_backend(backend, inner, outer, centers, det_shape):
+    """Per-detector radii/centers with None ("no bound") translated for ``backend``.
+    pyeventem takes None natively; the C++ backends get inner 0 / outer 1<<15, and old
+    eventem's single-detector path (exclusive inner) gets an inert dummy detector so
+    inner 0 still includes the centre pixel."""
+    if backend == BACKEND_PYEVENTEM:
+        return inner, outer, centers
+    inner_c = [0 if r is None else r for r in inner]
+    outer_c = [_EVENTEM_FULL_RADIUS if r is None else r for r in outer]
+    if backend == BACKEND_OLD and len(inner) == 1 and inner[0] is None:
+        if centers is None:
+            centers = [(det_shape[0] / 2.0, det_shape[1] / 2.0)]
+        inner_c.append(_OLD_VSTEM_DUMMY_RADII[0])
+        outer_c.append(_OLD_VSTEM_DUMMY_RADII[1])
+        centers = list(centers) + [centers[0]]
+    return inner_c, outer_c, centers
+
+
+def _var_radii_for_backend(backend, r_in, r_out):
+    """Var counterpart (single detector): inner None = 0 for the C++ backends, None
+    passes to pyeventem. Inner edge is inclusive on new eventem/pyeventem; old
+    eventem's Var stays exclusive at a numeric inner > 0 (no workaround)."""
+    if backend == BACKEND_PYEVENTEM:
+        return r_in, r_out
+    return (0 if r_in is None else r_in), (_EVENTEM_FULL_RADIUS if r_out is None else r_out)
+
+
 def run_vstem(*args, **kwargs):
     """See _run_vstem_impl - wrapped in _EVENTEM_CALL_LOCK (see that lock's
     own docstring)."""
@@ -747,10 +786,8 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
               backend=BACKEND_OLD, decluster_cfg=None, logger_=None, n_threads=None,
               execution_strategy=EXEC_THREADS):
     """Virtual-STEM navigation image, one or several annular detectors at
-    once. Returns a (ny, nx) array (single detector) - see old-eventem's
-    ``get_image()``/pyeventem's ``images[0]`` for the multi-detector case,
-    not currently exposed through this facade (EDyssey only ever asks for
-    one detector's worth per call today).
+    once. Returns a (ny, nx) array: the sum over all detectors (old/new
+    eventem's ``get_image()``, pyeventem's ``image``).
 
     ``execution_strategy``: pyeventem and New eventem both honor
     ``EXEC_PROCESSES`` (see ``_new_eventem_run_multiprocess``'s own
@@ -774,6 +811,8 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
             execution_strategy=execution_strategy,
         ), logger_=logger_)
 
+    inner, outer, centers = _vstem_radii_for_backend(backend, inner, outer, centers, det_shape)
+
     if backend in (BACKEND_OLD, BACKEND_NEW):
         if backend == BACKEND_NEW and execution_strategy == EXEC_PROCESSES:
             workers = _pyeventem_workers(n_threads)
@@ -791,8 +830,9 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         vstem = mod.vSTEM(repetitions)
-        if n_threads is not None:
-            vstem.n_threads = n_threads
+        _nt = _cpp_threads(n_threads, backend, decluster_on)
+        if _nt is not None:
+            vstem.n_threads = _nt
         vstem.b_cumulative = True
         vstem.set_file(fn)
         vstem.nx = scan_size[0]
@@ -803,9 +843,8 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         vstem.set_dwell_time(int(round(dwell_time_ns)))
         if fn_pattern:
             vstem.set_pattern_file(fn_pattern)
-        if offset:
-            offsets = offset if isinstance(offset[0], (list, tuple)) else [offset]
-            vstem.set_offsets([[o[0], o[1]] for o in offsets])
+        if centers:
+            vstem.set_offsets([[c[0], c[1]] for c in centers])
         if decluster_on:
             _apply_decluster_eventem(vstem, decluster_cfg)
         from .progress import redirect_console_to_logger
@@ -816,10 +855,6 @@ def _run_vstem_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
         finally:
             vstem.close_socket()
 
-    centers = None
-    if offset:
-        offsets = offset if isinstance(offset[0], (list, tuple)) else [offset]
-        centers = [(float(o[0]), float(o[1])) for o in offsets]
     return _pyeventem_dispatch(
         'vstem', dict(nx=scan_size[0], ny=scan_size[1], inner_radii=inner, outer_radii=outer,
                       centers=centers, detector_shape=det_shape[0]),
@@ -863,6 +898,8 @@ def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
             execution_strategy=execution_strategy,
         ), logger_=logger_)
 
+    r_in, r_out = _var_radii_for_backend(backend, r_in, r_out)
+
     if backend in (BACKEND_OLD, BACKEND_NEW):
         if backend == BACKEND_NEW and execution_strategy == EXEC_PROCESSES:
             workers = _pyeventem_workers(n_threads)
@@ -876,8 +913,9 @@ def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
 
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         var = mod.Var(repetitions)
-        if n_threads is not None:
-            var.n_threads = n_threads
+        _nt = _cpp_threads(n_threads, backend, decluster_on)
+        if _nt is not None:
+            var.n_threads = _nt
         var.b_cumulative = True
         var.set_file(fn)
         var.nx = scan_size[0]
@@ -904,7 +942,8 @@ def _run_var_impl(fn, scan_size, dwell_time_ns=1000.0, r_in=0, r_out=1 << 15,
             var.close_socket()
 
     return _pyeventem_dispatch(
-        'var', dict(nx=scan_size[0], ny=scan_size[1], inner_radius=float(r_in), outer_radius=float(r_out),
+        'var', dict(nx=scan_size[0], ny=scan_size[1], inner_radius=None if r_in is None else float(r_in),
+                   outer_radius=None if r_out is None else float(r_out),
                    center=center, detector_shape=det_shape[0]),
         fn, scan_size, dwell_time_ns, fn_pattern,
         n_threads, execution_strategy, decluster_cfg, decluster_on, logger_=logger_)
@@ -1215,8 +1254,9 @@ def _run_roi_impl(fn, scan_size, roi_rect=None, dwell_time_ns=1000.0, det_shape=
 
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=get_4d)
-        if n_threads is not None:
-            roi_obj.n_threads = n_threads
+        _nt = _cpp_threads(n_threads, backend, decluster_on)
+        if _nt is not None:
+            roi_obj.n_threads = _nt
         if bitdepth is not None:
             roi_obj.set_bitdepth(bitdepth)
         roi_obj.nx = scan_size[0]
@@ -1294,8 +1334,9 @@ def _run_roi_masked_impl(fn, scan_size, mask, dwell_time_ns=1000.0, det_shape=(5
 
         mod = _old_eventem() if backend == BACKEND_OLD else _new_eventem()
         roi_obj = mod.Roi(repetitions=repetitions, extract_4D=False)
-        if n_threads is not None:
-            roi_obj.n_threads = n_threads
+        _nt = _cpp_threads(n_threads, backend, decluster_on)
+        if _nt is not None:
+            roi_obj.n_threads = _nt
         if bitdepth is not None:
             roi_obj.set_bitdepth(bitdepth)
         roi_obj.nx = scan_size[0]

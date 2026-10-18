@@ -447,6 +447,15 @@ class Tab_Create_NavSignal(TabBase):
         self.spinbox_rOut.setValue(512)
         self.spinbox_rOut.setSingleStep(10)
         grid_mask_geometry.addWidget(self.spinbox_rOut, 1, 4)
+        self.checkbox_rInNone = qtw.QCheckBox('No inner')
+        self.checkbox_rInNone.setToolTip(
+            'No inner radius: include everything from the centre out (centre pixel included)')
+        grid_mask_geometry.addWidget(self.checkbox_rInNone, 2, 1, 1, 2)
+        self.checkbox_rOutNone = qtw.QCheckBox('No outer')
+        self.checkbox_rOutNone.setToolTip('No outer radius: include everything out to the detector edge')
+        grid_mask_geometry.addWidget(self.checkbox_rOutNone, 2, 3, 1, 2)
+        self.checkbox_rInNone.toggled.connect(self._on_radius_none_toggled)
+        self.checkbox_rOutNone.toggled.connect(self._on_radius_none_toggled)
 
         for sb in (self.spinbox_centerX, self.spinbox_centerY, self.spinbox_rIn, self.spinbox_rOut):
             sb.setToolTip('Up/down arrows step by 10; type a value directly for finer control')
@@ -463,8 +472,7 @@ class Tab_Create_NavSignal(TabBase):
         # _sync_active_detector/_load_selected_detector) - "Add Detector"
         # freezes the current one and starts a new active entry instead of
         # editing in place.
-        self._extra_detectors = [{'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                                  'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}]
+        self._extra_detectors = [self._current_detector()]
         self._active_detector_row = 0
 
         widget_detectors = qtw.QWidget()
@@ -1483,18 +1491,21 @@ class Tab_Create_NavSignal(TabBase):
         self._mask_artists = []
         cx = self.spinbox_centerX.value()
         cy = self.spinbox_centerY.value()
-        r_in = self.spinbox_rIn.value()
-        r_out = self.spinbox_rOut.value()
+        r_in = self._r_in_value()
+        r_out = self._r_out_value()
 
         # Direct references (not just the _mask_artists list) so
         # on_motion_mask can reposition+blit just these 3 during a drag,
         # instead of a full update_mask_overlay()/canvas.draw_idle() on
         # every mouse-move tick.
-        self._current_circle_out = patches.Circle(
-            (cx, cy), r_out, fill=False, edgecolor='lime', linewidth=1.5)
-        self.ax_mask_preview.add_patch(self._current_circle_out)
-        self._mask_artists.append(self._current_circle_out)
-        if r_in > 0:
+        if r_out is not None:
+            self._current_circle_out = patches.Circle(
+                (cx, cy), r_out, fill=False, edgecolor='lime', linewidth=1.5)
+            self.ax_mask_preview.add_patch(self._current_circle_out)
+            self._mask_artists.append(self._current_circle_out)
+        else:
+            self._current_circle_out = None
+        if r_in is not None and r_in > 0:
             # khaki (not red) - matches Tab_ROI_on_4D's identical virtual-
             # detector overlay; reads clearly against both the lime outer
             # ring and the inferno colormap's own bright (yellow/red) core.
@@ -1517,11 +1528,12 @@ class Tab_Create_NavSignal(TabBase):
             if i == self._active_detector_row:
                 continue
             dcx, dcy = detector['center']
-            circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
-                                    edgecolor='lime', linewidth=1.2, linestyle='--')
-            self.ax_mask_preview.add_patch(circle)
-            self._mask_artists.append(circle)
-            if detector['r_in'] > 0:
+            if detector.get('r_out') is not None:
+                circle = patches.Circle((dcx, dcy), detector['r_out'], fill=False,
+                                        edgecolor='lime', linewidth=1.2, linestyle='--')
+                self.ax_mask_preview.add_patch(circle)
+                self._mask_artists.append(circle)
+            if (detector.get('r_in') or 0) > 0:
                 circle_in2 = patches.Circle((dcx, dcy), detector['r_in'], fill=False,
                                             edgecolor='khaki', linewidth=1.2, linestyle='--')
                 self.ax_mask_preview.add_patch(circle_in2)
@@ -1561,8 +1573,7 @@ class Tab_Create_NavSignal(TabBase):
         be changed as the user is moving the detector or changing one of
         its radii" (per user request), rather than only updating on an
         explicit "Add Detector" click."""
-        detector = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                    'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}
+        detector = self._current_detector()
         self._extra_detectors[self._active_detector_row] = detector
         item = self.list_detectors.item(self._active_detector_row)
         if item is not None:
@@ -1576,14 +1587,11 @@ class Tab_Create_NavSignal(TabBase):
         spinbox edits/drags target the new (now-selected) one instead - see
         get_active_detectors/calculate_nav_img_masked for how the full list
         is combined at calculation time."""
-        r_in = self.spinbox_rIn.value()
-        r_out = self.spinbox_rOut.value()
-        if r_out <= r_in:
-            qtw.QMessageBox.critical(self, 'Invalid Virtual Mask',
-                'Outer radius must be greater than the inner radius.')
+        detector = self._current_detector()
+        error = io.detector_radii_error(detector['r_in'], detector['r_out'])
+        if error:
+            qtw.QMessageBox.critical(self, 'Invalid Virtual Mask', error)
             return
-        detector = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                    'r_in': r_in, 'r_out': r_out}
         self._extra_detectors.append(detector)
         self.list_detectors.addItem(self._format_detector(detector))
         self.list_detectors.setCurrentRow(len(self._extra_detectors) - 1)
@@ -1599,16 +1607,31 @@ class Tab_Create_NavSignal(TabBase):
         del self._extra_detectors[row]
         self.list_detectors.takeItem(row)
         if not self._extra_detectors:
-            default = {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
-                       'r_in': self.spinbox_rIn.value(), 'r_out': self.spinbox_rOut.value()}
+            default = self._current_detector()
             self._extra_detectors.append(default)
             self.list_detectors.addItem(self._format_detector(default))
         self.list_detectors.setCurrentRow(min(row, len(self._extra_detectors) - 1))
         self.update_mask_overlay()
 
     def _format_detector(self, detector):
-        cx, cy = detector['center']
-        return f"center=({cx:.0f}, {cy:.0f}), r={detector['r_in']:.0f}-{detector['r_out']:.0f}"
+        return io.format_detector(detector)
+
+    def _r_in_value(self):
+        """Inner radius, or None when "No inner" is ticked."""
+        return None if self.checkbox_rInNone.isChecked() else self.spinbox_rIn.value()
+
+    def _r_out_value(self):
+        """Outer radius, or None when "No outer" is ticked."""
+        return None if self.checkbox_rOutNone.isChecked() else self.spinbox_rOut.value()
+
+    def _current_detector(self):
+        return {'center': (self.spinbox_centerX.value(), self.spinbox_centerY.value()),
+                'r_in': self._r_in_value(), 'r_out': self._r_out_value()}
+
+    def _on_radius_none_toggled(self):
+        self.spinbox_rIn.setDisabled(self.checkbox_rInNone.isChecked())
+        self.spinbox_rOut.setDisabled(self.checkbox_rOutNone.isChecked())
+        self._sync_active_detector()
 
     def _load_selected_detector(self):
         """Load the selected list entry's values into the center/radii
@@ -1619,13 +1642,21 @@ class Tab_Create_NavSignal(TabBase):
             return
         self._active_detector_row = row
         detector = self._extra_detectors[row]
+        r_in, r_out = detector.get('r_in', 0), detector.get('r_out')
         for sb, val in ((self.spinbox_centerX, detector['center'][0]),
                         (self.spinbox_centerY, detector['center'][1]),
-                        (self.spinbox_rIn, detector['r_in']),
-                        (self.spinbox_rOut, detector['r_out'])):
+                        (self.spinbox_rIn, r_in), (self.spinbox_rOut, r_out)):
+            if val is None:
+                continue
             sb.blockSignals(True)
             sb.setValue(int(val))
             sb.blockSignals(False)
+        for cb, sb, val in ((self.checkbox_rInNone, self.spinbox_rIn, r_in),
+                            (self.checkbox_rOutNone, self.spinbox_rOut, r_out)):
+            cb.blockSignals(True)
+            cb.setChecked(val is None)
+            cb.blockSignals(False)
+            sb.setDisabled(val is None)
         self.update_mask_overlay()
 
     def get_active_detectors(self):
@@ -1792,8 +1823,8 @@ class Tab_Create_NavSignal(TabBase):
             return
         cx = self.spinbox_centerX.value()
         cy = self.spinbox_centerY.value()
-        r_in = self.spinbox_rIn.value()
-        r_out = self.spinbox_rOut.value()
+        r_in = self._r_in_value()
+        r_out = self._r_out_value()
 
         # Hit-test in pixel space (via a 1-data-unit reference vector) so the
         # threshold doesn't depend on the current zoom level.
@@ -1805,9 +1836,9 @@ class Tab_Create_NavSignal(TabBase):
         dist = np.hypot(event.xdata - cx, event.ydata - cy)
         if dist < threshold_data:
             self._mask_drag_mode = 'center'
-        elif abs(dist - r_out) < threshold_data:
+        elif r_out is not None and abs(dist - r_out) < threshold_data:
             self._mask_drag_mode = 'r_out'
-        elif r_in > 0 and abs(dist - r_in) < threshold_data:
+        elif r_in is not None and r_in > 0 and abs(dist - r_in) < threshold_data:
             self._mask_drag_mode = 'r_in'
 
         if self._mask_drag_mode is None:
@@ -1855,27 +1886,29 @@ class Tab_Create_NavSignal(TabBase):
             cy = self.spinbox_centerY.value()
             r = int(round(np.hypot(event.xdata - cx, event.ydata - cy)))
             if self._mask_drag_mode == 'r_out':
-                r = max(r, self.spinbox_rIn.value() + 1)
+                r = max(r, (self._r_in_value() or 0) + 1)
                 self.spinbox_rOut.blockSignals(True)
                 self.spinbox_rOut.setValue(r)
                 self.spinbox_rOut.blockSignals(False)
             elif self._mask_drag_mode == 'r_in':
-                r = min(r, self.spinbox_rOut.value() - 1)
+                r = min(r, (self._r_out_value() or r + 1) - 1)
                 self.spinbox_rIn.blockSignals(True)
                 self.spinbox_rIn.setValue(r)
                 self.spinbox_rIn.blockSignals(False)
 
         cx = self.spinbox_centerX.value()
         cy = self.spinbox_centerY.value()
-        self._current_circle_out.set_center((cx, cy))
-        self._current_circle_out.set_radius(self.spinbox_rOut.value())
+        if self._current_circle_out is not None:
+            self._current_circle_out.set_center((cx, cy))
+            self._current_circle_out.set_radius(self.spinbox_rOut.value())
         if self._current_circle_in is not None:
             self._current_circle_in.set_center((cx, cy))
             self._current_circle_in.set_radius(self.spinbox_rIn.value())
         self._current_center_marker.set_offsets([[cx, cy]])
 
         self.canvas.restore_region(self._mask_bg)
-        self.ax_mask_preview.draw_artist(self._current_circle_out)
+        if self._current_circle_out is not None:
+            self.ax_mask_preview.draw_artist(self._current_circle_out)
         if self._current_circle_in is not None:
             self.ax_mask_preview.draw_artist(self._current_circle_in)
         self.ax_mask_preview.draw_artist(self._current_center_marker)
@@ -2088,12 +2121,11 @@ class Tab_Create_NavSignal(TabBase):
         if self.checkbox_useMask.isChecked():
             detectors = self.get_active_detectors()
             for det in detectors:
-                if det['r_out'] <= det['r_in']:
-                    self.logger.warning(
-                        'Cannot start: virtual mask outer radius (%d) must be greater than '
-                        'the inner radius (%d).', det['r_out'], det['r_in'])
-                    qtw.QMessageBox.critical(self, 'Invalid Virtual Mask',
-                        'Outer radius must be greater than the inner radius.')
+                error = io.detector_radii_error(det.get('r_in'), det.get('r_out'))
+                if error:
+                    self.logger.warning('Cannot start: %s (r_in=%s, r_out=%s).',
+                                        error, det.get('r_in'), det.get('r_out'))
+                    qtw.QMessageBox.critical(self, 'Invalid Virtual Mask', error)
                     return
             mask_params = detectors
             self.logger.info('Using %d virtual detector(s): %s', len(detectors), detectors)
@@ -2122,7 +2154,7 @@ class Tab_Create_NavSignal(TabBase):
             'dwell_time_us': dwellTime,
             'virtual_detector': {
                 'used': mask_params is not None,
-                'detectors': [{'center': list(d['center']), 'r_in': d['r_in'], 'r_out': d['r_out']}
+                'detectors': [{'center': list(d['center']), 'r_in': d.get('r_in'), 'r_out': d.get('r_out')}
                              for d in mask_params] if mask_params else None,
             },
             'mode': mode,

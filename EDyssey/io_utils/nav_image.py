@@ -60,12 +60,13 @@ def calculate_nav_img_tpx3(fn, scanSize, dwellTime=None, r_in=0, r_out=FULL_DETE
         fn: Path to the .tpx3 file.
         scanSize: (nx, ny) scan dimensions in pixels.
         dwellTime: Dwell time per pixel in microseconds (multiplied by 1000 internally).
-        r_in: Inner radius of the annular detector in pixels, or a list of
+        r_in: Inner radius of the annular detector in pixels (None = no inner
+            bound, centre pixel included), or a list of
             inner radii for several virtual detectors at once (paired by
             position with r_out/offset). Only the first entry is used when
             declustering is active - see eventem_backend.run_vstem's
             docstring for why (single-detector only in that mode).
-        r_out: Outer radius, or a matching list of outer radii.
+        r_out: Outer radius (None = no outer bound), or a matching list.
         offset: (x, y) absolute center of the virtual detector, in detector
             pixels, or a list of centers matching r_in/r_out. None = a
             single detector covering the whole frame.
@@ -313,21 +314,41 @@ def create_virtual_detector(shape, center, r_out, r_in=0):
     Args:
         shape: (det_y, det_x) shape of the mask/detector.
         center: (x, y) center of the detector in pixel coordinates.
-        r_out: Outer radius in pixels.
-        r_in: Inner radius in pixels (0 = a filled disk, no hole).
+        r_out: Outer radius in pixels, or None for no outer bound.
+        r_in: Inner radius in pixels (0 or None = a filled disk, no hole).
 
     Returns:
         numpy.ndarray of dtype int8, shape `shape`, 1 inside the annulus/disk
         and 0 elsewhere.
     """
     cx, cy = center
-    mask_out = disk((cy,cx), r_out, shape=shape)
-    mask_arr = np.zeros(shape, dtype=np.int8)
-    mask_arr[mask_out] = 1
-    if r_in > 0:
+    if r_out is None:
+        mask_arr = np.ones(shape, dtype=np.int8)
+    else:
+        mask_arr = np.zeros(shape, dtype=np.int8)
+        mask_arr[disk((cy, cx), r_out, shape=shape)] = 1
+    if r_in is not None and r_in > 0:
         mask_in = disk((cy,cx), r_in, shape=shape)
         mask_arr[mask_in] = 0
     return mask_arr
+
+def format_radius(r):
+    """Radius text for a detector label: 'none' for a missing bound."""
+    return 'none' if r is None else f'{r:.0f}'
+
+def format_detector(detector):
+    """One-line list label for a {'center', 'r_in', 'r_out'} detector dict."""
+    cx, cy = detector['center']
+    return (f"center=({cx:.0f}, {cy:.0f}), "
+            f"r={format_radius(detector.get('r_in', 0))}-{format_radius(detector.get('r_out'))}")
+
+def detector_radii_error(r_in, r_out):
+    """Error text if the radii are inconsistent (None = no bound = always fine), else None."""
+    if r_in is None or r_out is None:
+        return None
+    if r_out <= r_in:
+        return 'Outer radius must be greater than the inner radius.'
+    return None
 
 def create_virtual_detector_multi(shape, detectors):
     """Union of several annular/disk virtual detectors into one mask - the
@@ -346,7 +367,7 @@ def create_virtual_detector_multi(shape, detectors):
     """
     mask = np.zeros(shape, dtype=np.int8)
     for det in detectors:
-        mask |= create_virtual_detector(shape, det['center'], det['r_out'], det.get('r_in', 0))
+        mask |= create_virtual_detector(shape, det['center'], det.get('r_out'), det.get('r_in', 0))
     return mask
 
 def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detectors=None,
@@ -409,7 +430,7 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
                     "Mode back to Sum.")
             det = detectors[0]
             return calculate_nav_img_variance_tpx3(
-                fn, scanSize, dwellTime, r_in=det.get('r_in', 0), r_out=det['r_out'],
+                fn, scanSize, dwellTime, r_in=det.get('r_in', 0), r_out=det.get('r_out'),
                 offset=det['center'], fn_pattern=fn_pattern, logger=logger,
                 n_threads=n_threads, det_shape=det_shape, backend=backend,
                 decluster_cfg=decluster_cfg, execution_strategy=execution_strategy)
@@ -418,7 +439,7 @@ def calculate_nav_img_masked(fn, dtype=None, scanSize=None, dwellTime=1, detecto
         # calculate_nav_img_tpx3's docstring for why `offset` here is
         # already the absolute (x, y) center `detectors` uses).
         r_in = [d.get('r_in', 0) for d in detectors]
-        r_out = [d['r_out'] for d in detectors]
+        r_out = [d.get('r_out') for d in detectors]
         offset = [d['center'] for d in detectors]
         return calculate_nav_img_tpx3(fn, scanSize, dwellTime, r_in=r_in, r_out=r_out,
                                       offset=offset, fn_pattern=fn_pattern, logger=logger,
